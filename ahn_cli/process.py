@@ -109,6 +109,8 @@ def process(
                 p_handler.clip()
             if clip_file is not None:
                 p_handler.clip_by_arbitrary_polygon(clip_file)
+            if geojson is not None:
+                p_handler.clip_by_arbitrary_polygon(geojson)
             if decimate is not None:
                 p_handler.decimate(decimate)
 

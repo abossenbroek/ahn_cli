@@ -18,6 +18,9 @@ dependencies = [
     "typing-extensions>=4.14.1",
 ]
 
+[project.optional-dependencies]
+pdal = ["pdal>=2.5.0"]
+
 [project.scripts]
 ahn_cli = "ahn_cli.main:main"
 

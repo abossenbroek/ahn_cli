@@ -91,10 +91,23 @@ def validate_bbox(bbox: list[float] | None) -> list[float] | None:
     return bbox
 
 
-def validate_exclusive_args(bbox: list[float] | None, cityname: str) -> None:
-    if bbox is not None and cityname is not None:
+def validate_geojson(geojson: str | None) -> str | None:
+    if geojson is None:
+        return None
+    if not os.path.exists(geojson):
+        raise ClickException("GeoJSON file does not exist.")
+    if not geojson.endswith((".geojson", ".json")):
+        raise ClickException("File must have .geojson or .json extension.")
+    return geojson
+
+
+def validate_exclusive_args(
+    bbox: list[float] | None, cityname: str | None, geojson: str | None
+) -> None:
+    area_options = [bbox is not None, cityname is not None, geojson is not None]
+    if sum(area_options) != 1:
         raise ClickException(
-            "Cannot specify both a bounding box and a city name."
+            "You must specify exactly one of --city, --bbox, or --geojson"
         )
 
 
@@ -109,9 +122,11 @@ def validate_all(
     epsg: int | None = None,
     decimate: int | None = None,
     bbox: list[float] | None = None,
+    geojson: str | None = None,
 ) -> bool:
     validate_output(output_path)
-    if not bbox:
+    validate_exclusive_args(bbox, city_name, geojson)
+    if city_name and not bbox and not geojson:
         validate_city(city_name, cfg.city_polygon_file)
     validate_include_classes(include_classes)
     validate_exclude_classes(exclude_classes)
@@ -120,5 +135,5 @@ def validate_all(
     validate_epsg(epsg)
     validate_decimate(decimate)
     validate_bbox(bbox)
-    validate_exclusive_args(bbox, city_name)
+    validate_geojson(geojson)
     return True

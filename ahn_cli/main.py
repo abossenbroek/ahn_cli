@@ -90,6 +90,12 @@ Options:
     help="Specify a bounding box to clip the point cloud data. It should be comma-separated list with minx,miny,maxx,maxy",
 )
 @click.option(
+    "-g",
+    "--geojson",
+    type=str,
+    help="GeoJSON file containing polygon(s) to define download area and clip boundary",
+)
+@click.option(
     "-p",
     "--preview",
     is_flag=True,
@@ -119,6 +125,7 @@ def main(**kwargs: Any) -> None:
         if params.get("bbox", "")
         else None
     )
+    geojson = params.get("geojson")
     preview = params.get("preview")
     if validate_all(
         cfg,
@@ -131,6 +138,7 @@ def main(**kwargs: Any) -> None:
         epsg,
         decimate,
         bbox,
+        geojson,
     ):
         process(
             cfg.geotiles_base_url,

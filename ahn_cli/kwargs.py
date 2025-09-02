@@ -11,4 +11,5 @@ class CLIArgs(TypedDict):
     epsg: int | None
     decimate: int | None
     bbox: list[float] | None
+    geojson: str | None
     preview: bool

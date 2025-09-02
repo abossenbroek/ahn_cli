@@ -152,6 +152,7 @@ def main(**kwargs: Any) -> None:
             epsg,
             decimate,
             bbox,
+            geojson,
             preview,
         )
 

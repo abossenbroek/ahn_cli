@@ -62,9 +62,10 @@ def process(
     epsg: int | None = None,
     decimate: int | None = None,
     bbox: list[float] | None = None,
+    geojson: str | None = None,
     preview: bool | None = False,
 ) -> None:
-    ahn_fetcher = Fetcher(base_url, city_name, bbox)
+    ahn_fetcher = Fetcher(base_url, city_name, bbox, geojson)
     fetched_files = ahn_fetcher.fetch()
 
     files = list(fetched_files.values())

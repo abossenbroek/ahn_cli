@@ -12,6 +12,7 @@ from tqdm import tqdm
 from ahn_cli.fetcher.geotiles import (
     ahn_subunit_indices_of_bbox,
     ahn_subunit_indices_of_city,
+    ahn_subunit_indices_of_geojson,
 )
 
 
@@ -21,8 +22,10 @@ class Fetcher:
 
     Args:
         base_url (str): The base URL for fetching AHN data.
-        city_name (str): The name of the city for which to fetch AHN data.
+        city_name (str | None): The name of the city for which to fetch AHN data.
         bbox (list[float] | None, optional): The bounding box coordinates [minx, miny, maxx, maxy]
+            for a specific area of interest. Defaults to None.
+        geojson_file (str | None, optional): Path to GeoJSON file containing polygon(s)
             for a specific area of interest. Defaults to None.
 
     Raises:
@@ -30,9 +33,10 @@ class Fetcher:
 
     Attributes:
         base_url (str): The base URL for fetching AHN data.
-        city_name (str): The name of the city for which to fetch AHN data.
+        city_name (str | None): The name of the city for which to fetch AHN data.
         bbox (list[float] | None): The bounding box coordinates [minx, miny, maxx, maxy]
             for a specific area of interest.
+        geojson_file (str | None): Path to GeoJSON file for a specific area of interest.
         urls (list[str]): The constructed URLs for fetching AHN data.
 
     Methods:
@@ -42,13 +46,18 @@ class Fetcher:
     """
 
     def __init__(
-        self, base_url: str, city_name: str, bbox: list[float] | None = None
+        self,
+        base_url: str,
+        city_name: str | None = None,
+        bbox: list[float] | None = None,
+        geojson_file: str | None = None,
     ):
         if not self._check_valid_url(base_url):
             raise ValueError("Invalid URL")
         self.base_url = base_url
         self.city_name = city_name
         self.bbox = bbox
+        self.geojson_file = geojson_file
         self.urls = self._construct_urls()
 
     def fetch(self) -> dict:
@@ -110,11 +119,20 @@ class Fetcher:
         Returns:
             list[str]: A list of URLs for fetching AHN data.
         """
-        tiles_indices = (
-            ahn_subunit_indices_of_bbox(self.bbox)
-            if self.bbox
-            else ahn_subunit_indices_of_city(self.city_name)
-        )
+        if self.bbox:
+            tiles_indices = ahn_subunit_indices_of_bbox(self.bbox)
+        elif self.geojson_file:
+            tiles_indices = ahn_subunit_indices_of_geojson(self.geojson_file)
+        else:
+            tiles_indices = ahn_subunit_indices_of_city(self.city_name)
+
+        # Warn if downloading many tiles
+        if len(tiles_indices) > 50:
+            logging.warning(
+                f"This will download {len(tiles_indices)} tiles. "
+                "This may take significant time and disk space."
+            )
+
         urls = []
         for tile_index in tiles_indices:
             urls.append(os.path.join(self.base_url + f"{tile_index}.LAZ"))

@@ -64,6 +64,10 @@ def process(
     bbox: list[float] | None = None,
     geojson: str | None = None,
     preview: bool | None = False,
+    no_verify: bool | None = False,
+    verify_pdal: bool | None = False,
+    bbox_tolerance: float = 10.0,
+    strict_bbox_check: bool | None = False,
 ) -> None:
     ahn_fetcher = Fetcher(base_url, city_name, bbox, geojson)
     fetched_files = ahn_fetcher.fetch()

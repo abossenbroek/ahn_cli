@@ -5,11 +5,9 @@ Verification module for LAZ file integrity and bounds checking.
 import logging
 import shutil
 import subprocess
-from pathlib import Path
 
 import geopandas as gpd
 import laspy
-import numpy as np
 from shapely.geometry import box
 
 
@@ -74,7 +72,7 @@ def verify_bounds(
             gdf_28992 = gdf.to_crs("EPSG:28992")
         else:
             gdf_28992 = gdf
-        
+
         # Get the unified geometry bounds
         unified_geom = gdf_28992.geometry.union_all()
         geojson_bounds = unified_geom.bounds  # (minx, miny, maxx, maxy)
@@ -88,15 +86,15 @@ def verify_bounds(
             abs(laz_bounds[2] - geojson_bounds[2]),
             abs(laz_bounds[3] - geojson_bounds[3]),
         )
-        
+
         # Check containment with tolerance
         buffered_geojson = geojson_box.buffer(tolerance)
         contained = buffered_geojson.contains(laz_box)
-        
+
         # Calculate coverage percentage
         intersection_area = laz_box.intersection(geojson_box).area
         coverage_pct = (intersection_area / geojson_box.area) * 100
-        
+
         # Log detailed information
         logging.info("Verifying output bounding box against GeoJSON input...")
         logging.info(
@@ -107,7 +105,7 @@ def verify_bounds(
             f"LAZ bbox:     [{laz_bounds[0]:.2f}, {laz_bounds[1]:.2f}, "
             f"{laz_bounds[2]:.2f}, {laz_bounds[3]:.2f}]"
         )
-        
+
         if not contained:
             logging.warning(
                 f"LAZ bounding box exceeds GeoJSON bounds by up to {max_diff:.2f}m"
@@ -123,11 +121,11 @@ def verify_bounds(
                 )
         else:
             logging.info("LAZ bounding box is fully contained within GeoJSON bounds ✓")
-        
+
         logging.info(f"Coverage: {coverage_pct:.1f}% of input area covered ✓")
-        
+
         return True
-        
+
     except Exception as e:
         logging.error(f"Bounds verification failed: {e}")
         return False
@@ -136,10 +134,10 @@ def verify_bounds(
 def verify_with_pdal(output_path: str) -> bool:
     """
     Uses PDAL to perform advanced validation on the output LAZ file.
-    
+
     Args:
         output_path: Path to the LAZ file to verify.
-        
+
     Returns:
         bool: True if PDAL validation passes, False otherwise.
     """
@@ -150,7 +148,7 @@ def verify_with_pdal(output_path: str) -> bool:
             "Install PDAL for advanced validation."
         )
         return True  # Return True for optional check
-    
+
     try:
         # Run PDAL info with --validate flag
         result = subprocess.run(
@@ -159,15 +157,15 @@ def verify_with_pdal(output_path: str) -> bool:
             text=True,
             check=True,
         )
-        
+
         # Check if output contains validation errors
         if "error" in result.stderr.lower():
             logging.error(f"PDAL validation errors:\n{result.stderr}")
             return False
-            
+
         logging.info("PDAL verification successful ✓")
         return True
-        
+
     except subprocess.CalledProcessError as e:
         logging.error(f"PDAL verification failed with exit code {e.returncode}")
         if e.stderr:

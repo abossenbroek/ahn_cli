@@ -9,6 +9,11 @@ from tqdm import tqdm
 from ahn_cli.fetcher.request import Fetcher
 from ahn_cli.manipulator.preview import previewer
 from ahn_cli.manipulator.ptc_handler import PntCHandler
+from ahn_cli.manipulator.verifier import (
+    verify_bounds,
+    verify_laz_integrity,
+    verify_with_pdal,
+)
 
 
 def _validate_headers(files: list[str]) -> laspy.LasHeader:
@@ -135,6 +140,25 @@ def process(
 
     for file in files:
         os.remove(file)
+
+    # Perform verification if enabled
+    if not no_verify:
+        logging.info("Verifying output file...")
+
+        # Basic LAZ integrity check
+        if not verify_laz_integrity(output_path):
+            raise RuntimeError("Output LAZ file validation failed")
+
+        # Bounds verification for GeoJSON input
+        if geojson and not verify_bounds(output_path, geojson, bbox_tolerance):
+            if strict_bbox_check:
+                raise RuntimeError(
+                    f"Bounding box verification failed - difference exceeds {bbox_tolerance}m tolerance"
+                )
+
+        # Optional PDAL verification
+        if verify_pdal and not verify_with_pdal(output_path):
+            logging.warning("PDAL verification failed but continuing")
 
     if preview:
         print("Previewing output file...")

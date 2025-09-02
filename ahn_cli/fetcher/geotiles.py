@@ -41,3 +41,30 @@ def ahn_subunit_indices_of_bbox(bbox: list[float]) -> list[str]:
     tile_indices: list[str] = filtered_df["AHN_subuni"].tolist()  # noqa
 
     return tile_indices
+
+
+def ahn_subunit_indices_of_geojson(geojson_path: str) -> list[str]:
+    """Return a list of AHN tile indices that intersect with the GeoJSON polygon(s)."""
+    # Read the GeoJSON file
+    gdf = gpd.read_file(geojson_path)
+
+    # Transform to Dutch national grid if needed
+    if gdf.crs != "EPSG:28992":
+        gdf = gdf.to_crs("EPSG:28992")
+
+    # Get the AHN tiles (they are in EPSG:4326)
+    tiles_gdf = geotiles()
+
+    # Transform tiles to EPSG:28992 to match the input geometry
+    tiles_gdf = tiles_gdf.to_crs("EPSG:28992")
+
+    # Use spatial join for efficient intersection
+    intersecting = gpd.sjoin(tiles_gdf, gdf, how="inner", predicate="intersects")
+
+    if intersecting.empty:
+        return []
+
+    # Get unique tile indices
+    tile_indices: list[str] = intersecting["AHN_subuni"].unique().tolist()
+
+    return tile_indices

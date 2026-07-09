@@ -16,41 +16,72 @@ from ahn_cli.manipulator.verifier import (
 )
 
 
-def _validate_headers(files: list[str]) -> laspy.LasHeader:
+def _harmonize_headers(files: list[str]) -> laspy.LasHeader:
     """
-    Validates that all LAZ files have compatible headers and returns a
-    master header with the combined spatial extent.
+    Pre-scans all LAZ files and builds a master header whose extra
+    dimensions are the superset of every input file's extra dimensions,
+    upgrading the point format/version to support them if needed.
+
+    This allows merging AHN tiles that specify different extra byte
+    layouts, instead of failing with "Incompatible point formats found."
 
     Raises:
         ValueError: If no files provided
-        RuntimeError: If files have incompatible point formats
     """
     if not files:
         raise ValueError("No files to process.")
 
-    # Use the first file's header as the reference
-    with laspy.open(files[0]) as f:
-        master_header = f.header
+    base_header: laspy.LasHeader | None = None
+    harmonized_extra_dims: dict[str, laspy.point.dims.DimensionInfo] = {}
 
-    ref_point_format = master_header.point_format
-    ref_dims = sorted(ref_point_format.extra_dimension_names)
-
-    for file_path in files[1:]:
+    for file_path in files:
         with laspy.open(file_path) as f:
-            current_header = f.header
-            current_point_format = current_header.point_format
-            current_dims = sorted(current_point_format.extra_dimension_names)
+            header = f.header
+            if base_header is None:
+                base_header = header
+            else:
+                base_header.maxs = np.maximum(base_header.maxs, header.maxs)
+                base_header.mins = np.minimum(base_header.mins, header.mins)
 
-            if ref_point_format.id != current_point_format.id or ref_dims != current_dims:
-                raise RuntimeError(
-                    f"Incompatible point formats found.\n"
-                    f"File '{files[0]}' has format {ref_point_format.id} with dims {ref_dims}.\n"
-                    f"File '{file_path}' has format {current_point_format.id} with dims {current_dims}."
-                )
+            for eb_struct in header.point_format.extra_dimensions:
+                name = eb_struct.name
+                if name not in harmonized_extra_dims:
+                    harmonized_extra_dims[name] = eb_struct
+                elif (
+                    harmonized_extra_dims[name].dtype != eb_struct.dtype
+                    or harmonized_extra_dims[name].num_elements
+                    != eb_struct.num_elements
+                ):
+                    logging.warning(
+                        f"Conflicting extra dimension '{name}': "
+                        f"existing type={harmonized_extra_dims[name].dtype}, "
+                        f"new type={eb_struct.dtype}. "
+                        "Using first encountered definition."
+                    )
 
-            # Update master header bounds to enclose all files
-            master_header.maxs = np.maximum(master_header.maxs, current_header.maxs)
-            master_header.mins = np.minimum(master_header.mins, current_header.mins)
+    assert base_header is not None
+    master_header = base_header
+
+    if harmonized_extra_dims and master_header.point_format.id < 6:
+        logging.info(
+            f"Upgrading point format from {master_header.point_format.id} to 6 "
+            "and LAS version to 1.4 to support merged extra dimensions."
+        )
+        upgraded_header = laspy.LasHeader(point_format=6, version="1.4")
+        upgraded_header.offsets = master_header.offsets
+        upgraded_header.scales = master_header.scales
+        upgraded_header.maxs = master_header.maxs
+        upgraded_header.mins = master_header.mins
+        master_header = upgraded_header
+
+    for dim_info in harmonized_extra_dims.values():
+        master_header.add_extra_dim(
+            laspy.ExtraBytesParams(
+                name=dim_info.name,
+                type=dim_info.dtype,
+                description=dim_info.description,
+            )
+        )
 
     return master_header
 
@@ -82,15 +113,8 @@ def process(
         logging.info("No files found for the given area.")
         return
 
-    # Perform pre-flight header validation
-    try:
-        global_header = _validate_headers(files)
-    except (RuntimeError, ValueError) as e:
-        logging.error(f"Header validation failed: {e}")
-        # Clean up downloaded files before exiting
-        for file in files:
-            os.remove(file)
-        return
+    # Pre-scan files and harmonize extra dimensions across tiles
+    global_header = _harmonize_headers(files)
 
     for i, file in enumerate(
         tqdm(files, desc="Processing files", unit="file", total=len(files))
@@ -123,20 +147,31 @@ def process(
             if decimate is not None:
                 p_handler.decimate(decimate)
 
+            in_points = p_handler.points().points
+            if len(in_points) == 0:
+                continue
+
+            # Build points matching the harmonized format, copying over
+            # only the dimensions present in both the source and the
+            # merged output (handles files with differing extra bytes).
+            out_points = laspy.ScaleAwarePointRecord.zeros(
+                len(in_points), header=global_header
+            )
+            for dim_name in in_points.point_format.dimension_names:
+                if dim_name in out_points.point_format.dimension_names:
+                    out_points[dim_name] = in_points[dim_name]
+
+            out_points.x = out_points.x - offset[0]
+            out_points.y = out_points.y - offset[1]
+            out_points.z = out_points.z - offset[2]
+
             with laspy.open(
                 output_path, mode="w" if i == 0 else "a", header=global_header
             ) as writer:
-                points = p_handler.points().points
-                if len(points) == 0:
-                    continue
-                points.x = points.x - offset[0]
-                points.y = points.y - offset[1]
-                points.z = points.z - offset[2]
-
                 if isinstance(writer, laspy.LasWriter):
-                    writer.write_points(points)
+                    writer.write_points(out_points)
                 if isinstance(writer, LasAppender):
-                    writer.append_points(points)
+                    writer.append_points(out_points)
 
     for file in files:
         os.remove(file)
@@ -150,7 +185,9 @@ def process(
             raise RuntimeError("Output LAZ file validation failed")
 
         # Bounds verification for GeoJSON input
-        if geojson and not verify_bounds(output_path, geojson, bbox_tolerance):
+        if geojson and not verify_bounds(
+            output_path, geojson, bbox_tolerance
+        ):
             if strict_bbox_check:
                 raise RuntimeError(
                     f"Bounding box verification failed - difference exceeds {bbox_tolerance}m tolerance"

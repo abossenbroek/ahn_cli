@@ -166,3 +166,11 @@ cython_debug/
 /out
 .polyscope.ini
 imgui.ini
+
+# Point cloud / mesh data files (large binary outputs, not source)
+*.laz
+*.las
+*.copc.laz
+*.ply
+*.mlp
+!tests/testdata/**

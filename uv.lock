@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.10, <3.13"
 resolution-markers = [
     "python_full_version >= '3.12'",
@@ -18,7 +18,7 @@ wheels = [
 
 [[package]]
 name = "ahn-cli"
-version = "0.2.1"
+version = "0.3.5"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
@@ -30,6 +30,11 @@ dependencies = [
     { name = "shapely" },
     { name = "tqdm" },
     { name = "typing-extensions" },
+]
+
+[package.optional-dependencies]
+pdal = [
+    { name = "pdal" },
 ]
 
 [package.dev-dependencies]
@@ -44,6 +49,7 @@ requires-dist = [
     { name = "click", specifier = ">=8.2.0" },
     { name = "geopandas", specifier = ">=1.1.0" },
     { name = "laspy", extras = ["lazrs"], specifier = ">=2.6.0" },
+    { name = "pdal", marker = "extra == 'pdal'", specifier = ">=2.5.0" },
     { name = "polyscope", specifier = ">=2.4.0" },
     { name = "rasterio", specifier = ">=1.4.0" },
     { name = "requests", specifier = ">=2.32.0" },
@@ -51,6 +57,7 @@ requires-dist = [
     { name = "tqdm", specifier = ">=4.67.0" },
     { name = "typing-extensions", specifier = ">=4.14.1" },
 ]
+provides-extras = ["pdal"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -392,6 +399,16 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/50/b9/6e2d2c6728ed29fb3d4d4d302504fb66f1a543e37eb2e43f352a86365cdf/pandas-2.3.1-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:ca7ed14832bce68baef331f4d7f294411bed8efd032f8109d690df45e00c4679", size = 13440571, upload-time = "2025-07-07T19:19:06.82Z" },
     { url = "https://files.pythonhosted.org/packages/80/a5/3a92893e7399a691bad7664d977cb5e7c81cf666c81f89ea76ba2bff483d/pandas-2.3.1-cp312-cp312-win_amd64.whl", hash = "sha256:ac942bfd0aca577bef61f2bc8da8147c4ef6879965ef883d8e8d5d2dc3e744b8", size = 10987601, upload-time = "2025-07-07T19:19:09.589Z" },
 ]
+
+[[package]]
+name = "pdal"
+version = "3.4.5"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.3.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/44/fa/4afb0feda08a677c4ad46827b85c064fa10b3466a644016007b5931cf971/pdal-3.4.5.tar.gz", hash = "sha256:6e42ec8c368a9d1c14abf0eff13a5b9d28b6de08ef7c2ca2b4900a15186d46f4", size = 89528, upload-time = "2024-06-18T15:07:54.379Z" }
 
 [[package]]
 name = "pluggy"

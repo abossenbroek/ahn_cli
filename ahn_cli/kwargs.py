@@ -11,4 +11,9 @@ class CLIArgs(TypedDict):
     epsg: int | None
     decimate: int | None
     bbox: list[float] | None
+    geojson: str | None
     preview: bool
+    no_verify: bool
+    verify_pdal: bool
+    bbox_tolerance: float
+    strict_bbox_check: bool

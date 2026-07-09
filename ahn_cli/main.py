@@ -90,10 +90,37 @@ Options:
     help="Specify a bounding box to clip the point cloud data. It should be comma-separated list with minx,miny,maxx,maxy",
 )
 @click.option(
+    "-g",
+    "--geojson",
+    type=str,
+    help="GeoJSON file containing polygon(s) to define download area and clip boundary",
+)
+@click.option(
     "-p",
     "--preview",
     is_flag=True,
     help="Preview the point cloud data in a 3D viewer.",
+)
+@click.option(
+    "--no-verify",
+    is_flag=True,
+    help="Disable all verification checks (default: verification enabled)",
+)
+@click.option(
+    "--verify-pdal",
+    is_flag=True,
+    help="Enable advanced PDAL verification (requires PDAL to be installed)",
+)
+@click.option(
+    "--bbox-tolerance",
+    type=float,
+    default=10.0,
+    help="Maximum allowed difference in meters between LAZ and GeoJSON bounds (default: 10.0)",
+)
+@click.option(
+    "--strict-bbox-check",
+    is_flag=True,
+    help="Fail if bounding box mismatch exceeds tolerance (default: warn only)",
 )
 def main(**kwargs: Any) -> None:
     cfg = config.Config()
@@ -119,7 +146,12 @@ def main(**kwargs: Any) -> None:
         if params.get("bbox", "")
         else None
     )
+    geojson = params.get("geojson")
     preview = params.get("preview")
+    no_verify = params.get("no_verify")
+    verify_pdal = params.get("verify_pdal")
+    bbox_tolerance = params.get("bbox_tolerance", 10.0)
+    strict_bbox_check = params.get("strict_bbox_check")
     if validate_all(
         cfg,
         output,
@@ -131,6 +163,7 @@ def main(**kwargs: Any) -> None:
         epsg,
         decimate,
         bbox,
+        geojson,
     ):
         process(
             cfg.geotiles_base_url,
@@ -144,7 +177,12 @@ def main(**kwargs: Any) -> None:
             epsg,
             decimate,
             bbox,
+            geojson,
             preview,
+            no_verify,
+            verify_pdal,
+            bbox_tolerance,
+            strict_bbox_check,
         )
 
 

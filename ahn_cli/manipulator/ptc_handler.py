@@ -225,26 +225,33 @@ class PntCHandler:
 
     def _arbitrary_polygon(self, filepath: str) -> Polygon:
         """
-        Reads a file containing city data, extracts the first polygon geometry,
-        transforms it to a specific coordinate reference system (CRS), and returns
-        the well-known text (WKT) representation of the polygon.
+        Reads a file containing polygon data, combines all geometries into a single
+        polygon (handles MultiPolygon), transforms it to the Dutch national grid
+        coordinate reference system (EPSG:28992), and returns the polygon.
 
         Args:
-            filepath (str): The path to the file containing city data.
+            filepath (str): The path to the file containing polygon data.
 
         Returns:
-            str: The well-known text (WKT) representation of the polygon.
+            Polygon: The combined polygon geometry in EPSG:28992.
 
         Raises:
             ValueError: If the polygon fails to be reprojected.
         """
         gdf = gpd.read_file(filepath)
-        polygon = gdf[gdf.geometry.type == "Polygon"].iloc[0].geometry
+
+        # Union all geometries to handle multiple polygons/features
+        unified_geometry = gdf.geometry.union_all()
+
+        # Handle CRS transformation
         crs = gdf.crs
         if self.epsg is not None:
-            polygon = transform_polygon(polygon, self.epsg, "EPSG:28992")
+            polygon = transform_polygon(unified_geometry, self.epsg, "EPSG:28992")
         elif crs is not None:
-            polygon = transform_polygon(polygon, crs, "EPSG:28992")
+            polygon = transform_polygon(unified_geometry, crs, "EPSG:28992")
+        else:
+            polygon = unified_geometry
+
         if polygon is None:
             raise ValueError("Failed to reproject polygon")
         return polygon

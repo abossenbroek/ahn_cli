@@ -8,6 +8,17 @@
 
 AHN CLI is a command-line interface tool designed for the effortless downloading of AHN (Actueel Hoogtebestand Nederland) point cloud data for specific cities and classification classes.
 
+## Features
+
+- Download point cloud data for specific Dutch cities
+- Filter by classification classes (ground, buildings, water, etc.)
+- Clip to city boundaries, bounding boxes, or custom GeoJSON polygons
+- Decimate point clouds for faster processing
+- Preview point clouds in 3D viewer
+- **NEW**: GeoJSON polygon support for custom area selection
+- **NEW**: LAZ file verification with configurable tolerance
+- **NEW**: Optional PDAL integration for advanced validation
+
 ## Installation
 
 Install AHN CLI using pip:
@@ -43,7 +54,12 @@ Options:
  -e, --epsg <epsg>             Set the EPSG code for user's clip file.
  -b, --bbox <bbox>             Specify a bounding box to clip the point cloud data. It should be comma-separated list with minx,miny,maxx,maxy
                                centered on the city polygon.
+ -g, --geojson <file>          Specify a GeoJSON file containing polygon(s) to clip the point cloud data.
  -p, --preview                 Preview the point cloud data in a 3D viewer.
+ --no-verify                   Skip LAZ file verification after processing.
+ --verify-pdal                 Use PDAL for additional LAZ file verification (requires PDAL).
+ --bbox-tolerance <meters>     Maximum allowed difference in meters between LAZ bounds and input GeoJSON (default: 10.0).
+ --strict-bbox-check           Fail if bounding box verification exceeds tolerance.
  -h, --help [category]         Show help information. Optionally specify a category for
                                detailed help on a specific command.
  -v, --version                 Display the version number of the AHN CLI and exit.
@@ -80,6 +96,27 @@ ahn_cli -c delft -o ./delft.laz -i 1,2 -d 2
 If you specify a `b`, it will clip the point cloud data with specified bounding box.
 ```
 ahn_cli -o ./delft.laz -i 1,2 -b 194198.0,443461.0,194594.0,443694.0
+```
+
+**Download Point Cloud Data for Custom GeoJSON Polygon:**
+
+Use a GeoJSON file containing one or more polygons to define a custom area of interest:
+```
+ahn_cli -g my_area.geojson -o ./custom_area.laz
+```
+
+**Download with GeoJSON and Enable Verification:**
+
+Enable LAZ file verification with configurable tolerance for bounding box checks:
+```
+ahn_cli -g my_area.geojson -o ./verified_area.laz --bbox-tolerance 15.0
+```
+
+**Download with Strict Verification:**
+
+Use strict verification that fails if the output bounding box doesn't match the input GeoJSON within tolerance:
+```
+ahn_cli -g my_area.geojson -o ./strict_area.laz --strict-bbox-check
 ```
 
 

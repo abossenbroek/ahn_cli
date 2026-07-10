@@ -347,6 +347,33 @@
   queued={WP8<-WP6} blocked={WP7<-WP6, WP12<-WP7, WP14<-all}
   loop=notification-driven-cascade pending-user={}
 
+### 2026-07-10 — WP6 MERGED #11 (after 2 bounces); WP11 delivered; WP7+WP8 dispatched
+- WP6 PDOK ATOM + fetch actuation: PR #11 → squash 4cdb414. The largest PR;
+  bounced TWICE by the gate (split A/B verdicts both times): (1) rebase needed
+  onto WP9/10/13; (2) B caught feed/download errors escaping the CLI error funnel
+  → tracebacks on the primary path. Refixed (wrap select/resolve/download →
+  AcquisitionError; docstring accuracy for the bbox-superset tile-select). Final
+  re-gate 2xPASS: funnel verified (bad feed + 503 → clean CLI error, over-catch
+  precise), max-args=6/defusedxml/.gitattributes/city-geojson-deferral all judged
+  acceptable, 100% branch, cache idempotent. 10 of 14 merged. Task #7 done.
+- WP11 graded GPU decimation: PR #12 delivered (729de90), rebasing onto WP6 now.
+  CPU/numpy reference backend (default) + injectable MLX accelerator; mlx =
+  platform-conditional optional extra (never on Linux CI); MLX path 100%-covered
+  on Linux via injected numpy-backed fake mlx.core; real MLX-vs-CPU equivalence
+  verified locally on Metal (voxel byte-exact grades 0–9; Poisson min-distance
+  holds). >>> DEVIATION FOR USER REVIEW: used plain mlx.core ops, NOT
+  mx.fast.metal_kernel, so the CORRECTNESS/equivalence/determinism DoD is met but
+  the confirmed PERF targets (50–100M pts/s voxel; Poisson perf) are NOT — accepted
+  as a documented fast-follow because perf is not CI-gate-able and metal_kernel
+  would complicate the 100%-Linux-coverage design. Also raises max-args 6→8 for the
+  Click prep entrypoint. <<<
+- WP7 (DSM COG windowed fetch+clip) + WP8 (ortho Beeldmateriaal mosaic, CC-BY)
+  dispatched on the post-WP6 base (plug into WP6's source registry + AcquisitionError funnel).
+- STATE: merged={WP0,WP1,WP2,WP3,WP4,WP5,WP6,WP9,WP10,WP13} in-flight={WP7, WP8}
+  in-gate={WP11:rebasing@729de90} blocked={WP12<-WP7, WP14<-all}
+  loop=notification-driven-cascade
+  pending-user={WP11 perf-target gap (metal_kernel fast-follow) — accepted, flag for review}
+
 ## [0.2.1] - 2024-05-04
 ### Changed
 * feat: Add validation for exclusive arguments

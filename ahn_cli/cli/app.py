@@ -22,11 +22,20 @@ from ahn_cli.fetch.acquisition import (
     acquire,
     create_site_layout,
 )
+from ahn_cli.fetch.generation import AUTO_CHOICE, default_registry
 from ahn_cli.prep.transform import (
     PrepRequest,
     TransformNotWiredError,
     prepare,
 )
+
+_GENERATION_REGISTRY = default_registry()
+"""The default AHN generation registry backing the ``--ahn`` choice.
+
+Built once at import so the ``fetch`` command's ``--ahn`` token list is derived
+from the registry (never a hardcoded switch); adding a generation to the
+registry extends the CLI choices with no edit here.
+"""
 
 
 def _select_area(
@@ -129,21 +138,37 @@ def cli() -> None:
     default=None,
     help="Acquire the area of the polygon(s) in a GeoJSON file.",
 )
+@click.option(
+    "--ahn",
+    "ahn",
+    type=click.Choice(_GENERATION_REGISTRY.tokens()),
+    default=AUTO_CHOICE,
+    show_default=True,
+    help="AHN generation to fetch; 'auto' picks the newest available.",
+)
 def fetch(
     out: Path,
     city: str | None,
     bbox: str | None,
     geojson: str | None,
+    ahn: str,
 ) -> None:
     """Acquire raw source tiles for one site (acquisition stage only).
 
-    Validates that exactly one area selector is given, creates the
-    ``<out>/{ahn,ortho,viirs}/`` layout, and dispatches to the fetch context.
-    Downloading itself is not wired in WP2, so this reports the un-wired seam.
+    Validates that exactly one area selector is given, resolves the requested
+    AHN generation, creates the ``<out>/{ahn,ortho,viirs}/`` layout, and
+    dispatches to the fetch context. Downloading (and the newest-available
+    ``auto`` probe) is not wired until WP6, so this reports the un-wired seam.
     """
     selector, area = _select_area(city, bbox, geojson)
+    generation = _GENERATION_REGISTRY.resolve_token(ahn)
     create_site_layout(out)
-    request = AcquisitionRequest(site_dir=out, selector=selector, area=area)
+    request = AcquisitionRequest(
+        site_dir=out,
+        selector=selector,
+        area=area,
+        generation=generation,
+    )
     try:
         acquire(request)
     except SourceNotWiredError as exc:

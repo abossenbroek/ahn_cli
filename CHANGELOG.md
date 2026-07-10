@@ -248,6 +248,31 @@
   next={merge WP3 & WP2 on 2xPASS+CI → unblock WP5..WP9 fetchers, WP10/WP11 prep, WP13}
   loop=notification-driven-cascade pending-user={}
 
+### 2026-07-10 — WP2 + WP3 MERGED — Wave 0 complete
+- WP2 CLI restructure: PR #6 → squash 06baa89. 2 adversarial Opus reviews PASS
+  (verb split fetch=acquisition/prep=transforms per TODO.md; -e collision gone;
+  mutual-exclusivity native, no deprecated import; reuse plumbing preserved; TDD
+  red 456a405; 100% branch; entry point live). Task #3 done.
+- WP3 provenance sidecar: PR #5 → squash 1e075cf. 2 reviews PASS (byte-identical
+  determinism; round-trip; tz/content validation; scope clean via merge-base diff;
+  TDD red 1db706f; 100% branch, sidecar.py 147/46). -0.0 canonicalization edge
+  judged non-blocking (pure fn, unreachable from EPSG:28992 data, lossless). Task #4 done.
+- BASE-RED GUARD: integrated `main` @ 1e075cf runs 155 tests, 100% line+branch
+  (422 stmts / 86 branch / 0 miss) across all 6 packages — Wave 0 coherent.
+- Wave 0 DONE: domain, cli, fetch, prep, cache, provenance all live + gated.
+- WAVE 1 STRATEGY: DAG unblocks 7 WPs but they share hot files (cli/app.py all;
+  fetch/acquisition.py all fetchers; prep/transform.py all prep). To keep merges
+  clean, run 2 disjoint lanes and widen as foundations land:
+  · FETCH lane: WP5 first (builds generation/source REGISTRY = extensibility seam)
+    → then WP6/WP8/WP9 plug in.
+  · PREP lane: WP10 first → then WP11/WP13 (share prep/transform.py).
+  Wave-1a dispatched: WP5 (#6) ∥ WP10 (#11) — disjoint surfaces, parallel-safe.
+- STATE: merged={WP0,WP1,WP2,WP3,WP4} base=green@1e075cf
+  in-flight={WP5(fetch-registry), WP10(prep-dedup)}
+  blocked-until-WP5={WP6,WP8,WP9} blocked-until-WP10={WP11,WP13}
+  still-blocked={WP7<-WP6, WP12<-WP7, WP14<-all} loop=notification-driven-cascade
+  pending-user={}
+
 ## [0.2.1] - 2024-05-04
 ### Changed
 * feat: Add validation for exclusive arguments

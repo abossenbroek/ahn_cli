@@ -47,6 +47,20 @@ from ahn_cli.prep.transform import (
     PrepRequest,
     prepare,
 )
+from ahn_cli.reconcile.method import (
+    IdwInterp,
+    InterpMethod,
+    KrigingInterp,
+    LinearInterp,
+    Variogram,
+    VariogramModel,
+)
+from ahn_cli.reconcile.reconcile import (
+    ReconcileError,
+    ReconcileRequest,
+    reconcile,
+)
+from ahn_cli.reconcile.writers import OutputFormat
 
 _GENERATION_REGISTRY = default_registry()
 """The default AHN generation registry backing the ``--ahn`` choice.
@@ -422,4 +436,161 @@ def export_positions_command(data: Path) -> None:
     click.echo(
         f"Wrote {data / 'positions.exr'} "
         f"({stats.width}x{stats.height}, {stats.nodata_pixels} void px)"
+    )
+
+
+_IDW_DEFAULT = "2.0,12"
+"""Default ``--idw`` spec: ``power,k``."""
+
+_KRIGING_DEFAULT = "spherical,0.0,1.0,50.0,16"
+"""Default ``--kriging`` spec: ``model,nugget,sill,range,k``."""
+
+_IDW_FIELDS = 2
+"""An ``--idw`` spec has exactly ``power,k``."""
+
+_KRIGING_FIELDS = 5
+"""A ``--kriging`` spec has exactly ``model,nugget,sill,range,k``."""
+
+
+def _parse_idw(spec: str) -> IdwInterp:
+    """Parse an ``--idw`` ``power,k`` spec into a validated request.
+
+    Failure modes:
+        - :class:`click.BadParameter` if the spec is not two fields or a value
+          is out of range.
+    """
+    parts = spec.split(",")
+    if len(parts) != _IDW_FIELDS:
+        msg = f"--idw must be 'power,k'; got {spec!r}."
+        raise click.BadParameter(msg)
+    try:
+        return IdwInterp(power=float(parts[0]), k=int(parts[1]))
+    except ValueError as exc:
+        raise click.BadParameter(str(exc)) from exc
+
+
+def _parse_kriging(spec: str) -> KrigingInterp:
+    """Parse a ``--kriging`` ``model,nugget,sill,range,k`` spec into a request.
+
+    Failure modes:
+        - :class:`click.BadParameter` if the spec is not five fields, names an
+          unknown variogram model, or a value is out of range.
+    """
+    parts = spec.split(",")
+    if len(parts) != _KRIGING_FIELDS:
+        msg = f"--kriging must be 'model,nugget,sill,range,k'; got {spec!r}."
+        raise click.BadParameter(msg)
+    model, nugget, sill, vrange, neighbours = parts
+    try:
+        variogram = Variogram(
+            VariogramModel(model), float(nugget), float(sill), float(vrange)
+        )
+        return KrigingInterp(variogram=variogram, k=int(neighbours))
+    except ValueError as exc:
+        raise click.BadParameter(str(exc)) from exc
+
+
+def _parse_reconcile_method(
+    method: str, idw_spec: str, kriging_spec: str
+) -> InterpMethod:
+    """Build the validated interpolation request from the CLI options."""
+    if method == "linear":
+        return LinearInterp()
+    if method == "idw":
+        return _parse_idw(idw_spec)
+    return _parse_kriging(kriging_spec)
+
+
+def _parse_formats(specs: tuple[str, ...]) -> tuple[OutputFormat, ...]:
+    """Return the requested output formats, defaulting to all four when none."""
+    if not specs:
+        return tuple(OutputFormat)
+    return tuple(OutputFormat(spec) for spec in specs)
+
+
+@cli.command(name="reconcile")
+@click.option(
+    "--ortho",
+    "ortho",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Orthophoto GeoTIFF defining the target (e.g. 8 cm) grid.",
+)
+@click.option(
+    "--cloud",
+    "cloud",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="AHN point-cloud LAZ whose elevation is interpolated onto the grid.",
+)
+@click.option(
+    "--out",
+    "out",
+    required=True,
+    type=click.Path(file_okay=False, path_type=Path),
+    help="Directory to write reconciled.<ext> output(s) into.",
+)
+@click.option(
+    "--method",
+    "method",
+    type=click.Choice(["linear", "idw", "kriging"]),
+    default="idw",
+    show_default=True,
+    help="Interpolation method for the elevation.",
+)
+@click.option(
+    "--idw",
+    "idw",
+    default=_IDW_DEFAULT,
+    show_default=True,
+    help="IDW parameters as 'power,k' (used when --method idw).",
+)
+@click.option(
+    "--kriging",
+    "kriging",
+    default=_KRIGING_DEFAULT,
+    show_default=True,
+    help=(
+        "Kriging parameters as 'model,nugget,sill,range,k' "
+        "(used when --method kriging)."
+    ),
+)
+@click.option(
+    "--format",
+    "formats",
+    type=click.Choice([fmt.value for fmt in OutputFormat]),
+    multiple=True,
+    help="Output format(s); repeatable. Default: all of laz, ply, pt, exr.",
+)
+def reconcile_command(
+    ortho: Path,
+    cloud: Path,
+    out: Path,
+    method: str,
+    idw: str,
+    kriging: str,
+    formats: tuple[str, ...],
+) -> None:
+    """Interpolate a point cloud onto an ortho grid, emit a coloured cloud.
+
+    Estimates an elevation at every ortho pixel centre from the AHN cloud
+    (linear, IDW, or ordinary kriging), colours each pixel from the ortho, and
+    writes the reconciled cloud as ``reconciled.<ext>`` for every requested
+    format (laz/ply/pt/exr). The output is byte-deterministic.
+    """
+    interp_method = _parse_reconcile_method(method, idw, kriging)
+    request = ReconcileRequest(
+        ortho_path=ortho,
+        cloud_path=cloud,
+        output_dir=out,
+        method=interp_method,
+        formats=_parse_formats(formats),
+    )
+    try:
+        stats = reconcile(request)
+    except ReconcileError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(
+        f"Reconciled {stats.width}x{stats.height} -> "
+        f"{stats.valid_points} points; wrote {len(stats.outputs)} file(s)."
     )

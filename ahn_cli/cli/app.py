@@ -24,6 +24,7 @@ from ahn_cli.fetch.acquisition import (
 )
 from ahn_cli.fetch.dsm import fetch_dsm
 from ahn_cli.fetch.generation import AUTO_CHOICE, default_registry
+from ahn_cli.fetch.ortho import acquire_ortho
 from ahn_cli.fetch.source import (
     SourceKind,
     resolve_source_token,
@@ -224,6 +225,12 @@ def cli() -> None:
     is_flag=True,
     help="Also fetch the DSM raster, windowed-clipped to <out>/dsm.tif.",
 )
+@click.option(
+    "--ortho",
+    "ortho",
+    is_flag=True,
+    help="Also fetch the Beeldmateriaal orthophoto (CC-BY) for the AOI.",
+)
 def fetch(
     out: Path,
     city: str | None,
@@ -233,6 +240,7 @@ def fetch(
     source: str,
     *,
     dsm: bool,
+    ortho: bool,
 ) -> None:
     """Acquire raw source tiles for one site (acquisition stage only).
 
@@ -241,7 +249,8 @@ def fetch(
     ``<out>/{ahn,ortho,viirs}/`` layout, and downloads the covering sheets
     (through the content cache) with a provenance sidecar per sheet. With
     ``--dsm`` it additionally windowed-reads the DSM COG and clips it to
-    ``<out>/dsm.tif`` with its own provenance sidecar.
+    ``<out>/dsm.tif`` with its own provenance sidecar; with ``--ortho`` it also
+    mosaics the Beeldmateriaal orthophoto to ``<out>/ortho/ortho.tif``.
     """
     selector, area = _select_area(city, bbox, geojson)
     generation = _GENERATION_REGISTRY.resolve_token(ahn)
@@ -258,6 +267,8 @@ def fetch(
         acquire(request)
         if dsm:
             fetch_dsm(request)
+        if ortho:
+            acquire_ortho(request)
     except AcquisitionError as exc:
         raise click.ClickException(str(exc)) from exc
 

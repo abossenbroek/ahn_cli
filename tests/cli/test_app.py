@@ -113,6 +113,16 @@ class _AcquireSpy:
         return ()
 
 
+class _OrthoSpy:
+    """Records every request the CLI dispatched to acquire_ortho()."""
+
+    def __init__(self) -> None:
+        self.requests: list[AcquisitionRequest] = []
+
+    def __call__(self, request: AcquisitionRequest) -> None:
+        self.requests.append(request)
+
+
 def test_fetch_bbox_dispatches_to_acquire(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -198,6 +208,44 @@ def test_fetch_dsm_error_is_a_click_error(
 
     assert result.exit_code == 1
     assert "no DSM sheet" in result.output
+
+
+def test_fetch_ortho_flag_dispatches_to_acquire_ortho(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The --ortho flag also dispatches the request to acquire_ortho."""
+    site = tmp_path / "orthosite"
+    acquire_spy = _AcquireSpy()
+    ortho_spy = _OrthoSpy()
+    monkeypatch.setattr(app, "acquire", acquire_spy)
+    monkeypatch.setattr(app, "acquire_ortho", ortho_spy)
+
+    result = CliRunner().invoke(
+        cli,
+        ["fetch", "--out", str(site), "--bbox", "0,0,1,1", "--ortho"],
+    )
+
+    assert result.exit_code == 0
+    assert acquire_spy.request is not None
+    assert len(ortho_spy.requests) == 1
+    assert ortho_spy.requests[0].selector.value == "bbox"
+
+
+def test_fetch_without_ortho_flag_skips_acquire_ortho(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without --ortho, the orthophoto fetch is not invoked."""
+    ortho_spy = _OrthoSpy()
+    monkeypatch.setattr(app, "acquire", _AcquireSpy())
+    monkeypatch.setattr(app, "acquire_ortho", ortho_spy)
+
+    result = CliRunner().invoke(
+        cli,
+        ["fetch", "--out", str(tmp_path / "s"), "--bbox", "0,0,1,1"],
+    )
+
+    assert result.exit_code == 0
+    assert ortho_spy.requests == []
 
 
 def test_fetch_source_flag_selects_geotiles(

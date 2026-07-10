@@ -431,6 +431,18 @@
   pending-user={WP11 perf metal_kernel fast-follow; WP8 ortho 2023=8cm-not-7.5cm +
   unverified "D20" id — both flagged, using researched values}
 
+### 2026-07-10 — Resume after session-limit reset
+- Coordinator resumed the autonomous loop. Dispatched the two remaining pre-WP14
+  packages in parallel on disjoint surfaces: WP8 (fetch lane) — eng-wp8 resumed to
+  rebase PR #14 onto origin/main (6ee5da6), converging its `resolve_aoi` onto the
+  merged `aoi_bbox` helper, re-verify py3.10, force-push → gate. WP12 (prep lane) —
+  eng-wp12 dispatched fresh to build ahn_cli/prep/positions.py (dsm.tif → byte-
+  deterministic float32 3-channel positions.exr; determinism via hand-written
+  uncompressed EXR preferred, mirroring WP13).
+- STATE: merged={WP0-7,WP9,WP10,WP11,WP13}=12/14 in-flight={WP8 rebase; WP12 impl}
+  next={gate+merge WP8,WP12 → WP14 last (integration + wire prep.prepare())}
+  gate=2-adversarial-reviews+green-CI merge-authority=coordinator(auto)
+
 ## [0.2.1] - 2024-05-04
 ### Changed
 * feat: Add validation for exclusive arguments

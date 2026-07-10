@@ -91,6 +91,23 @@ ahn_cli -c delft -o ./delft.laz -i 1,2 -ncc
 ahn_cli -c delft -o ./delft.laz -i 1,2 -d 2
 ```
 
+**Graded thinning (voxel-grid or Poisson-disk) with the `prep` verb:**
+
+In addition to the legacy nth-point `-d/--decimate` step (unchanged), the `prep`
+verb offers two spatially-aware thinning methods. Both run on a pure-numpy
+reference backend by default and transparently use the Apple-silicon MLX GPU
+accelerator when it is installed (`uv sync --extra mlx`, arm64 macOS only); the
+CPU and GPU backends produce identical voxel output.
+
+```
+# Voxel-grid thinning, graded 0-9 (0 keeps all points; higher is coarser):
+ahn_cli prep --data data/delft --thin-method voxel --thin-grade 3
+
+# Poisson-disk thinning with a 1.5 m minimum spacing (deterministic; the
+# --thin-seed default is 0):
+ahn_cli prep --data data/delft --thin-method poisson --thin-radius 1.5 --thin-seed 0
+```
+
 **Specify a Bounding box for clipping:**
 
 If you specify a `b`, it will clip the point cloud data with specified bounding box.

@@ -273,6 +273,28 @@
   still-blocked={WP7<-WP6, WP12<-WP7, WP14<-all} loop=notification-driven-cascade
   pending-user={}
 
+### 2026-07-10 — WP5 MERGED #7; WP10 bounced (CI); fetch lane fans out
+- WP5 AHN generation selection: PR #7 → squash 9e08ab9. 2 adversarial Opus
+  reviews PASS. Both scrutinized the "vacuous registry?" risk and confirmed the
+  registry/select_source/auto-newest-first are GENUINE + meaningfully tested;
+  extensibility test authentic (registers Generation(6), zero switch edits);
+  actuation deferral to WP6 is HONEST (typed SourceNotWiredError/CoverageProbe-
+  NotWiredError, no fabricated checksums/URLs); choice list derived from registry.
+  100% branch, strict clean, CI green. Task #6 done. fetch/generation.py registry live.
+- WP10 tile dedup: PR #8 BOUNCED — local make check passed but CI pyright STRICT
+  failed (18 errors: numpy ndarray[Unknown,Unknown] partially-unknown in dedup.py
+  + test_dedup.py). Root cause: stale local venv masked what a clean CI `uv sync`
+  rejects; laspy stub returned bare np.ndarray. Bounced to eng-wp10: reproduce on
+  clean venv, parameterize numpy types (npt.NDArray[...]), no gate-weakening.
+  LESSON for array-heavy WPs (WP11/WP13/fetchers): CI is authoritative; verify on
+  fresh `uv sync`; numpy needs parameterized types under pyright strict.
+- Fetch lane fan-out (plug into WP5 registry): dispatched WP6 (#7 task, PDOK ATOM
+  + wires actual actuation WP5 deferred) ∥ WP9 (#10 task, VIIRS GeoTIFF import,
+  most independent). WP8 (ortho) queued behind WP6 (acquisition.py contention).
+- STATE: merged={WP0,WP1,WP2,WP3,WP4,WP5} in-flight={WP6, WP9, WP10:refix}
+  queued={WP8<-WP6} blocked={WP7<-WP6, WP11/WP13<-WP10, WP12<-WP7, WP14<-all}
+  gate=2-adversarial-reviews+green-CI loop=notification-driven-cascade pending-user={}
+
 ## [0.2.1] - 2024-05-04
 ### Changed
 * feat: Add validation for exclusive arguments

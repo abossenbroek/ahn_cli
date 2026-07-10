@@ -1,12 +1,14 @@
 """Tests for the ``ahn_cli`` Click group and its subcommands."""
 
 from pathlib import Path
+from typing import cast
 
 import click
 from click.testing import CliRunner
 
 from ahn_cli.cli import cli
 from ahn_cli.fetch.acquisition import SITE_SUBDIRS
+from ahn_cli.fetch.generation import default_registry
 
 
 def _short_flags(command: click.Command) -> list[str]:
@@ -102,6 +104,50 @@ def test_fetch_accepts_geojson_selector(tmp_path: Path) -> None:
 
     assert result.exit_code == 1
     assert (site / SITE_SUBDIRS[0]).is_dir()
+
+
+def test_fetch_ahn_defaults_to_auto() -> None:
+    """The ``--ahn`` option defaults to auto and offers the registry tokens."""
+    ahn_option = next(
+        p for p in cli.commands["fetch"].params if p.name == "ahn"
+    )
+
+    assert ahn_option.default == "auto"
+    choice_type = cast("click.Choice[str]", ahn_option.type)
+    assert tuple(choice_type.choices) == default_registry().tokens()
+
+
+def test_fetch_accepts_an_explicit_generation(tmp_path: Path) -> None:
+    """An explicit ``--ahn ahn4`` is a valid choice that reaches the seam."""
+    site = tmp_path / "gensite"
+
+    result = CliRunner().invoke(
+        cli,
+        ["fetch", "--out", str(site), "--city", "delft", "--ahn", "ahn4"],
+    )
+
+    assert result.exit_code == 1
+    assert "wired" in result.output.lower()
+    for name in SITE_SUBDIRS:
+        assert (site / name).is_dir()
+
+
+def test_fetch_rejects_an_unknown_generation(tmp_path: Path) -> None:
+    """A generation outside the registry's tokens is a usage error."""
+    result = CliRunner().invoke(
+        cli,
+        [
+            "fetch",
+            "--out",
+            str(tmp_path / "s"),
+            "--city",
+            "delft",
+            "--ahn",
+            "ahn9",
+        ],
+    )
+
+    assert result.exit_code == 2
 
 
 def test_prep_parses_filters_then_reports_not_wired(tmp_path: Path) -> None:

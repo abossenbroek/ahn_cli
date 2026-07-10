@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from ahn_cli.domain import Generation
 from ahn_cli.fetch.acquisition import (
     SITE_SUBDIRS,
     AcquisitionRequest,
@@ -80,3 +81,31 @@ def test_acquisition_request_is_hashable_and_value_typed(
 
     assert first == second
     assert len({first, second}) == 1
+
+
+def test_acquisition_request_generation_defaults_to_none(
+    tmp_path: Path,
+) -> None:
+    """The generation is optional: it defaults to None (auto at download)."""
+    request = AcquisitionRequest(
+        site_dir=tmp_path,
+        selector=AreaSelectorKind.CITY,
+        area="delft",
+    )
+
+    assert request.generation is None
+
+
+def test_acquisition_request_carries_an_explicit_generation(
+    tmp_path: Path,
+) -> None:
+    """An explicit generation is carried and keeps the request value-typed."""
+    request = AcquisitionRequest(
+        site_dir=tmp_path,
+        selector=AreaSelectorKind.CITY,
+        area="delft",
+        generation=Generation(4),
+    )
+
+    assert request.generation == Generation(4)
+    assert len({request}) == 1

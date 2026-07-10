@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
+from ahn_cli.domain import Generation
+
 SITE_SUBDIRS: tuple[str, ...] = ("ahn", "ortho", "viirs")
 """Per-product subdirectories created under every site directory, in order."""
 
@@ -49,6 +51,11 @@ class AcquisitionRequest:
           caller guarantees exactly one was given.
         - ``area`` is that selector's raw value (a city name, a bbox string, or
           a GeoJSON path), carried verbatim for the fetchers that land later.
+        - ``generation`` is the requested AHN generation: an explicit
+          :class:`~ahn_cli.domain.Generation`, or ``None`` (the default) to
+          request automatic newest-available selection at download time. WP5
+          resolves the ``--ahn`` flag to this field; WP6 consults it when the
+          real fetcher actuates and records it in the provenance sidecar.
 
     Invariants:
         - Frozen: an immutable, hashable value object, equal by field value, so
@@ -58,6 +65,7 @@ class AcquisitionRequest:
     site_dir: Path
     selector: AreaSelectorKind
     area: str
+    generation: Generation | None = None
 
 
 def create_site_layout(site_dir: Path) -> tuple[Path, ...]:

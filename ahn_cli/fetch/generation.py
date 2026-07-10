@@ -204,7 +204,13 @@ class GenerationRegistry:
             - :class:`UnknownGenerationError` if ``token`` names no registered
               generation.
         """
-        raise NotImplementedError
+        if token == AUTO_CHOICE:
+            return None
+        for generation in self.generations():
+            if f"ahn{generation.number}" == token:
+                return generation
+        msg = f"unknown --ahn token: {token!r}."
+        raise UnknownGenerationError(msg)
 
 
 def select_source(
@@ -228,7 +234,17 @@ def select_source(
         - :class:`GenerationUnavailableError` if automatic selection finds no
           generation covering ``aoi``.
     """
-    raise NotImplementedError
+    ensure_valid_bbox(aoi)
+    if requested is not None:
+        return registry.source_for(requested)
+    for source in registry.sources():
+        if source.probe(aoi):
+            return source
+    msg = (
+        "no registered AHN generation covers the requested AOI "
+        f"{aoi}; automatic selection found none available."
+    )
+    raise GenerationUnavailableError(msg)
 
 
 def _unwired_probe(base_url: str) -> AvailabilityProbe:

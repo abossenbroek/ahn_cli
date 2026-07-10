@@ -338,6 +338,15 @@
   in-gate={WP9:refix@cbaf210} queued={WP8<-WP6} blocked={WP7<-WP6, WP12<-WP7, WP14<-all}
   loop=notification-driven-cascade pending-user={}
 
+### 2026-07-10 — WP9 MERGED #9 (after streaming-checksum refix)
+- WP9 VIIRS import: PR #9 → squash 3c38391 (head cbaf210). Re-gate after the
+  streaming-checksum fix: 2 focused re-reviews both PASS (delta = viirs.py only,
+  streamed digest byte-identical proven by two-way repro, 100% branch, no
+  regression, CI green). 9 of 14 WPs merged. Task #10 done.
+- STATE: merged={WP0,WP1,WP2,WP3,WP4,WP5,WP9,WP10,WP13} in-flight={WP6, WP11}
+  queued={WP8<-WP6} blocked={WP7<-WP6, WP12<-WP7, WP14<-all}
+  loop=notification-driven-cascade pending-user={}
+
 ## [0.2.1] - 2024-05-04
 ### Changed
 * feat: Add validation for exclusive arguments

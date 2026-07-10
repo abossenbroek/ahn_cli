@@ -467,6 +467,37 @@
   gate=2-adversarial-reviews+green-CI merge-authority=coordinator(auto)
   pending-user={WP11 perf metal_kernel fast-follow; WP8 2023=8cm-not-7.5cm + "D20"}
 
+### 2026-07-10 — WP12 MERGED (#15) — 13/14 impl (WP14 remains)
+- **WP12 — positions.exr export (#15 → squash `d7ebfc1`).** New
+  `ahn_cli/prep/positions.py` `export_positions(dsm_path, output_path)`: reads
+  `data/<site>/dsm.tif` → byte-deterministic 3-channel float32 `positions.exr`
+  (R=pixel-centre easting, G=pixel-centre northing, B=elevation). New domain value
+  object `ahn_cli/domain/grid.py` (`PixelGrid`/`GeoTransform`, pixel-centre
+  (col+0.5,row+0.5) convention). Additive `export-positions --data <site>` command.
+  Nodata elevation → keeps X/Y, Z=0.0 sentinel (documented, both branches tested).
+- Determinism approach (a): HAND-WRITTEN uncompressed scanline OpenEXR — no library
+  dependency, so no timestamp/owner/capDate ever emitted (mirrors WP13's PLY
+  discipline). Magic 0x01312f76, v2, compression=NONE, INCREASING_Y, alphabetical
+  B/G/R FLOAT channels, explicit offset table, LE FLOAT scanlines.
+- Gate: rebased onto WP8-merged main (combined app.py/test_app.py additive, zero
+  conflict); 2 independent adversarial reviewers (rev-wp12-A, rev-wp12-B) both PASS
+  on clean py3.10 — pyright 0/0, coverage 100% (positions.py 76/8, grid.py 31/4),
+  make check green, CI green 3.10/3.11/3.12, CLEAN. BOTH reviewers independently
+  validated the hand-written EXR against the REAL OpenEXR 3.4.13 library (ephemeral,
+  not a repo dep) across 5 edge geometries — valid container, correct pixel-centre
+  coords, negative-dy northing, nodata sentinel. No gate-weakening.
+- ADVISORY (non-blocking, flagged for user): positions are ABSOLUTE EPSG:28992 in
+  float32 → ~3cm granularity at ~1.9e5 easting (no local-origin subtraction); the
+  contract says "float32" without spelling out the granularity. Z=0.0 nodata
+  sentinel collides with a real 0m-NAP elevation (explicitly accepted design).
+- STATE: merged={WP0-13}=13/14 impl-remaining={WP14 integration+wiring}
+  next={WP14 capstone: wire prep.prepare() dedup→filter→thin→export_ply +
+  property-based exact-cover tile enum (hypothesis) + portal-contract nightly tier +
+  vertical-slice test + LFS fixtures + fast/nightly CI tiers → final make check+100%}
+  gate=2-adversarial-reviews+green-CI merge-authority=coordinator(auto)
+  pending-user={WP11 perf metal_kernel fast-follow; WP8 2023=8cm-not-7.5cm + "D20";
+  WP12 float32 ~3cm precision undocumented}
+
 ## [0.2.1] - 2024-05-04
 ### Changed
 * feat: Add validation for exclusive arguments

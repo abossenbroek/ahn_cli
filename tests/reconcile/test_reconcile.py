@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from ahn_cli.reconcile.backend import NumpyBackend
 from ahn_cli.reconcile.method import IdwInterp
 from ahn_cli.reconcile.reconcile import (
     ReconcileError,
@@ -33,7 +32,6 @@ def _request(
         output_dir=out,
         method=IdwInterp(k=8),
         formats=formats,
-        backend=NumpyBackend(),
     )
 
 

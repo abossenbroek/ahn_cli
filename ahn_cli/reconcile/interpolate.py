@@ -10,10 +10,9 @@ an estimate could be produced for:
 * :func:`_kriging` -- ordinary kriging over the ``k`` nearest points; a singular
   per-cell system falls back deterministically to the IDW estimate.
 
-IDW and kriging obtain their neighbours through the injected
-:class:`~ahn_cli.reconcile.backend.InterpBackend`, so the numpy reference and the
-Metal accelerator share one algorithm. Every branch here is host-side, so both
-backends exercise identical control flow -- only the kNN numerics differ.
+IDW and kriging obtain their neighbours from the scipy ``cKDTree`` reference
+(:func:`ahn_cli.reconcile.neighbors.knn`) -- a fast, indexed, C-backed search.
+Every step is deterministic, so identical inputs yield byte-identical output.
 """
 
 from __future__ import annotations
@@ -30,9 +29,9 @@ from ahn_cli.reconcile.method import (
     KrigingInterp,
     LinearInterp,
 )
+from ahn_cli.reconcile.neighbors import knn
 
 if TYPE_CHECKING:
-    from ahn_cli.reconcile.backend import InterpBackend
     from ahn_cli.reconcile.method import InterpMethod
 
 _MIN_TRIANGULATION_POINTS = 3
@@ -54,8 +53,6 @@ def interpolate(
     method: InterpMethod,
     source_xyz: npt.NDArray[np.float64],
     target_xy: npt.NDArray[np.float64],
-    *,
-    backend: InterpBackend,
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.bool_]]:
     """Estimate ``Z`` at each target XY, dispatching on the method variant.
 
@@ -71,8 +68,8 @@ def interpolate(
     if isinstance(method, LinearInterp):
         return _linear(source_xyz, target_xy)
     if isinstance(method, IdwInterp):
-        return _idw(source_xyz, target_xy, method, backend)
-    return _kriging(source_xyz, target_xy, method, backend)
+        return _idw(source_xyz, target_xy, method)
+    return _kriging(source_xyz, target_xy, method)
 
 
 def _void(
@@ -105,10 +102,9 @@ def _idw(
     source_xyz: npt.NDArray[np.float64],
     target_xy: npt.NDArray[np.float64],
     method: IdwInterp,
-    backend: InterpBackend,
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.bool_]]:
     """Inverse-distance-weighted interpolation over the ``k`` nearest points."""
-    sq, idx = backend.knn(target_xy, source_xyz[:, :2], method.k)
+    sq, idx = knn(target_xy, source_xyz[:, :2], method.k)
     q, k_eff = sq.shape
     if k_eff == 0:
         return _void(q)
@@ -153,11 +149,10 @@ def _kriging(
     source_xyz: npt.NDArray[np.float64],
     target_xy: npt.NDArray[np.float64],
     method: KrigingInterp,
-    backend: InterpBackend,
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.bool_]]:
     """Ordinary kriging over the ``k`` nearest points with a fixed variogram."""
     source_xy = source_xyz[:, :2]
-    sq, idx = backend.knn(target_xy, source_xy, method.k)
+    sq, idx = knn(target_xy, source_xy, method.k)
     q, k_eff = sq.shape
     if k_eff == 0:
         return _void(q)

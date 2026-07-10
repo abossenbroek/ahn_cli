@@ -17,7 +17,6 @@ from pathlib import Path
 import numpy as np
 import numpy.typing as npt
 
-from ahn_cli.reconcile.backend import NumpyBackend
 from ahn_cli.reconcile.method import (
     IdwInterp,
     InterpMethod,
@@ -50,7 +49,6 @@ def _request(
         output_dir=out,
         method=method,
         formats=formats,
-        backend=NumpyBackend(),
     )
 
 

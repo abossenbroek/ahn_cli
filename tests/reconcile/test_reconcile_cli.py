@@ -88,29 +88,6 @@ def test_reconcile_kriging_single_format(
     assert not (out / "reconciled.pt").exists()
 
 
-def test_reconcile_backend_mlx_falls_back(
-    ortho_path: Path, cloud_path: Path, tmp_path: Path
-) -> None:
-    """--backend mlx runs (falling back to numpy where mlx is absent)."""
-    result = CliRunner().invoke(
-        cli,
-        [
-            "reconcile",
-            "--ortho",
-            str(ortho_path),
-            "--cloud",
-            str(cloud_path),
-            "--out",
-            str(tmp_path / "out"),
-            "--backend",
-            "mlx",
-            "--format",
-            "pt",
-        ],
-    )
-    assert result.exit_code == 0, result.output
-
-
 def _invoke(ortho: Path, cloud: Path, out: Path, extra: list[str]) -> Result:
     return CliRunner().invoke(
         cli,

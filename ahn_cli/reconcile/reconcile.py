@@ -35,7 +35,6 @@ from ahn_cli.reconcile.writers import OutputFormat, write_reconciled
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from ahn_cli.reconcile.backend import InterpBackend
     from ahn_cli.reconcile.method import InterpMethod
 
 __all__ = [
@@ -59,7 +58,6 @@ class ReconcileRequest:
         - ``output_dir`` receives one ``reconciled.<ext>`` file per format.
         - ``method`` is the validated interpolation request.
         - ``formats`` is the non-empty set of output formats to write.
-        - ``backend`` is the interpolation backend (numpy reference or Metal).
 
     Invariants:
         - Frozen value object, equal by field value.
@@ -70,7 +68,6 @@ class ReconcileRequest:
     output_dir: Path
     method: InterpMethod
     formats: tuple[OutputFormat, ...]
-    backend: InterpBackend
 
 
 @dataclass(frozen=True)
@@ -115,9 +112,7 @@ def reconcile(request: ReconcileRequest) -> ReconcileStats:
     cloud = load_cloud(request.cloud_path)
     target_xy, eastings, northings = target_coordinates(ortho.grid)
 
-    z, valid = interpolate(
-        request.method, cloud, target_xy, backend=request.backend
-    )
+    z, valid = interpolate(request.method, cloud, target_xy)
     height, width = ortho.rgb.shape[:2]
     grid = np.empty((height, width, 6), dtype=np.float64)
     grid[:, :, 0] = eastings

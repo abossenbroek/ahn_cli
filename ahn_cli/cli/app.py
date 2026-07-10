@@ -47,7 +47,6 @@ from ahn_cli.prep.transform import (
     PrepRequest,
     prepare,
 )
-from ahn_cli.reconcile.backend import InterpBackend, NumpyBackend
 from ahn_cli.reconcile.method import (
     IdwInterp,
     InterpMethod,
@@ -56,7 +55,6 @@ from ahn_cli.reconcile.method import (
     Variogram,
     VariogramModel,
 )
-from ahn_cli.reconcile.mlx_backend import select_backend
 from ahn_cli.reconcile.reconcile import (
     ReconcileError,
     ReconcileRequest,
@@ -510,17 +508,6 @@ def _parse_formats(specs: tuple[str, ...]) -> tuple[OutputFormat, ...]:
     return tuple(OutputFormat(spec) for spec in specs)
 
 
-def _resolve_backend(choice: str) -> InterpBackend:
-    """Return the interpolation backend for the ``--backend`` choice.
-
-    ``mlx`` selects the Metal accelerator when available, transparently falling
-    back to the numpy reference where ``mlx`` is not installed.
-    """
-    if choice == "mlx":
-        return select_backend(prefer_gpu=True)
-    return NumpyBackend()
-
-
 @cli.command(name="reconcile")
 @click.option(
     "--ortho",
@@ -569,14 +556,6 @@ def _resolve_backend(choice: str) -> InterpBackend:
     ),
 )
 @click.option(
-    "--backend",
-    "backend",
-    type=click.Choice(["numpy", "mlx"]),
-    default="numpy",
-    show_default=True,
-    help="Interpolation backend; 'mlx' uses the Metal GPU when available.",
-)
-@click.option(
     "--format",
     "formats",
     type=click.Choice([fmt.value for fmt in OutputFormat]),
@@ -590,7 +569,6 @@ def reconcile_command(
     method: str,
     idw: str,
     kriging: str,
-    backend: str,
     formats: tuple[str, ...],
 ) -> None:
     """Interpolate a point cloud onto an ortho grid, emit a coloured cloud.
@@ -598,8 +576,7 @@ def reconcile_command(
     Estimates an elevation at every ortho pixel centre from the AHN cloud
     (linear, IDW, or ordinary kriging), colours each pixel from the ortho, and
     writes the reconciled cloud as ``reconciled.<ext>`` for every requested
-    format (laz/ply/pt/exr). The numpy backend is byte-deterministic; ``mlx``
-    is an opt-in Metal accelerator.
+    format (laz/ply/pt/exr). The output is byte-deterministic.
     """
     interp_method = _parse_reconcile_method(method, idw, kriging)
     request = ReconcileRequest(
@@ -608,7 +585,6 @@ def reconcile_command(
         output_dir=out,
         method=interp_method,
         formats=_parse_formats(formats),
-        backend=_resolve_backend(backend),
     )
     try:
         stats = reconcile(request)

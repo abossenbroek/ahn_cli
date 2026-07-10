@@ -44,15 +44,15 @@ float32. Fine for the windowed tests; documented as the CLI's scale ceiling
 All operate on the AHN points `(x_i, y_i, z_i)` and evaluate `Z` at each ortho
 pixel centre.
 
-| Method | Semantics | Backend |
+| Method | Semantics | Neighbours |
 |---|---|---|
-| `linear` | Delaunay-barycentric linear interpolation (scipy `LinearNDInterpolator`); an *interpolant* that passes through the data. Cells outside the convex hull are void. | CPU (scipy) |
-| `idw` | Inverse-distance weighting over the `k` nearest points: `z = Σ w_i z_i / Σ w_i`, `w_i = 1/d_i^p`. | kNN via backend |
-| `kriging` | Ordinary kriging over the `k` nearest points with a **fixed** (parameterised) variogram model; per-cell `(k+1)²` solve. | kNN via backend |
+| `linear` | Delaunay-barycentric linear interpolation (scipy `LinearNDInterpolator`); an *interpolant* that passes through the data. Cells outside the convex hull are void. | scipy Delaunay |
+| `idw` | Inverse-distance weighting over the `k` nearest points: `z = Σ w_i z_i / Σ w_i`, `w_i = 1/d_i^p`. | scipy `cKDTree` |
+| `kriging` | Ordinary kriging over the `k` nearest points with a **fixed** (parameterised) variogram model; per-cell `(k+1)²` solve. | scipy `cKDTree` |
 
-`linear` is CPU-only by deliberate choice — the user singled out *kriging* for
-Metal, and Delaunay linear is not a kNN-shaped problem. `idw` and `kriging` share
-one kNN primitive, which is the Metal-accelerated part.
+`idw` and `kriging` share one `cKDTree` kNN primitive; `linear` uses scipy's
+Delaunay directly. (A Metal-kernel kNN was built and benchmarked but removed —
+see below.)
 
 Typed dispatch on frozen value objects (`LinearInterp`, `IdwInterp`,
 `KrigingInterp`) — no stringly-typed method switch.
@@ -64,63 +64,32 @@ auto-fitted (auto-fit is non-deterministic). Singular per-cell systems (e.g.
 co-located neighbours) are caught host-side and fall back deterministically to
 the IDW estimate — a covered branch.
 
-## Backends and the Metal kernel
+## kNN and the Metal-kernel evaluation (numpy/scipy is the shipped path)
 
-Mirrors `prep/decimate.py`. The interpolation algorithms — with **every branch**
-(empty input, `k > n`, singular-system fallback, void cells) — live in host-side
-Python written once against a narrow `InterpBackend` primitive:
+The interpolation algorithms — with **every branch** (empty input, `k > n`,
+singular-system fallback, void cells) — obtain their neighbours from one
+primitive:
 
 ```
 knn(target_xy, source_xy, k) -> (sq_dist[Q,k], idx[Q,k])   # ascending, tie-break by source index
 ```
 
-- **`NumpyBackend`** — the correctness oracle and the **default**. kNN via
-  scipy `cKDTree` with a stable `(distance, index)` tie-break. Produces every
-  *emitted* value, so the shipped default output is **byte-identical** across
-  runs and machines (determinism guardrail intact).
-- **`MlxBackend`** — opt-in accelerator routing through an injected `mlx.core`
-  handle. The kNN runs as a real `mlx.fast.metal_kernel`: the host builds a
-  deterministic uniform-grid bin index (bin offsets + sorted point indices);
-  the kernel searches the query cell's bin neighbourhood ring-by-ring up to a
-  fixed max ring — straight-line, data-parallel, no host-observable branch only
-  the device takes.
+`knn` is scipy `cKDTree` — a fast, indexed, C-backed search — with a stable
+`(distance, index)` tie-break. It produces every emitted value, so output is
+**byte-identical** across runs and machines (determinism guardrail intact).
 
-**Determinism contract across backends:** GPU float reductions differ from CPU
-in the last ULPs, so `MlxBackend` is **`np.allclose`-equivalent** to
-`NumpyBackend`, *not* byte-identical. The default (numpy) path is byte-identical;
-Metal is documented as tolerance-equivalent and opt-in (`--backend mlx`).
-Equivalence tests use `allclose`, never `array_equal`.
-
-**Coverage strategy (100 % on Linux CI, no `mlx`):** both the `mlx` handle *and*
-`import_module` are injectable (as in `decimate.py`), so a numpy-backed fake
-satisfying the narrow `MlxModule`/kernel surface exercises every host-side line
-and both the "mlx present / absent" branches without `mlx` installed. The real
-Metal kernel's *correctness* is proven by an **Apple-only** on-device
-equivalence test (skipped on CI — skipped tests do not lower coverage because the
-same host lines run under the fake). This build was verified by actually running
-the kernel under `uv sync --extra mlx` on Apple Silicon.
-
-### Performance (measured on the Amsterdam fixture, 65 536 queries × 9 491 pts)
-
-Honest finding from benchmarking the real fixture:
-
-- The raw float32 GPU kNN is ~10× faster than scipy `cKDTree` at *raw* neighbour
-  search (7 ms vs 86 ms).
-- **But** the raw float32 result selects a different neighbour *set* at the
-  k-boundary on dense data, swinging interpolated Z by up to 4.5 m (IDW) / 8.1 m
-  (kriging) versus the reference. Correctness requires the float64 host
-  refinement, which costs ~30 ms — so the *correct* mlx path (~113 ms) is
-  **slower than numpy (~86 ms) at this scale**.
-- Brute-force is `O(q·n)`; a full 12500² ortho tile against 23 M points is
-  astronomically large for it, whereas indexed `cKDTree` handles it. So the
-  metal path is **not** a robust at-scale speedup.
-
-Conclusion: the metal kernel is real, correct, and genuinely accelerates raw
-kNN, but the numpy default is the faster *and* more scalable choice for the
-sizes this tool sees. A **binned/grid metal kernel** (host-built spatial bins,
-kernel searches only nearby cells) is the route to an at-scale GPU win and is a
-scoped follow-up — deliberately not built speculatively, since the numpy path
-already meets the need and its benefit is unproven for this workload.
+**A real `mlx.fast.metal_kernel` was built and benchmarked, then removed.** On
+the Amsterdam fixture (65 536 queries × 9 491 pts) the raw float32 GPU kNN was
+~10× faster at raw neighbour search, **but**: (a) its float32 distances select a
+different neighbour *set* at the k-boundary on dense data, swinging Z by up to
+4.5 m (IDW) / 8.1 m (kriging) — correctness needs a float64 host refinement that
+made the *correct* mlx path (~113 ms) **slower than numpy (~86 ms)**; and (b)
+brute-force `O(q·n)` cannot scale to a full 12500² tile against 23 M points,
+whereas indexed `cKDTree` can. Per the guidance *"if a fast C implementation
+already exists (numpy/numba/…), keep it — no point redoing it in Metal"*, the
+Metal backend was dropped rather than shipped as dead-weight complexity. A
+binned/grid Metal kernel could win at full-tile scale but its benefit is
+unproven for this workload and it was not built speculatively.
 
 ## Writers (`.laz / .ply / .pt / .exr`)
 
@@ -137,16 +106,14 @@ Typed dispatch on an `OutputFormat` enum. All deterministic (no timestamps).
 ## CLI
 
 `reconcile` Click command: `--ortho ortho.tif`, `--cloud cloud.laz`,
-`--out DIR`, `--method {linear,idw,kriging}`, method params (`--idw-power`,
-`--idw-k`, `--kriging-*`), `--backend {numpy,mlx}` (default numpy), and
-`--format` (repeatable; default all four). Typed `ReconcileError` → `ClickException`.
+`--out DIR`, `--method {linear,idw,kriging}`, composite method params
+(`--idw "power,k"`, `--kriging "model,nugget,sill,range,k"`), and `--format`
+(repeatable; default all four). Typed `ReconcileError` → `ClickException`.
 
 ## Testing
 
 - Unit: value objects, kNN determinism/tie-break, each method vs hand-computed
-  oracle, all fallback branches, each writer's bytes, backend fake equivalence.
-  100 % line+branch.
-- Apple-only: real Metal kNN vs numpy kNN (`allclose`).
+  oracle, all fallback branches, each writer's bytes. 100 % line+branch.
 - Integration (real Amsterdam data, CC-BY 4.0): a small clipped window from
   `~/Downloads/Dam_Amsterdam_AHN5_ortho_package` committed via git-LFS under
   `tests/reconcile/fixtures/`; end-to-end reconcile asserting all four outputs +

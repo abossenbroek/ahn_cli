@@ -169,6 +169,30 @@
   loop=notification-driven-cascade next={gate+merge WP1 → dispatch WP2,WP3,WP4}
   pending-user={}
 
+### 2026-07-10 — WP1 PR #3 gate: BLOCK (bounced, not merged)
+- PR: #3 (wp1-domain-model @ fbf020a). CI: green-pending on 3.10/3.11/3.12.
+- Gate = 2 independent adversarial Opus reviews of the latest commit. Both
+  BLOCK. Both independently re-ran make check (exit 0), ruff/pyright strict
+  (clean), coverage (100% line+branch on domain/fetch/prep, confirmed NOT in
+  any omit/ignore/exclude), DDD purity (zero legacy imports) — code quality
+  confirmed; two specific holes stop the merge:
+  1. [BLOCKING] ensure_valid_bbox (tile.py:~34) accepts non-finite coords
+     (NaN/inf) — trichotomy guard is False for NaN, so Tile & Provenance
+     silently accept a NaN/inf bbox. Guardrail #6 names NaN/inf → in-scope,
+     not the WP3 content deferral. Fix: math.isfinite on all 4 coords.
+  2. [BLOCKING per reviewer A] TDD red commit a7ee8b0 is collect-error-only
+     (ImportError, no assertion runs) — strict criterion excludes that.
+- Coordinator adjudication: fix #1 (hard blocker). For #2, tests are
+  demonstrably non-vacuous (green = 100% branch over real assertions), so NOT
+  forcing a history rewrite of a7ee8b0; instead the fix MUST land as an
+  assertion-level red→green→refactor sequence, which settles A's rigor concern
+  for the rest of the epic. Precedent-setting first PR: bar held high.
+- Bounced to eng-domain (resumed from transcript) with the consolidated brief.
+  Re-review the NEW head SHA (fresh 2-review gate) before any merge.
+- STATE: merged={WP0} in-flight={WP1:bounced} branch={wp1-domain-model@fbf020a}
+  gate-result=BLOCK next={eng-domain fixes bbox+TDD → re-run 2-review gate}
+  pending-user={}
+
 ## [0.2.1] - 2024-05-04
 ### Changed
 * feat: Add validation for exclusive arguments

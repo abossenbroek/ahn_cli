@@ -99,6 +99,13 @@ def _harmonize_headers(files: list[str]) -> laspy.LasHeader:
     return master_header
 
 
+# Public re-export seam so the gated prep context (WP10 tile dedup) can reuse the
+# header harmonization without reaching a private symbol across modules (which
+# strict pyright/ruff rightly reject). This is an additive alias only; the
+# grandfathered logic above is unchanged.
+harmonize_headers = _harmonize_headers
+
+
 def process(
     base_url: str,
     city_polygon_path: str,

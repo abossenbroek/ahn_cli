@@ -108,6 +108,19 @@ ahn_cli prep --data data/delft --thin-method voxel --thin-grade 3
 ahn_cli prep --data data/delft --thin-method poisson --thin-radius 1.5 --thin-seed 0
 ```
 
+`prep` reads the cached tiles a prior `fetch` wrote under `<data>/ahn/`,
+deduplicates them (crop-before-merge plus an exact XYZ+GPS-time sweep), applies
+the `-i/--include-class` / `-e/--exclude-class` filter and any graded thinning,
+and writes `<data>/pointcloud.laz` alongside a deterministic
+`<data>/provenance.json`. Pass `-p/--points` to additionally export
+`<data>/pointcloud.ply` for TouchDesigner. The DSM position map is produced
+separately by `export-positions` (it consumes the fetched `dsm.tif`):
+
+```
+ahn_cli prep --data data/delft -i 2,6 --points
+ahn_cli export-positions --data data/delft   # writes data/delft/positions.exr
+```
+
 **Specify a Bounding box for clipping:**
 
 If you specify a `b`, it will clip the point cloud data with specified bounding box.

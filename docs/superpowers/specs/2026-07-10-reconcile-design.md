@@ -26,18 +26,25 @@ bounds `121000,487000 → 122000,488000`.)
 
 ## Output model — dense grid + validity mask
 
-`reconcile` computes a dense `(H, W, 6)` float array (X,Y,Z,R,G,B) over the ortho
-grid plus a boolean `(H, W)` validity mask (`False` where no elevation could be
-interpolated — e.g. a cell with no source point in range). Writers consume
-`(grid, mask)`:
+`reconcile` streams the ortho grid **one row-block at a time** as a
+`(rows, W, 6)` float array (X,Y,Z,R,G,B) plus a `(rows, W)` validity mask
+(`False` where no elevation could be interpolated). Writers consume each block:
 
-- **laz / ply / pt** — point-list formats: flatten and emit **only valid cells**.
-- **exr** — a dense image: emit the **full grid** with a `Z = 0.0` sentinel for
-  void cells, mirroring `positions.exr`'s nodata policy.
+- **laz / ply / pt** — point-list formats: emit **only valid cells** per block,
+  in row-major order, so the concatenation is the whole cloud.
+- **exr** — a dense image: header + scanline offset table written up front, then
+  each row's scanline appended, with a `Z = 0.0` sentinel for void cells
+  (mirroring `positions.exr`).
 
-Full-tile scale note: a 12500² ortho ⇒ 156 M cells ⇒ ~3.75 GB for `(H,W,6)`
-float32. Fine for the windowed tests; documented as the CLI's scale ceiling
-(binned, windowed processing is the perf follow-up).
+**Flat memory at any scale.** The interpolator (Delaunay / `cKDTree`) is built
+**once** over the source cloud; the grid is never materialised whole. Peak memory
+is bounded by the source cloud + its tree and one row-block — independent of the
+output area — so a 12500² tile (or a 50 km sheet) streams like a 50 m window. The
+block schedule is a deterministic function of the width (`_BLOCK_CELLS // W`
+rows), so a blocked run is identical to a whole-grid one (byte-identical for the
+uncompressed formats; point-identical for chunk-compressed LAZ). The only cost
+that scales with area is loading the cloud + building its tree; a continental run
+tiles the *source* cloud spatially (out of this verb's scope).
 
 ## Interpolation methods
 

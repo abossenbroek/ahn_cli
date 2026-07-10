@@ -394,6 +394,43 @@
   loop=notification-driven-cascade
   pending-user={WP11 perf gap (metal_kernel) — accepted fast-follow}
 
+### 2026-07-10 — WP7 MERGED #13 (12/14); PAUSED on account session limit
+- WP7 DSM fetch+clip: PR #13 → squash b42f18f. 2 adversarial reviews PASS:
+  genuine windowed COG read (instrumented: reads a 20×20 window off a 4000×4000
+  sheet, not full-read-then-crop), _aoi_bbox→aoi_bbox rename complete (WP6 LAZ
+  path intact), cache AOI-isolation (no poisoning), DsmError<AcquisitionError
+  funnel airtight, void/spike QA in provenance, red assertion-level, py3.10 100%.
+  Non-blocking notes: container-vs-pixel checksum (deterministic in-env); ≤1px
+  far-edge under-coverage on non-grid-aligned AOI (within pixel-snap contract).
+  12 of 14 merged. Task #8 done.
+- >>> RUN PAUSED: hit the account session usage limit (resets ~02:50 America/
+  Vancouver). Background Opus agents cannot spawn until reset. All merged work is
+  durable on main; no partial/broken state. <<<
+- RESUME PLAN (do these when the limit resets):
+  1. WP8 ortho — PR #14 @ 328ef87 is delivered but CONFLICTING (predates WP7).
+     Engineer a771432f was resumed with a rebase brief but stopped at the limit.
+     Re-send: rebase onto origin/main (b42f18f); DROP its `resolve_aoi` and use the
+     merged `aoi_bbox`; re-apply `--ortho` on fetch alongside --dsm/--source/--ahn;
+     keep max-args=8; VERIFY ON PY3.10 (its prior check used default 3.12 — high
+     risk of the numpy2.2.6 pyright trap since it uses rasterio.merge+numpy); ensure
+     red is assertion-level; force-push. Then 2-review gate + CI → merge.
+  2. WP12 positions.exr — NOT yet dispatched (Agent spawn failed on the limit).
+     Blocked-by WP7 = now unblocked. Brief: consume data/<site>/dsm.tif → byte-
+     deterministic positions.exr (float32); pick a Linux-CI-installable, byte-stable
+     EXR path (strip timestamps or hand-write); prep bounded context; py3.10 + 100%
+     + assertion-level red. Disjoint from WP8 (prep vs fetch) → can run parallel.
+  3. WP14 integration (LAST, blocked by all): property-based exact-cover tile enum
+     (hypothesis), portal-contract nightly tier, per-item assembly tests, LFS
+     fixtures, fast-vs-nightly CI tiers — AND wire prep.prepare() end-to-end
+     (dedup→decimate→export; currently raises TransformNotWiredError) + the vertical-
+     slice test (fetch → prep → data/site/{ahn,ortho,viirs},dsm.tif,provenance.json,
+     positions.exr,pointcloud.ply). Then final `make check`+100% cov green.
+- STATE: merged={WP0-7,WP9,WP10,WP11,WP13}=12/14 paused=account-session-limit
+  resume={WP8 rebase → gate; WP12 dispatch; WP14 last+prep-wiring}
+  gate=2-adversarial-reviews+green-CI merge-authority=coordinator(auto)
+  pending-user={WP11 perf metal_kernel fast-follow; WP8 ortho 2023=8cm-not-7.5cm +
+  unverified "D20" id — both flagged, using researched values}
+
 ## [0.2.1] - 2024-05-04
 ### Changed
 * feat: Add validation for exclusive arguments

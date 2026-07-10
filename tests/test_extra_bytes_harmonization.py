@@ -96,6 +96,18 @@ class TestExtraBytesHarmonization(unittest.TestCase):
             list(header.point_format.extra_dimension_names), ["confidence"]
         )
 
+    def test_harmonize_headers_single_file_already_having_extra_dims(self):
+        # Regression test: a single file whose own extra dims are already
+        # present on its header must not have them re-added, which raised
+        # "field 'X' occurs more than once" when building the point dtype.
+        header = _harmonize_headers([self.file_with_extra])
+        self.assertEqual(header.point_format.id, 6)
+        self.assertEqual(
+            list(header.point_format.extra_dimension_names), ["confidence"]
+        )
+        # dtype() must not raise on duplicate fields
+        header.point_format.dtype()
+
     @patch(
         "ahn_cli.manipulator.ptc_handler.PntCHandler.clip_by_arbitrary_polygon"
     )

@@ -74,7 +74,10 @@ def _harmonize_headers(files: list[str]) -> laspy.LasHeader:
         upgraded_header.mins = master_header.mins
         master_header = upgraded_header
 
+    existing_dims = set(master_header.point_format.extra_dimension_names)
     for dim_info in harmonized_extra_dims.values():
+        if dim_info.name in existing_dims:
+            continue
         master_header.add_extra_dim(
             laspy.ExtraBytesParams(
                 name=dim_info.name,

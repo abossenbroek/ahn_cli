@@ -193,6 +193,28 @@
   gate-result=BLOCK next={eng-domain fixes bbox+TDD → re-run 2-review gate}
   pending-user={}
 
+### 2026-07-10 — WP1 DDD domain model — MERGED #3
+- Branch: wp1-domain-model  PR: #3  Squash: 5d821a1  Fixed-head: ea2385d
+- DoD: [x] Product/Generation/Vintage/Tile/Provenance value objects
+  [x] fetch/prep bounded-context skeletons [x] no stringly-typed switches
+  [x] strict ruff ALL + pyright strict clean [x] 100% line+branch cov (0 BrPart)
+  [x] DDD purity (zero legacy imports) [x] TDD red→green (assertion-level).
+- Files: ahn_cli/domain/{__init__,product,generation,vintage,tile,provenance}.py,
+  ahn_cli/fetch/__init__.py, ahn_cli/prep/__init__.py, tests/domain/*,
+  tests/test_bounded_contexts.py. Tests: 37 added; coverage 100% branch (gate PASS).
+- Gate: bounced once (bbox NaN/inf accept + collect-error-only red) → re-fixed
+  via math.isfinite guard + Generation(bool) guard, delivered as assertion-level
+  red (a96b332) → green (ea2385d). Re-review: 2 independent adversarial Opus
+  reviews both PASS on ea2385d (each re-ran make check/ruff/pyright/coverage,
+  verified fixes by repro, confirmed nothing smuggled into omit/ignore/exclude).
+  CI green 3.10/3.11/3.12, mergeState CLEAN. Auto-merged (squash), branch deleted.
+- Deferred to later WPs (accepted scope, both reviews concur): WP3 serializes
+  Provenance + tz/content validation; WP5 attaches Generation registry; Vintage
+  upper-bound/version-label and Tile product↔axis policy belong to fetch/ortho WPs.
+- STATE: merged={WP0, WP1} in-flight={} unblocked-now={WP2(#3), WP3(#4), WP4(#5)}
+  next={fan out WP2+WP3+WP4 as 3 parallel Opus worktree engineers}
+  loop=notification-driven-cascade pending-user={}
+
 ## [0.2.1] - 2024-05-04
 ### Changed
 * feat: Add validation for exclusive arguments

@@ -29,7 +29,9 @@ class Generation:
         - Two generations are equal iff their ``number`` is equal.
 
     Failure modes:
-        - ``ValueError`` if ``number`` is below ``1`` (there is no AHN0).
+        - ``ValueError`` if ``number`` is a ``bool`` (``True``/``False`` are int
+          subclasses but are not generation ordinals) or is below ``1`` (there
+          is no AHN0).
 
     Note:
         No upper bound is imposed: future generations are valid identities the
@@ -40,11 +42,14 @@ class Generation:
     number: int
 
     def __post_init__(self) -> None:
-        """Reject non-positive generation ordinals."""
-        if self.number < _MIN_GENERATION_NUMBER:
+        """Reject booleans and non-positive generation ordinals."""
+        if (
+            isinstance(self.number, bool)
+            or self.number < _MIN_GENERATION_NUMBER
+        ):
             msg = (
                 "Generation number must be a positive integer "
-                f"(>= {_MIN_GENERATION_NUMBER}); got {self.number}."
+                f"(>= {_MIN_GENERATION_NUMBER}), not a bool; got {self.number!r}."
             )
             raise ValueError(msg)
 

@@ -6,6 +6,7 @@ AHN-family products) or a :class:`Vintage` (for dated imagery). This module
 also exposes the shared bounding-box type and validator the domain reuses.
 """
 
+import math
 from dataclasses import dataclass
 from typing import TypeAlias
 
@@ -25,10 +26,15 @@ def ensure_valid_bbox(bbox: BBox) -> None:
         - Returns ``None`` when ``minx < maxx`` and ``miny < maxy``.
 
     Failure modes:
+        - ``ValueError`` if any coordinate is non-finite (``NaN`` or infinity),
+          since such a box has no well-defined extent.
         - ``ValueError`` if either extent is empty or inverted (``minx >= maxx``
           or ``miny >= maxy``), which would describe a degenerate box.
     """
     minx, miny, maxx, maxy = bbox
+    if not all(math.isfinite(coord) for coord in (minx, miny, maxx, maxy)):
+        msg = f"bbox coordinates must all be finite (no NaN/inf); got {bbox}."
+        raise ValueError(msg)
     if minx >= maxx or miny >= maxy:
         msg = (
             "bbox must be (minx, miny, maxx, maxy) with minx < maxx and "

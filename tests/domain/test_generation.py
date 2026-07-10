@@ -23,6 +23,13 @@ def test_generation_rejects_non_positive_ordinals() -> None:
         Generation(0)
 
 
+def test_generation_rejects_booleans() -> None:
+    """A ``bool`` (an int subclass) is not a valid generation ordinal."""
+    boolean_ordinal = True
+    with pytest.raises(ValueError, match="not a bool"):
+        Generation(boolean_ordinal)
+
+
 def test_generation_equality_and_hash_are_value_based() -> None:
     """Equal ordinals compare equal and hash equal; different ones do not."""
     assert Generation(5) == Generation(5)

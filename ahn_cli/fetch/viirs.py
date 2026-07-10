@@ -30,6 +30,7 @@ if TYPE_CHECKING:
 
     from ahn_cli.domain import BBox
 
+_CHUNK_SIZE = 1 << 20  # 1 MiB: bound peak memory when hashing large rasters.
 _VIIRS_SUBDIR = "viirs"
 _SOURCE_PORTAL = "google_earth_engine"
 _LICENCE = "public-domain"
@@ -97,8 +98,17 @@ def _utcnow() -> datetime:
 
 
 def _sha256_hex(source: Path) -> str:
-    """Return the SHA-256 hex digest of the bytes at ``source``."""
-    return hashlib.sha256(source.read_bytes()).hexdigest()
+    """Return the SHA-256 hex digest of the bytes at ``source``.
+
+    Hashes the file in fixed-size chunks so peak memory stays bounded
+    regardless of raster size, matching the streaming byte-preserving copy.
+    The digest is byte-identical to hashing the whole file at once.
+    """
+    digest = hashlib.sha256()
+    with source.open("rb") as handle:
+        while chunk := handle.read(_CHUNK_SIZE):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def inspect_viirs(source: Path) -> ViirsRaster:
@@ -117,6 +127,8 @@ def inspect_viirs(source: Path) -> ViirsRaster:
         with rasterio.open(source) as dataset:
             crs = str(dataset.crs)
             box = dataset.bounds
+            # Native-CRS extent, recorded untouched (no reprojection); the CRS
+            # itself is captured in provenance request_keys to disambiguate it.
             bounds: BBox = (box.left, box.bottom, box.right, box.top)
             band_count = dataset.count
             dtypes = tuple(dataset.dtypes)

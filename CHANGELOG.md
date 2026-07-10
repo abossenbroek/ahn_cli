@@ -443,6 +443,30 @@
   next={gate+merge WP8,WP12 → WP14 last (integration + wire prep.prepare())}
   gate=2-adversarial-reviews+green-CI merge-authority=coordinator(auto)
 
+### 2026-07-10 — WP8 MERGED (#14) — 13/14
+- **WP8 — Beeldmateriaal orthophoto fetch (#14 → squash `b51082f`).** New
+  `ahn_cli/fetch/ortho.py`: probes a preference-ordered `OrthoDatasetRegistry`
+  (5cm preferred, 8cm fallback, pinned 2023) for AOI coverage, downloads covering
+  GeoTIFF sheets through the WP4 content cache, mosaics + clips to the AOI via
+  `rasterio.merge` (bounds+res, method=first, overlap-free), writes
+  `<site>/ortho/ortho.tif` + CC-BY provenance (output_checksum over the mosaic
+  pixel array + stable header → byte-deterministic). Additive `--ortho` flag on
+  `fetch`. Rebased onto WP7, converged its own `resolve_aoi` onto the merged
+  `aoi_bbox(request)` helper (single AOI helper on main). New stub
+  `typings/rasterio/merge.pyi`. 6-file diff.
+- Gate: 2 independent adversarial reviewers (rev-wp8-A, rev-wp8-B) both PASS on a
+  clean py3.10 venv — pyright 0/0, coverage 100.00% (ortho.py 168 stmts/14 branches,
+  0 miss), ruff+format clean, `make check` exit 0; CI green 3.10/3.11/3.12; merge
+  state CLEAN. Determinism + overlap-free mosaic + 5cm→8cm fallback branches
+  independently reproduced, not merely trusted. No gate-weakening.
+- DEVIATIONS (flagged for user, using researched values): pinned 2023=8cm
+  (contradicts spec's "7.5cm pre-2025"); "D20" not verifiable as a pinnable id
+  (modeled as resolution `zone`). Beeldmateriaal-as-ATOM pinned + WP14-nightly-verified.
+- STATE: merged={WP0-8,WP9,WP10,WP11,WP13}=13/14 in-flight={WP12 impl}
+  next={gate+merge WP12 → WP14 last (integration + wire prep.prepare())}
+  gate=2-adversarial-reviews+green-CI merge-authority=coordinator(auto)
+  pending-user={WP11 perf metal_kernel fast-follow; WP8 2023=8cm-not-7.5cm + "D20"}
+
 ## [0.2.1] - 2024-05-04
 ### Changed
 * feat: Add validation for exclusive arguments

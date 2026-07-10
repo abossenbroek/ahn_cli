@@ -295,6 +295,28 @@
   queued={WP8<-WP6} blocked={WP7<-WP6, WP11/WP13<-WP10, WP12<-WP7, WP14<-all}
   gate=2-adversarial-reviews+green-CI loop=notification-driven-cascade pending-user={}
 
+### 2026-07-10 — WP10 MERGED #8 (after CI-bounce refix)
+- WP10 tile dedup: PR #8 → squash a15460f (fixed head 9d9d77d). Bounced once on
+  CI pyright-strict (numpy ndarray types, env-masked); refixed via npt.NDArray
+  [np.intp]/[np.void], re-verified on CI's exact py3.10/numpy2.2.6. 2 adversarial
+  Opus reviews PASS: numpy annotations HONEST (load-bearing, match runtime dtypes);
+  half-open seam correct (edge points kept by exactly one tile, no drop/double-count);
+  sweep drops exact XYZ+GPS-time dups only; determinism holds; typings/laspy stub
+  honest+load-bearing (ruff-excluded, pyright still consumes it); process.py gains
+  only a 1-line public alias (harmonize_headers) — not de-grandfathered. 100% branch.
+- INTEGRATION NOTE (carry to WP14 + whoever wires dedup): dedup output point-SET is
+  permutation-invariant, but output BYTES depend on tile input order. When
+  deduplicate_tiles is wired into the cache (sha256 content) / provenance
+  output_checksum, the caller MUST feed tiles in a pinned/deterministic order for a
+  stable byte-hash. Also: offset-harmonize assumes uniform LAS scale (true for AHN4).
+- WP13 (ply export) dispatched into prep lane (independent). WP11 (GPU decimation)
+  HELD one slot: MLX is Apple-silicon-only but CI is Linux → WP11 must ship a CPU
+  reference backend (100% covered on CI) + MLX as an injectable/mocked accelerator,
+  real GPU-equivalence test macOS-only (outside the Linux coverage gate). To brief next.
+- STATE: merged={WP0,WP1,WP2,WP3,WP4,WP5,WP10} in-flight={WP6, WP9, WP13}
+  queued={WP8<-WP6, WP11(needs MLX/CI strategy)} blocked={WP7<-WP6, WP12<-WP7, WP14<-all}
+  loop=notification-driven-cascade pending-user={}
+
 ## [0.2.1] - 2024-05-04
 ### Changed
 * feat: Add validation for exclusive arguments

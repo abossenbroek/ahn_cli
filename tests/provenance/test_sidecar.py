@@ -55,7 +55,7 @@ _GOLDEN = (
     '  "vintage": null,\n'
     '  "zone": null\n'
     "}\n"
-).encode("utf-8")
+).encode()
 
 
 def _minimal() -> Provenance:
@@ -101,13 +101,17 @@ def _dumps(data: dict[str, object]) -> bytes:
 def test_round_trip_minimal_is_equal() -> None:
     """A minimal record survives write then read unchanged."""
     record = _minimal()
-    assert provenance_from_json_bytes(provenance_to_json_bytes(record)) == record
+    assert (
+        provenance_from_json_bytes(provenance_to_json_bytes(record)) == record
+    )
 
 
 def test_round_trip_full_is_equal() -> None:
     """A fully populated record (all optionals) round-trips unchanged."""
     record = _full()
-    assert provenance_from_json_bytes(provenance_to_json_bytes(record)) == record
+    assert (
+        provenance_from_json_bytes(provenance_to_json_bytes(record)) == record
+    )
 
 
 def test_write_and_read_file_round_trip(tmp_path: Path) -> None:
@@ -121,7 +125,9 @@ def test_write_and_read_file_round_trip(tmp_path: Path) -> None:
 def test_repeat_serialisation_is_byte_identical() -> None:
     """Serialising the same record twice yields identical bytes."""
     record = _full()
-    assert provenance_to_json_bytes(record) == provenance_to_json_bytes(record)
+    assert provenance_to_json_bytes(record) == provenance_to_json_bytes(
+        record
+    )
 
 
 def test_serialisation_matches_golden_bytes() -> None:
@@ -251,6 +257,14 @@ def test_read_rejects_non_string_product() -> None:
         provenance_from_json_bytes(_dumps(data))
 
 
+def test_read_rejects_non_array_bbox() -> None:
+    """A bbox that is not a JSON array at all is rejected."""
+    data = _sidecar_dict()
+    data["bbox"] = "0,0,10,10"
+    with pytest.raises(ProvenanceError, match="bbox"):
+        provenance_from_json_bytes(_dumps(data))
+
+
 def test_read_rejects_bbox_wrong_length() -> None:
     """A bbox that is not a four-element array is rejected."""
     data = _sidecar_dict()
@@ -291,7 +305,7 @@ def test_read_rejects_non_string_datetime() -> None:
         provenance_from_json_bytes(_dumps(data))
 
 
-def test_read_rejects_unparseable_datetime() -> None:
+def test_read_rejects_unparsable_datetime() -> None:
     """A timestamp string that is not ISO-8601 is rejected."""
     data = _sidecar_dict()
     data["download_started_at"] = "not-a-date"

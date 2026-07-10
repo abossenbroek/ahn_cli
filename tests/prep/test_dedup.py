@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 import laspy
 import numpy as np
+import numpy.typing as npt
 import pytest
 
 from ahn_cli.prep.dedup import CanonicalTile, DedupStats, deduplicate_tiles
@@ -50,7 +51,7 @@ def _read_points(path: Path) -> laspy.LasData:
         return reader.read()
 
 
-def _xyzt_keys(las: laspy.LasData) -> np.ndarray:
+def _xyzt_keys(las: laspy.LasData) -> npt.NDArray[np.void]:
     """Return the exact (X, Y, Z, gps_time) dedup keys of every point."""
     return np.rec.fromarrays([las.X, las.Y, las.Z, las.gps_time])
 

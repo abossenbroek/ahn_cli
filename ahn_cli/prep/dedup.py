@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING
 
 import laspy
 import numpy as np
+import numpy.typing as npt
 
 from ahn_cli.domain import ensure_valid_bbox
 
@@ -139,7 +140,9 @@ def _crop_and_reproject(
     return out, original_count
 
 
-def _sweep_indices(points: laspy.ScaleAwarePointRecord) -> np.ndarray:
+def _sweep_indices(
+    points: laspy.ScaleAwarePointRecord,
+) -> npt.NDArray[np.intp]:
     """Return the sorted indices of the first occurrence of each exact point.
 
     Two points are exact duplicates when their scaled integer ``X/Y/Z`` and
@@ -183,7 +186,7 @@ def deduplicate_tiles(
     header = harmonize_headers(files)
 
     input_points = 0
-    cropped_arrays: list[np.ndarray] = []
+    cropped_arrays: list[npt.NDArray[np.void]] = []
     for tile in tiles:
         cropped, original_count = _crop_and_reproject(tile, header)
         input_points += original_count

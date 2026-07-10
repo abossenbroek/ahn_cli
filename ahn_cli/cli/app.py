@@ -38,6 +38,10 @@ from ahn_cli.prep.decimate import (
     Thinning,
     VoxelThinning,
 )
+from ahn_cli.prep.positions import (
+    PositionsExportError,
+    export_positions,
+)
 from ahn_cli.prep.transform import (
     PrepRequest,
     TransformNotWiredError,
@@ -392,3 +396,29 @@ def import_viirs_command(out: Path, geotiff: Path) -> None:
     except ViirsImportError as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(f"Imported VIIRS raster to {result.dest_path}")
+
+
+@cli.command(name="export-positions")
+@click.option(
+    "--data",
+    "data",
+    required=True,
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help="Site directory produced by a prior fetch (must contain dsm.tif).",
+)
+def export_positions_command(data: Path) -> None:
+    """Export ``<data>/dsm.tif`` to a deterministic ``<data>/positions.exr``.
+
+    Reads the fetched DSM raster and writes a 3-channel float32 OpenEXR position
+    map (R=easting, G=northing, B=elevation) for TouchDesigner. Void (nodata)
+    pixels keep their easting/northing and take a Z=0.0 sentinel. The output is
+    byte-identical across runs.
+    """
+    try:
+        stats = export_positions(data / "dsm.tif", data / "positions.exr")
+    except PositionsExportError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(
+        f"Wrote {data / 'positions.exr'} "
+        f"({stats.width}x{stats.height}, {stats.nodata_pixels} void px)"
+    )

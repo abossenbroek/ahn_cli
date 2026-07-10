@@ -43,6 +43,23 @@ _NODATA = -9999.0
 _MAGIC = struct.pack("<I", 0x01312F76)
 _VERSION = struct.pack("<I", 2)
 
+# Golden: the exact magic + version + full header block for a 1x1 image. Every
+# byte is a deterministic constant (the only size-dependent attribute is the
+# data/display window, here 0,0,0,0). Pinning it locks the attribute order,
+# each field width, and the channel count against any silent regression.
+_GOLDEN_1X1_HEADER = bytes.fromhex(
+    "762f3101020000006368616e6e656c730063686c697374003700000042000200"
+    "0000000000000100000001000000470002000000000000000100000001000000"
+    "52000200000000000000010000000100000000636f6d7072657373696f6e0063"
+    "6f6d7072657373696f6e0001000000006461746157696e646f7700626f783269"
+    "001000000000000000000000000000000000000000646973706c617957696e64"
+    "6f7700626f7832690010000000000000000000000000000000000000006c696e"
+    "654f72646572006c696e654f72646572000100000000706978656c4173706563"
+    "74526174696f00666c6f617400040000000000803f73637265656e57696e646f"
+    "7743656e746572007632660008000000000000000000000073637265656e5769"
+    "6e646f77576964746800666c6f617400040000000000803f00"
+)
+
 
 def _write_dsm(
     path: Path,
@@ -289,6 +306,22 @@ def test_single_pixel_raster(tmp_path: Path) -> None:
     assert r[0, 0] == np.float32(194000.25)
     assert g[0, 0] == np.float32(443019.75)
     assert b[0, 0] == np.float32(42.0)
+
+
+def test_single_pixel_header_is_the_byte_exact_golden(tmp_path: Path) -> None:
+    """The magic + version + header of a 1x1 EXR matches the pinned golden.
+
+    A known-bytes prefix locks the attribute order, each field width, and the
+    channel count -- an attribute reorder or a stray attribute would break it.
+    """
+    src = tmp_path / "dsm.tif"
+    _write_dsm(src, np.array([[42.0]], dtype=np.float32))
+    out = tmp_path / "positions.exr"
+
+    export_positions(src, out)
+
+    data = out.read_bytes()
+    assert data[: len(_GOLDEN_1X1_HEADER)] == _GOLDEN_1X1_HEADER
 
 
 def test_non_square_raster_round_trips(tmp_path: Path) -> None:

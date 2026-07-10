@@ -64,8 +64,24 @@ class PixelGrid:
 
     def eastings(self) -> npt.NDArray[np.float64]:
         """Return the pixel-centre world X of every pixel, shape (h, w)."""
-        return np.zeros((self.height, self.width), dtype=np.float64)
+        cols, rows = self._centre_grids()
+        t = self.transform  # x = a*col + b*row + c
+        return np.asarray(t[0] * cols + t[1] * rows + t[2], np.float64)
 
     def northings(self) -> npt.NDArray[np.float64]:
         """Return the pixel-centre world Y of every pixel, shape (h, w)."""
-        return np.zeros((self.height, self.width), dtype=np.float64)
+        cols, rows = self._centre_grids()
+        t = self.transform  # y = d*col + e*row + f
+        return np.asarray(t[3] * cols + t[4] * rows + t[5], np.float64)
+
+    def _centre_grids(
+        self,
+    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
+        """Return broadcastable ``(1, w)`` column and ``(h, 1)`` row centres.
+
+        Each pixel ``(col, row)`` is sampled at its centre ``(col + 0.5,
+        row + 0.5)``; the two arrays broadcast to a ``(height, width)`` mesh.
+        """
+        cols = (np.arange(self.width, dtype=np.float64) + 0.5)[np.newaxis, :]
+        rows = (np.arange(self.height, dtype=np.float64) + 0.5)[:, np.newaxis]
+        return cols, rows

@@ -11,7 +11,9 @@ from ahn_cli.prep.transform import (
 )
 
 
-def test_prep_request_defaults_to_no_filters_and_no_export(tmp_path: Path) -> None:
+def test_prep_request_defaults_to_no_filters_and_no_export(
+    tmp_path: Path,
+) -> None:
     """A bare request selects every class and exports nothing."""
     request = PrepRequest(data_dir=tmp_path)
 

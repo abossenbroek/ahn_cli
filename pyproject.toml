@@ -22,7 +22,7 @@ dependencies = [
 pdal = ["pdal>=2.5.0"]
 
 [project.scripts]
-ahn_cli = "ahn_cli.main:main"
+ahn_cli = "ahn_cli.cli:cli"
 
 
 [build-system]

@@ -19,7 +19,9 @@ def test_site_subdirs_are_the_three_canonical_products() -> None:
     assert SITE_SUBDIRS == ("ahn", "ortho", "viirs")
 
 
-def test_create_site_layout_makes_every_subdir_in_order(tmp_path: Path) -> None:
+def test_create_site_layout_makes_every_subdir_in_order(
+    tmp_path: Path,
+) -> None:
     """The layout creates one directory per product, in canonical order."""
     site = tmp_path / "delft"
 
@@ -61,7 +63,9 @@ def test_source_not_wired_error_is_a_not_implemented_error() -> None:
     assert issubclass(SourceNotWiredError, NotImplementedError)
 
 
-def test_acquisition_request_is_hashable_and_value_typed(tmp_path: Path) -> None:
+def test_acquisition_request_is_hashable_and_value_typed(
+    tmp_path: Path,
+) -> None:
     """The request is a frozen value object: hashable and equal by value."""
     first = AcquisitionRequest(
         site_dir=tmp_path,

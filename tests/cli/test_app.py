@@ -47,7 +47,15 @@ def test_fetch_rejects_two_area_selectors(tmp_path: Path) -> None:
     """Supplying two selectors is a usage error, not a silent pick."""
     result = CliRunner().invoke(
         cli,
-        ["fetch", "--out", str(tmp_path / "s"), "--city", "delft", "--bbox", "0,0,1,1"],
+        [
+            "fetch",
+            "--out",
+            str(tmp_path / "s"),
+            "--city",
+            "delft",
+            "--bbox",
+            "0,0,1,1",
+        ],
     )
 
     assert result.exit_code == 2
@@ -60,7 +68,9 @@ def test_fetch_with_city_builds_layout_then_reports_not_wired(
     """A valid fetch creates the layout and stops at the un-wired seam."""
     site = tmp_path / "delft"
 
-    result = CliRunner().invoke(cli, ["fetch", "--out", str(site), "--city", "delft"])
+    result = CliRunner().invoke(
+        cli, ["fetch", "--out", str(site), "--city", "delft"]
+    )
 
     assert result.exit_code == 1
     assert "wired" in result.output.lower()
@@ -98,7 +108,14 @@ def test_prep_parses_filters_then_reports_not_wired(tmp_path: Path) -> None:
     """A valid prep parses class filters and stops at the un-wired seam."""
     result = CliRunner().invoke(
         cli,
-        ["prep", "--data", str(tmp_path), "--include-class", "2,6", "--points"],
+        [
+            "prep",
+            "--data",
+            str(tmp_path),
+            "--include-class",
+            "2,6",
+            "--points",
+        ],
     )
 
     assert result.exit_code == 1
@@ -124,7 +141,9 @@ def test_prep_rejects_non_integer_class(tmp_path: Path) -> None:
     assert "integer" in result.output.lower()
 
 
-def test_prep_rejects_class_in_both_include_and_exclude(tmp_path: Path) -> None:
+def test_prep_rejects_class_in_both_include_and_exclude(
+    tmp_path: Path,
+) -> None:
     """A class cannot be both kept and dropped."""
     result = CliRunner().invoke(
         cli,

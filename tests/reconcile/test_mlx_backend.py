@@ -37,7 +37,7 @@ class _FakeArray:
 
 
 class _FakeKernel:
-    """A numpy reimplementation of the kNN kernel's device computation."""
+    """A numpy reimplementation of the candidate-kNN kernel's computation."""
 
     def __call__(
         self,
@@ -47,7 +47,7 @@ class _FakeKernel:
         threadgroup: tuple[int, int, int],
         output_shapes: Sequence[tuple[int, ...]],
         output_dtypes: Sequence[object],
-    ) -> tuple[MlxArray, MlxArray]:
+    ) -> tuple[MlxArray, ...]:
         del grid, threadgroup, output_dtypes
         tx, ty, sx, sy, dims = (np.asarray(item) for item in inputs)
         q, n = int(dims[0]), int(dims[1])
@@ -58,10 +58,9 @@ class _FakeKernel:
         sq = (diff * diff).sum(axis=2)
         # Stable argsort matches the kernel's ascending, index-tie-break order.
         order = np.argsort(sq, axis=1, kind="stable")[:, :k]
-        out_sq = np.take_along_axis(sq, order, axis=1).reshape(q * k)
         out_idx = order.reshape(q * k).astype(np.int32)
         del n
-        return _FakeArray(out_sq), _FakeArray(out_idx)
+        return (_FakeArray(out_idx),)
 
 
 class _FakeFast:

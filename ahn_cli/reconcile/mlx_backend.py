@@ -6,13 +6,21 @@ hand-written ``mlx.fast.metal_kernel`` on the GPU, returning the same
 ``(sq_dist, idx)`` contract as the numpy reference so the interpolation
 algorithms are unchanged.
 
-**Determinism.** The kernel computes distances in float32 (Metal), so its
-squared distances differ from the float64 numpy reference in the last ULPs: the
-backend is ``numpy.allclose``-equivalent, not byte-identical. The numpy backend
-remains the CLI default and the byte-deterministic path; ``--backend mlx`` opts
-into the accelerator. Within the kernel, ties are broken by ascending source
-index (the insertion uses a strict ``>`` while scanning sources in order), so on
-tie-free inputs the neighbour *sets* match the reference exactly.
+**Determinism.** The GPU searches in float32, which on dense data can flip which
+points sit at the k-boundary; :func:`_refine` re-ranks ``k + margin`` candidates
+in float64 host-side, so the neighbour set matches the numpy reference (exact but
+for genuinely equidistant ties) and the returned distances are
+``numpy.allclose`` to it -- not byte-identical. The numpy backend remains the CLI
+default and the byte-deterministic path; ``--backend mlx`` opts into the
+accelerator.
+
+**Performance.** The raw float32 kNN is a brute-force ``O(q * n)`` scan -- fast
+per-query on the GPU, but it does not out-scale scipy's indexed ``cKDTree`` once
+the float64 refinement is included, and cannot handle a full ortho tile
+(``q * n`` is astronomical there). It is a correct, real ``metal_kernel``; a
+binned/grid kernel is the route to a robust at-scale speedup (a documented
+follow-up). Prefer the numpy default unless benchmarking shows a win for the
+workload at hand.
 
 **Coverage.** Every branch (empty source, empty target) is host-side Python; the
 GPU kernel is straight-line per thread. The ``mlx.core`` handle *and*
@@ -38,6 +46,15 @@ if TYPE_CHECKING:
 
 _THREADGROUP = 256
 """Threads per Metal threadgroup; the grid is one thread per target cell."""
+
+_REFINE_MARGIN = 16
+"""Extra float32 candidates fetched per query so the exact float64 refinement
+below re-selects the *true* k nearest. The GPU's float32 distances can flip which
+points sit at the k-boundary on dense data (swinging an interpolated elevation by
+metres at surface discontinuities); fetching ``k + margin`` candidates and
+re-ranking them in float64 host-side recovers the numpy reference's neighbour set
+(exact but for genuine equidistant ties), so ``--backend mlx`` stays
+``allclose``-faithful, not merely close."""
 
 _KNN_SOURCE = """
     uint qi = thread_position_in_grid.x;
@@ -68,13 +85,37 @@ _KNN_SOURCE = """
         }}
     }}
     for (int t = 0; t < {k}; t++) {{
-        out_sq[qi * {k} + t] = best_sq[t];
         out_idx[qi * {k} + t] = best_idx[t];
     }}
 """
-"""The kNN kernel *body* (mlx synthesises the signature from the input/output
-names). ``{k}`` is substituted with the neighbour count so the per-thread best
-arrays are fixed-size; mlx caches the compiled kernel per distinct source."""
+"""The candidate-kNN kernel *body* (mlx synthesises the signature from the
+input/output names). It returns the ``{k}`` nearest *indices* only -- exact
+distances are recomputed in float64 host-side. ``{k}`` is substituted with the
+candidate count so the per-thread best arrays are fixed-size; mlx caches the
+compiled kernel per distinct source."""
+
+
+def _refine(
+    target_xy: npt.NDArray[np.float64],
+    source_xy: npt.NDArray[np.float64],
+    candidate_idx: npt.NDArray[np.intp],
+    k: int,
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.intp]]:
+    """Re-rank the GPU candidates in float64 and take the true ``k`` nearest.
+
+    Recomputes exact squared distances to the candidate indices, then returns
+    the ``k`` smallest per row ordered by ascending distance with source-index
+    tie-break -- matching :func:`ahn_cli.reconcile.neighbors.knn` (exact but for
+    genuinely equidistant boundary ties).
+    """
+    candidate_points = source_xy[candidate_idx]
+    diff = candidate_points - target_xy[:, np.newaxis, :]
+    sq = (diff * diff).sum(axis=2)
+    order = np.lexsort((candidate_idx, sq), axis=1)[:, :k]
+    return (
+        np.take_along_axis(sq, order, axis=1),
+        np.take_along_axis(candidate_idx, order, axis=1),
+    )
 
 
 class MlxArray(Protocol):
@@ -96,8 +137,8 @@ class MlxKernel(Protocol):
         threadgroup: tuple[int, int, int],
         output_shapes: Sequence[tuple[int, ...]],
         output_dtypes: Sequence[object],
-    ) -> tuple[MlxArray, MlxArray]:
-        """Launch the kernel, returning the ``(out_sq, out_idx)`` device arrays."""
+    ) -> tuple[MlxArray, ...]:
+        """Launch the kernel, returning its output device arrays."""
         ...
 
 
@@ -171,11 +212,11 @@ class MlxBackend:
 
         Mirrors :func:`ahn_cli.reconcile.neighbors.knn`: ``(sq_dist, idx)``
         shaped ``(q, min(k, n))`` with each row ordered by ascending squared
-        distance and source-index tie-break. Squared distances are computed in
-        float32, so they are ``allclose``- rather than byte-equal to the numpy
-        reference.
+        distance and source-index tie-break. The GPU finds ``k + margin`` float32
+        candidates; :func:`_refine` re-ranks them in float64, so the neighbour
+        set matches the numpy reference (exact but for genuine ties) and the
+        returned distances are ``allclose`` to it.
         """
-        mx = self._mx
         q = target_xy.shape[0]
         n = source_xy.shape[0]
         k_eff = min(k, n)
@@ -189,12 +230,27 @@ class MlxBackend:
                 np.empty((0, k_eff), dtype=np.float64),
                 np.empty((0, k_eff), dtype=np.intp),
             )
+        candidate_k = min(n, k_eff + _REFINE_MARGIN)
+        candidate_idx = self._gpu_candidates(
+            target_xy, source_xy, candidate_k
+        )
+        return _refine(target_xy, source_xy, candidate_idx, k_eff)
 
+    def _gpu_candidates(
+        self,
+        target_xy: npt.NDArray[np.float64],
+        source_xy: npt.NDArray[np.float64],
+        candidate_k: int,
+    ) -> npt.NDArray[np.intp]:
+        """Return the ``candidate_k`` nearest source indices per target, on GPU."""
+        mx = self._mx
+        q = target_xy.shape[0]
+        n = source_xy.shape[0]
         kernel = mx.fast.metal_kernel(
-            name=f"reconcile_knn_{k_eff}",
+            name=f"reconcile_knn_{candidate_k}",
             input_names=["tx", "ty", "sx", "sy", "dims"],
-            output_names=["out_sq", "out_idx"],
-            source=_KNN_SOURCE.format(k=k_eff),
+            output_names=["out_idx"],
+            source=_KNN_SOURCE.format(k=candidate_k),
         )
         inputs = [
             mx.array(np.ascontiguousarray(target_xy[:, 0], dtype=np.float32)),
@@ -203,17 +259,16 @@ class MlxBackend:
             mx.array(np.ascontiguousarray(source_xy[:, 1], dtype=np.float32)),
             mx.array(np.array([q, n], dtype=np.int32)),
         ]
-        out_sq, out_idx = kernel(
+        outputs = kernel(
             inputs=inputs,
             grid=(q, 1, 1),
             threadgroup=(min(q, _THREADGROUP), 1, 1),
-            output_shapes=[(q * k_eff,), (q * k_eff,)],
-            output_dtypes=[mx.float32, mx.int32],
+            output_shapes=[(q * candidate_k,)],
+            output_dtypes=[mx.int32],
         )
-        mx.eval(out_sq, out_idx)
-        sq = np.asarray(out_sq).astype(np.float64).reshape(q, k_eff)
-        idx = np.asarray(out_idx).astype(np.intp).reshape(q, k_eff)
-        return sq, idx
+        out_idx = outputs[0]
+        mx.eval(out_idx)
+        return np.asarray(out_idx).astype(np.intp).reshape(q, candidate_k)
 
 
 def select_backend(

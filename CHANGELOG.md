@@ -374,6 +374,26 @@
   loop=notification-driven-cascade
   pending-user={WP11 perf-target gap (metal_kernel fast-follow) — accepted, flag for review}
 
+### 2026-07-10 — WP11 MERGED #12 (after rebase + CI-pyright refix)
+- WP11 graded GPU decimation: PR #12 → squash 88d6035 (head a19dbbb). Bounced once
+  on the same numpy/py3.10-pyright trap as WP10 (decimate.py:394 group_ids unknown
+  on numpy2.2.6); refixed via an honest load-bearing `cast(NDArray[int64])` verified
+  0 errors on both py3.10 AND py3.12. 2 adversarial reviews PASS — BOTH installed
+  real mlx and RAN the equivalence tests (voxel byte-exact grades 0–9, Poisson
+  min-distance holds), and one disproved an int32-overflow hypothesis directly
+  (int64 composite key preserved at n=50000). Fake-mlx coverage judged HONEST
+  (faithful ops, asserted vs numpy reference), max-args=8 only for Click prep
+  entrypoint, mlx isolated as platform-conditional optional extra. 11 of 14 merged.
+- INTEGRATION DEBT for WP14: prep transforms (dedup #WP10, decimate #WP11, ply #WP13)
+  are all landed + fully tested STANDALONE but `prep`'s `prepare()` still raises
+  TransformNotWiredError — the dedup→decimate→export pipeline is NOT user-wired yet.
+  WP14 must wire prepare() end-to-end and add the vertical-slice test, OR a dedicated
+  wiring WP is needed. Same staging as fetch seams before WP6 wired actuation.
+- STATE: merged={WP0,WP1,WP2,WP3,WP4,WP5,WP6,WP9,WP10,WP11,WP13} in-flight={WP7, WP8}
+  blocked={WP12<-WP7, WP14<-all} wiring-debt={prep.prepare() unwired → WP14}
+  loop=notification-driven-cascade
+  pending-user={WP11 perf gap (metal_kernel) — accepted fast-follow}
+
 ## [0.2.1] - 2024-05-04
 ### Changed
 * feat: Add validation for exclusive arguments

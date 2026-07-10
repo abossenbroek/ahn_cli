@@ -8,6 +8,7 @@ readme = "README.md"
 requires-python = ">=3.10,<3.13"
 dependencies = [
     "click>=8.2.0",
+    "defusedxml>=0.7.1",
     "geopandas>=1.1.0",
     "shapely>=2.1.0",
     "laspy[lazrs]>=2.6.0",
@@ -73,6 +74,13 @@ ignore = [
 
 [tool.ruff.lint.isort]
 known-first-party = ["ahn_cli"]
+
+[tool.ruff.lint.pylint]
+# The `fetch` CLI entrypoint carries one option per acquisition parameter
+# (out, city, bbox, geojson, ahn, source); 6 is the idiomatic ceiling for a
+# Click command's option surface. Applies globally; legacy modules are ruff-
+# exempt already, and no new module's plain function reaches this bound.
+max-args = 6
 
 [tool.ruff.lint.per-file-ignores]
 # KEEP IN SYNC with [tool.coverage.run] omit and [tool.pyright] exclude.

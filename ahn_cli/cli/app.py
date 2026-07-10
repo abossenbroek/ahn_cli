@@ -16,13 +16,18 @@ from pathlib import Path
 import click
 
 from ahn_cli.fetch.acquisition import (
+    AcquisitionError,
     AcquisitionRequest,
     AreaSelectorKind,
-    SourceNotWiredError,
     acquire,
     create_site_layout,
 )
 from ahn_cli.fetch.generation import AUTO_CHOICE, default_registry
+from ahn_cli.fetch.source import (
+    SourceKind,
+    resolve_source_token,
+    source_kind_tokens,
+)
 from ahn_cli.fetch.viirs import ViirsImportError, import_viirs
 from ahn_cli.prep.transform import (
     PrepRequest,
@@ -147,32 +152,43 @@ def cli() -> None:
     show_default=True,
     help="AHN generation to fetch; 'auto' picks the newest available.",
 )
+@click.option(
+    "--source",
+    "source",
+    type=click.Choice(source_kind_tokens()),
+    default=SourceKind.PDOK.value,
+    show_default=True,
+    help="Distribution source; 'pdok' is primary, 'geotiles' the fallback.",
+)
 def fetch(
     out: Path,
     city: str | None,
     bbox: str | None,
     geojson: str | None,
     ahn: str,
+    source: str,
 ) -> None:
     """Acquire raw source tiles for one site (acquisition stage only).
 
     Validates that exactly one area selector is given, resolves the requested
-    AHN generation, creates the ``<out>/{ahn,ortho,viirs}/`` layout, and
-    dispatches to the fetch context. Downloading (and the newest-available
-    ``auto`` probe) is not wired until WP6, so this reports the un-wired seam.
+    AHN generation and distribution source, creates the
+    ``<out>/{ahn,ortho,viirs}/`` layout, and downloads the covering sheets
+    (through the content cache) with a provenance sidecar per sheet.
     """
     selector, area = _select_area(city, bbox, geojson)
     generation = _GENERATION_REGISTRY.resolve_token(ahn)
+    source_kind = resolve_source_token(source)
     create_site_layout(out)
     request = AcquisitionRequest(
         site_dir=out,
         selector=selector,
         area=area,
+        source=source_kind,
         generation=generation,
     )
     try:
         acquire(request)
-    except SourceNotWiredError as exc:
+    except AcquisitionError as exc:
         raise click.ClickException(str(exc)) from exc
 
 

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom" xmlns:georss="http://www.georss.org/georss" xml:lang="nl">
+ <id>https://service.pdok.nl/rws/ahn/atom/ahn_laz.xml</id>
+ <title>AHN puntenwolk (LAZ) - Kaartbladen - EPSG:28992</title>
+ <subtitle>AHN point cloud tiles as LAZ.</subtitle>
+ <rights>https://creativecommons.org/publicdomain/zero/1.0/deed.nl</rights>
+ <author>
+  <name>RWS</name>
+  <email>servicedesk-data@rws.nl</email>
+ </author>
+ <link href="https://service.pdok.nl/rws/ahn/atom/ahn_laz.xml" rel="self" hreflang="nl"></link>
+ <link href="https://service.pdok.nl/rws/ahn/atom/index.xml" rel="up" type="application/atom+xml" hreflang="nl" title="Top Atom Download Service Feed"></link>
+ <entry>
+  <id>https://service.pdok.nl/rws/ahn/atom/ahn_laz_epsg28992.xml</id>
+  <title>AHN puntenwolk (LAZ) - EPSG:28992</title>
+  <content>Download AHN kaartbladen as LAZ.</content>
+  <link href="https://service.pdok.nl/rws/ahn/atom/downloads/ahn_laz/kaartbladindex.json" rel="index" type="application/json" hreflang="nl" title="kaartbladindex.json" />
+  <link href="https://service.pdok.nl/rws/ahn/atom/downloads/ahn_laz/C_37EN1.LAZ" rel="section" type="application/octet-stream" hreflang="nl" length="256000000" title="AHN puntenwolk EPSG:28992 LAZ - Kaartblad C_37EN1" bbox="4.300000 51.970000 4.420000 52.050000" />
+  <link href="https://service.pdok.nl/rws/ahn/atom/downloads/ahn_laz/C_37EN2.LAZ" rel="section" type="application/octet-stream" hreflang="nl" length="312000000" title="AHN puntenwolk EPSG:28992 LAZ - Kaartblad C_37EN2" bbox="4.420000 51.970000 4.540000 52.050000" />
+  <link href="https://service.pdok.nl/rws/ahn/atom/downloads/ahn_laz/C_02DN1.LAZ" rel="section" type="application/octet-stream" hreflang="nl" length="198000000" title="AHN puntenwolk EPSG:28992 LAZ - Kaartblad C_02DN1" bbox="5.913900 53.440994 5.989926 53.497499" />
+ </entry>
+</feed>

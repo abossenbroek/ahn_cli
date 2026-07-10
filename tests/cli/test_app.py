@@ -5,13 +5,15 @@ from typing import cast
 
 import click
 import numpy as np
+import pytest
 import rasterio
 from click.testing import CliRunner
 from rasterio.transform import from_bounds
 
-from ahn_cli.cli import cli
-from ahn_cli.fetch.acquisition import SITE_SUBDIRS
+from ahn_cli.cli import app, cli
+from ahn_cli.fetch.acquisition import SITE_SUBDIRS, AcquisitionRequest
 from ahn_cli.fetch.generation import default_registry
+from ahn_cli.fetch.source import SourceKind
 
 
 def _write_geotiff(path: Path) -> None:
@@ -100,17 +102,78 @@ def test_fetch_with_city_builds_layout_then_reports_not_wired(
         assert (site / name).is_dir()
 
 
-def test_fetch_accepts_bbox_selector(tmp_path: Path) -> None:
-    """The bbox selector is a valid, mutually-exclusive area choice."""
+class _AcquireSpy:
+    """Records the request the CLI dispatched, standing in for acquire()."""
+
+    def __init__(self) -> None:
+        self.request: AcquisitionRequest | None = None
+
+    def __call__(self, request: AcquisitionRequest) -> tuple[Path, ...]:
+        self.request = request
+        return ()
+
+
+def test_fetch_bbox_dispatches_to_acquire(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The wired bbox selector builds the layout and dispatches to acquire."""
     site = tmp_path / "bboxsite"
+    spy = _AcquireSpy()
+    monkeypatch.setattr(app, "acquire", spy)
 
     result = CliRunner().invoke(
         cli,
         ["fetch", "--out", str(site), "--bbox", "0,0,1,1"],
     )
 
-    assert result.exit_code == 1
+    assert result.exit_code == 0
     assert (site / SITE_SUBDIRS[0]).is_dir()
+    assert spy.request is not None
+    assert spy.request.selector.value == "bbox"
+    assert spy.request.source is SourceKind.PDOK
+
+
+def test_fetch_source_flag_selects_geotiles(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The --source flag flows through to the acquisition request."""
+    spy = _AcquireSpy()
+    monkeypatch.setattr(app, "acquire", spy)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "fetch",
+            "--out",
+            str(tmp_path / "s"),
+            "--bbox",
+            "0,0,1,1",
+            "--source",
+            "geotiles",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert spy.request is not None
+    assert spy.request.source is SourceKind.GEOTILES
+
+
+def test_fetch_rejects_unknown_source(tmp_path: Path) -> None:
+    """A --source outside the registry's tokens is a usage error."""
+    result = CliRunner().invoke(
+        cli,
+        [
+            "fetch",
+            "--out",
+            str(tmp_path / "s"),
+            "--bbox",
+            "0,0,1,1",
+            "--source",
+            "wms",
+        ],
+    )
+
+    assert result.exit_code == 2
 
 
 def test_fetch_accepts_geojson_selector(tmp_path: Path) -> None:

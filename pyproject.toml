@@ -67,7 +67,10 @@ known-first-party = ["ahn_cli"]
 
 [tool.ruff.lint.per-file-ignores]
 # KEEP IN SYNC with [tool.coverage.run] omit and [tool.pyright] exclude.
-# Legacy files predate the 7rad epic and are grandfathered from strict ruff.
+# GOVERNANCE: a legacy MODULE may be grandfathered ONLY IF it is marked
+# deprecated -- a top-of-file `DEPRECATED; ANY LOGIC USED IN THIS CODE SHOULD
+# BE MOVED` comment AND a module-level DeprecationWarning. Legacy TEST files
+# are grandfathered as-is (the rule targets shipped modules, not tests).
 # De-grandfathering a file (a WP rewriting it) removes it from ALL THREE lists
 # and requires it to pass strict ruff ALL + strict pyright + 100% branch cov.
 "ahn_cli/main.py" = ["ALL"]
@@ -106,12 +109,14 @@ branch = true
 source = ["ahn_cli"]
 # Legacy modules predate the 7rad §10 data-acquisition epic and are exempt
 # from the 100% gate. KEEP IN SYNC with [tool.ruff.lint.per-file-ignores] and
-# [tool.pyright] exclude. RULE: de-grandfathering a file (a WP rewriting it)
-# removes it from ALL THREE lists and requires it to pass strict ruff ALL +
-# strict pyright + 100% branch coverage. (Coverage measures only ahn_cli, so
-# the legacy *test* files in the other two lists have no entry here.) New
-# packages the epic adds (domain/, cli/, fetch/, prep/, provenance/, cache/,
-# ...) are intentionally absent here, so they are gated the moment they land.
+# [tool.pyright] exclude. GOVERNANCE: a module may be grandfathered ONLY IF it
+# is marked deprecated (top-of-file `DEPRECATED; ANY LOGIC USED IN THIS CODE
+# SHOULD BE MOVED` comment + a module-level DeprecationWarning). De-grandfathering
+# a file (a WP rewriting it) removes it from ALL THREE lists and requires it to
+# pass strict ruff ALL + strict pyright + 100% branch coverage. (Coverage
+# measures only ahn_cli, so the legacy *test* files in the other two lists have
+# no entry here.) New packages the epic adds (domain/, cli/, fetch/, prep/,
+# provenance/, cache/, ...) are intentionally absent, so they are gated on land.
 omit = [
     "ahn_cli/main.py",
     "ahn_cli/process.py",
@@ -129,12 +134,20 @@ show_missing = true
 # Pyright configuration
 [tool.pyright]
 typeCheckingMode = "strict"
+# venvPath/venv point pyright at the uv-managed .venv so BOTH the pyright
+# pre-commit mirror (which runs in its own isolated env) and CI's
+# `uv run pyright` resolve third-party imports (laspy, geopandas, ...)
+# identically.
+venvPath = "."
+venv = ".venv"
 include = ["ahn_cli", "tests"]
 # Grandfather the SAME legacy set as coverage `omit` + ruff per-file-ignores,
-# plus the legacy test files. KEEP IN SYNC with those two lists. RULE:
-# de-grandfathering a file (a WP rewriting it) removes it from ALL THREE lists
-# and requires it to pass strict ruff ALL + strict pyright + 100% branch
-# coverage. New epic code and any new tests must be strict-pyright-clean.
+# plus the legacy test files. KEEP IN SYNC with those two lists. GOVERNANCE: a
+# legacy MODULE may be grandfathered ONLY IF it is marked deprecated (top-of-file
+# `DEPRECATED; ANY LOGIC USED IN THIS CODE SHOULD BE MOVED` + a module-level
+# DeprecationWarning); legacy TEST files are grandfathered as-is. De-grandfathering
+# a file (a WP rewriting it) removes it from ALL THREE lists and requires it to
+# pass strict ruff ALL + strict pyright + 100% branch coverage.
 exclude = [
     "ahn_cli/main.py",
     "ahn_cli/process.py",

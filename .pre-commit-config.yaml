@@ -1,35 +1,29 @@
-# Fast pre-commit gates that mirror the CI checks exactly. Each hook shells out
-# to the same `make` target CI runs, and every make target runs its tool via
-# `uv run ...`, so hooks execute in the synced venv and cannot drift from CI.
-# The full test suite + 100% coverage gate is deliberately left to CI (`make
-# test`), keeping commits fast. Install once with: uv run pre-commit install
+# Fast pre-commit gates. Ruff and pyright come from their official upstream
+# mirrors (pinned); typos stays a repo-local `make` hook. The pyright mirror
+# runs pyright in its own isolated environment, so [tool.pyright] sets
+# venvPath/venv to the uv-managed .venv -- that lets BOTH this hook and CI's
+# `uv run pyright` resolve third-party imports (laspy, geopandas, ...)
+# identically. The full test suite + 100% coverage gate is left to CI
+# (`make test`). Install once with: uv run pre-commit install
 repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.21
+    hooks:
+      - id: ruff-check
+      - id: ruff-format
+
+  - repo: https://github.com/RobertCraigie/pyright-python
+    rev: v1.1.411
+    hooks:
+      - id: pyright
+        pass_filenames: false
+        always_run: true
+
   - repo: local
     hooks:
-      - id: ruff-lint
-        name: ruff check (strict lint)
-        entry: make lint
-        language: system
-        pass_filenames: false
-        always_run: true
-
-      - id: ruff-format
-        name: ruff format (check)
-        entry: make format-check
-        language: system
-        pass_filenames: false
-        always_run: true
-
       - id: typos
         name: typos
         entry: make typos
-        language: system
-        pass_filenames: false
-        always_run: true
-
-      - id: pyright
-        name: pyright (strict typecheck)
-        entry: make typecheck
         language: system
         pass_filenames: false
         always_run: true

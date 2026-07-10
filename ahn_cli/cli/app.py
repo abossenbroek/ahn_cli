@@ -43,8 +43,8 @@ from ahn_cli.prep.positions import (
     export_positions,
 )
 from ahn_cli.prep.transform import (
+    PrepError,
     PrepRequest,
-    TransformNotWiredError,
     prepare,
 )
 
@@ -350,8 +350,9 @@ def prep(
     """Transform and export a fetched site (transform stage only).
 
     Parses and validates the classification filters and the graded-thinning
-    request, then dispatches to the prep context. The transforms themselves are
-    not wired yet, so this reports the un-wired seam.
+    request, then dispatches to the prep context, which deduplicates, filters,
+    thins, writes the site provenance, and (with ``--points``) exports the
+    point cloud.
     """
     include = _parse_classes(include_class)
     exclude = _parse_classes(exclude_class)
@@ -368,7 +369,7 @@ def prep(
     )
     try:
         prepare(request)
-    except TransformNotWiredError as exc:
+    except PrepError as exc:
         raise click.ClickException(str(exc)) from exc
 
 

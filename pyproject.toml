@@ -132,6 +132,19 @@ quote-style = "double"
 indent-style = "space"
 line-ending = "auto"
 
+# Pytest configuration
+[tool.pytest.ini_options]
+# The fast default suite is fully mocked/offline and 100%-covered. Live
+# portal-contract checks are marked ``nightly`` and DESELECTED here, so a plain
+# ``pytest`` (and ``make test``) never touches the network; the nightly CI tier
+# opts back in with ``pytest -m nightly`` (``make test-nightly``). The nightly
+# tests exercise only code the fast suite already covers, so excluding them keeps
+# the 100% gate intact without omitting any shipped module.
+markers = [
+    "nightly: live portal-contract checks against the real PDOK / Beeldmateriaal endpoints; excluded from the fast offline suite, run on the nightly CI schedule.",
+]
+addopts = "-m 'not nightly'"
+
 # Coverage configuration
 [tool.coverage.run]
 branch = true

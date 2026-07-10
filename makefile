@@ -37,6 +37,10 @@ typecheck:
 test:
 	uv run pytest --cov=$(PACKAGE_DIR) --cov-branch
 
+.PHONY: test-nightly
+test-nightly:
+	AHN_CLI_NIGHTLY=1 uv run pytest -m nightly
+
 .PHONY: check
 check: lint typos typecheck test format-check
 

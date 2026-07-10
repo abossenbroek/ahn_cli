@@ -36,6 +36,15 @@ include = ["ahn_cli/**/*.py", "ahn_cli/**/*.geojson", "README.md", "LICENSE"]
 [tool.ruff]
 line-length = 78
 target-version = "py310"
+# ``typings/`` holds vendored third-party type stubs for the untyped ``laspy``
+# API (see typings/laspy/__init__.pyi). Stubs for a dynamic C-backed library
+# inherently need ``Any`` signatures and mirror the library's own ``open`` name,
+# which strict first-party rules (ANN401, A001) reject; they are typing
+# infrastructure, not first-party source, so they are not linted. This is NOT a
+# coverage-omit or pyright-exclude of any shipped module. ``force-exclude`` makes
+# the exclusion hold even when pre-commit passes stub paths explicitly.
+extend-exclude = ["typings"]
+force-exclude = true
 
 [tool.ruff.lint]
 # Strictest: enable every rule, then subtract only rules that conflict with the

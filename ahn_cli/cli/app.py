@@ -23,6 +23,7 @@ from ahn_cli.fetch.acquisition import (
     create_site_layout,
 )
 from ahn_cli.fetch.generation import AUTO_CHOICE, default_registry
+from ahn_cli.fetch.viirs import ViirsImportError, import_viirs
 from ahn_cli.prep.transform import (
     PrepRequest,
     TransformNotWiredError,
@@ -231,3 +232,29 @@ def prep(
         prepare(request)
     except TransformNotWiredError as exc:
         raise click.ClickException(str(exc)) from exc
+
+
+@cli.command(name="import-viirs")
+@click.option(
+    "--out",
+    "out",
+    required=True,
+    type=click.Path(file_okay=False, path_type=Path),
+    help="Site directory to populate, e.g. data/delft.",
+)
+@click.argument(
+    "geotiff",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+)
+def import_viirs_command(out: Path, geotiff: Path) -> None:
+    """Import an externally-produced VIIRS GeoTIFF into ``<out>/viirs/``.
+
+    Verify-opens the raster, records its CRS/extent/bands and a content
+    checksum, copies it byte-for-byte into ``<out>/viirs/``, and writes a
+    provenance sidecar beside it. No reprojection or resampling is performed.
+    """
+    try:
+        result = import_viirs(geotiff, out)
+    except ViirsImportError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(f"Imported VIIRS raster to {result.dest_path}")

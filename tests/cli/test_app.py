@@ -4,11 +4,31 @@ from pathlib import Path
 from typing import cast
 
 import click
+import numpy as np
+import rasterio
 from click.testing import CliRunner
+from rasterio.transform import from_bounds
 
 from ahn_cli.cli import cli
 from ahn_cli.fetch.acquisition import SITE_SUBDIRS
 from ahn_cli.fetch.generation import default_registry
+
+
+def _write_geotiff(path: Path) -> None:
+    """Write a tiny valid single-band GeoTIFF at ``path``."""
+    transform = from_bounds(3.0, 50.0, 7.0, 53.0, 4, 3)
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        height=3,
+        width=4,
+        count=1,
+        dtype="float32",
+        crs="EPSG:4326",
+        transform=transform,
+    ) as dst:
+        dst.write(np.arange(12, dtype="float32").reshape(1, 3, 4))
 
 
 def _short_flags(command: click.Command) -> list[str]:
@@ -21,9 +41,9 @@ def _short_flags(command: click.Command) -> list[str]:
     ]
 
 
-def test_group_exposes_exactly_fetch_and_prep() -> None:
-    """The restructured CLI is a group with the two required verbs."""
-    assert set(cli.commands) == {"fetch", "prep"}
+def test_group_exposes_fetch_prep_and_import_viirs() -> None:
+    """The CLI group exposes the acquisition/transform verbs plus VIIRS import."""
+    assert set(cli.commands) == {"fetch", "prep", "import-viirs"}
 
 
 def test_no_duplicate_short_flags_anywhere() -> None:
@@ -145,6 +165,47 @@ def test_fetch_rejects_an_unknown_generation(tmp_path: Path) -> None:
             "--ahn",
             "ahn9",
         ],
+    )
+
+    assert result.exit_code == 2
+
+
+def test_import_viirs_copies_geotiff_with_provenance(tmp_path: Path) -> None:
+    """``import-viirs`` copies the raster into <out>/viirs/ with provenance."""
+    source = tmp_path / "lights.tif"
+    _write_geotiff(source)
+    site = tmp_path / "delft"
+
+    result = CliRunner().invoke(
+        cli, ["import-viirs", "--out", str(site), str(source)]
+    )
+
+    assert result.exit_code == 0
+    assert "Imported VIIRS raster" in result.output
+    dest = site / "viirs" / "lights.tif"
+    assert dest.read_bytes() == source.read_bytes()
+    assert (site / "viirs" / "lights.tif.provenance.json").is_file()
+
+
+def test_import_viirs_rejects_a_non_raster_file(tmp_path: Path) -> None:
+    """An import-viirs file that is not a raster is a Click error, not a crash."""
+    source = tmp_path / "broken.tif"
+    source.write_bytes(b"not a GeoTIFF")
+
+    result = CliRunner().invoke(
+        cli,
+        ["import-viirs", "--out", str(tmp_path / "delft"), str(source)],
+    )
+
+    assert result.exit_code == 1
+    assert "not a readable raster" in result.output
+
+
+def test_import_viirs_requires_an_existing_file(tmp_path: Path) -> None:
+    """A missing geotiff path is rejected by Click before importing."""
+    result = CliRunner().invoke(
+        cli,
+        ["import-viirs", "--out", str(tmp_path / "delft"), "nope.tif"],
     )
 
     assert result.exit_code == 2

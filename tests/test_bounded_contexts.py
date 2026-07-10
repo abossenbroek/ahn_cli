@@ -1,8 +1,6 @@
 """Tests for the bounded-context skeletons and the domain public API."""
 
-import ahn_cli.domain as domain
-import ahn_cli.fetch as fetch
-import ahn_cli.prep as prep
+from ahn_cli import domain, fetch, prep
 
 
 def test_fetch_context_documents_acquisition_responsibility() -> None:

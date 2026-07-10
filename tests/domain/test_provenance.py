@@ -75,7 +75,9 @@ def test_provenance_rejects_degenerate_bbox() -> None:
 def test_provenance_rejects_finish_before_start() -> None:
     """A download that finishes before it starts is inconsistent."""
     with pytest.raises(ValueError, match="must not precede"):
-        _minimal_provenance(download_finished_at=_START, download_started_at=_FINISH)
+        _minimal_provenance(
+            download_finished_at=_START, download_started_at=_FINISH
+        )
 
 
 def test_provenance_equality_and_hash_are_value_based() -> None:

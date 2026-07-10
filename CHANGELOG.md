@@ -317,6 +317,27 @@
   queued={WP8<-WP6, WP11(needs MLX/CI strategy)} blocked={WP7<-WP6, WP12<-WP7, WP14<-all}
   loop=notification-driven-cascade pending-user={}
 
+### 2026-07-10 — WP13 MERGED #10; WP9 bounced+refixed; WP11 dispatched
+- WP13 pointcloud.ply export: PR #10 → squash 5deb15f. 2 adversarial reviews PASS:
+  hand-written deterministic binary PLY (float64, bit-exact EPSG:28992 coords),
+  memory-bounded streaming via laspy chunk_iterator (spy proves read() never
+  called — defeats read-all-then-rechunk), valid PLY round-trips via independent
+  parser, all edge cases (empty/single/partial-chunk). 100% branch. Task #14 done.
+- WP9 VIIRS import: reviews SPLIT (A PASS, B BLOCK). B caught a real defect:
+  checksum did hashlib.sha256(read_bytes()) — full-file load, memory blow-up on
+  large rasters, inconsistent with the streamed shutil.copyfile. Coordinator
+  adjudication: bounce (verified defect + trivial fix > merge-with-known-flaw).
+  eng-wp9 refixed to chunked streaming hash (cbaf210, digest byte-identical, used
+  `while :=` for branch coverage), CI green. Re-gate on cbaf210 in progress.
+- WP11 GPU decimation dispatched with the MLX/CI design: MLX is Apple-silicon-only
+  but CI is Linux → CPU/numpy reference backend (default, 100% covered on CI) +
+  MLX accelerator behind an injectable handle (covered on Linux via a numpy-backed
+  fake mx; real GPU-equivalence test skipif-guarded, run locally on this Mac); mlx
+  declared platform-conditional so Linux `uv sync` never installs it.
+- STATE: merged={WP0,WP1,WP2,WP3,WP4,WP5,WP10,WP13} in-flight={WP6, WP11}
+  in-gate={WP9:refix@cbaf210} queued={WP8<-WP6} blocked={WP7<-WP6, WP12<-WP7, WP14<-all}
+  loop=notification-driven-cascade pending-user={}
+
 ## [0.2.1] - 2024-05-04
 ### Changed
 * feat: Add validation for exclusive arguments

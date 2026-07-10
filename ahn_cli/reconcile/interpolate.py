@@ -97,7 +97,9 @@ def _void(
     q: int,
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.bool_]]:
     """Return an all-void ``(z, valid)`` result for ``q`` targets."""
-    return np.full(q, np.nan), np.zeros(q, dtype=np.bool_)
+    return np.full((q,), np.nan, dtype=np.float64), np.zeros(
+        (q,), dtype=np.bool_
+    )
 
 
 class _LinearInterpolator:
@@ -147,7 +149,7 @@ class _IdwInterpolator:
         if k_eff == 0:
             return _void(q)
         z = _idw_weighted_mean(sq, self._z[idx], self._power)
-        return z, np.ones(q, dtype=np.bool_)
+        return z, np.ones((q,), dtype=np.bool_)
 
 
 class _KrigingInterpolator:
@@ -189,7 +191,7 @@ class _KrigingInterpolator:
             z[solvable] = (weights[:, :k_eff] * z_neighbours[solvable]).sum(
                 axis=1
             )
-        return z, np.ones(q, dtype=np.bool_)
+        return z, np.ones((q,), dtype=np.bool_)
 
 
 def _idw_weighted_mean(
@@ -211,14 +213,14 @@ def _idw_weighted_mean(
     general = np.divide(
         (weights * z_neighbours).sum(axis=1),
         weight_sum,
-        out=np.zeros(q),
+        out=np.zeros((q,), dtype=np.float64),
         where=weight_sum > 0.0,
     )
     coincident_count = coincident.sum(axis=1)
     exact = np.divide(
         (coincident * z_neighbours).sum(axis=1),
         coincident_count,
-        out=np.zeros(q),
+        out=np.zeros((q,), dtype=np.float64),
         where=coincident_count > 0,
     )
     return np.where(coincident.any(axis=1), exact, general)

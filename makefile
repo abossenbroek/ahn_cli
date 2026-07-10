@@ -29,12 +29,16 @@ format-check:
 fix:
 	uv run ruff check --fix $(LINT_DIRS)
 
+.PHONY: typecheck
+typecheck:
+	uv run pyright
+
 .PHONY: test
 test:
 	uv run pytest --cov=$(PACKAGE_DIR) --cov-branch
 
 .PHONY: check
-check: lint typos test format-check
+check: lint typos typecheck test format-check
 
 .PHONY: run
 run:

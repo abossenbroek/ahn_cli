@@ -9,6 +9,7 @@ import subprocess
 import sys
 import textwrap
 from pathlib import Path
+from typing import cast
 
 from coverage import Coverage
 
@@ -58,7 +59,8 @@ def test_legacy_omitted_but_future_packages_gated() -> None:
     green) while none of the packages later WPs add appear there (so they are
     gated at 100% the instant they land).
     """
-    omit = _load_config().get_option("run:omit") or []
+    # get_option widens to a config union; omit is always a list of globs.
+    omit = cast("list[str]", _load_config().get_option("run:omit") or [])
     for legacy in LEGACY_OMIT:
         assert legacy in omit, f"legacy module dropped from omit: {legacy}"
     # Path-segment match so future ``fetch/`` is not confused with legacy

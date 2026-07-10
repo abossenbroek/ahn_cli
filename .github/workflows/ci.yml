@@ -8,7 +8,6 @@ on:
 
 jobs:
   ci:
-    if: ${{ github.repository == 'tudelft3d/ahn_cli' }}
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -36,6 +35,9 @@ jobs:
 
       - name: Format checking
         run: make format-check
+
+      - name: Type checking
+        run: make typecheck
 
       - name: Testing
         run: make test

@@ -84,9 +84,33 @@ omit = [
 fail_under = 100
 show_missing = true
 
+# Pyright configuration
+[tool.pyright]
+include = ["ahn_cli", "tests"]
+# Grandfather the SAME legacy set exempted from the coverage gate, plus the
+# legacy test files that carry pre-existing type issues. RULE (identical to
+# coverage's omit): when a work package substantively rewrites a legacy file,
+# that WP removes it from this exclude list and makes it pyright-clean. New
+# epic code and any new tests must be pyright-clean.
+exclude = [
+    "ahn_cli/main.py",
+    "ahn_cli/process.py",
+    "ahn_cli/config.py",
+    "ahn_cli/kwargs.py",
+    "ahn_cli/validator.py",
+    "ahn_cli/fetcher/**",
+    "ahn_cli/manipulator/**",
+    "tests/manipulator/test_transformer.py",
+    "tests/manipulator/test_verifier.py",
+    "tests/test_extra_bytes_harmonization.py",
+    "tests/test_geojson_integration.py",
+    "tests/test_rasterize.py",
+]
+
 [dependency-groups]
 dev = [
     "hypothesis>=6.156.4",
+    "pyright>=1.1.411",
     "pytest>=8.4.1",
     "pytest-cov>=7.1.0",
     "ruff>=0.12.5",

@@ -215,6 +215,39 @@
   next={fan out WP2+WP3+WP4 as 3 parallel Opus worktree engineers}
   loop=notification-driven-cascade pending-user={}
 
+### 2026-07-10 — Wave-2 fan-out + multi-agent interference incident
+- Dispatched WP2/WP3/WP4 as 3 parallel Opus worktree engineers. Two first-spawns
+  misfired (0 tool uses) and two later stalled mid-stream (transient API error);
+  all recovered by re-dispatch or SendMessage-resume.
+- INCIDENT: during stall/resume, the resumed WP2 & WP3 engineers briefly operated
+  in the shared MAIN checkout instead of isolated worktrees — WP3's red commit
+  layered onto a local `wp2-cli-restructure` branch, coordinator checkout got left
+  on that bogus branch. Both engineers self-recovered by relocating to fresh
+  isolated worktrees (wp2-iso; WP3 force-pushed only its 3 clean files). Coordinator
+  fix: `git switch main` (working tree was clean), deleted the unpushed bogus local
+  branch. No remote/PR contamination — each PR verified to contain only its own WP's
+  files (WP2 gate uses a merge-base diff-scope check; WP3 gate an explicit scope check).
+- WP2 design ruling logged: TODO.md authoritative → `fetch`=acquisition-only,
+  classification filter moved to `prep`. `-e` collision resolved (fetch -o/-c/-b/-g,
+  prep -d/-i/-e/-p). Reusable legacy plumbing (fetcher/*, manipulator/*, process.py)
+  preserved; only [project.scripts] repointed to ahn_cli.cli:cli.
+
+### 2026-07-10 — WP4 content-addressed cache — MERGED #4
+- Branch: wp4-content-addressed-cache  PR: #4  Squash: 0764003  Head: 81b2da5
+- DoD: [x] cache keyed by (product, vintage|generation, tile-id) from domain VOs
+  [x] deterministic unsalted sha256 key (NUL-delimited, collision-safe)
+  [x] checksum verify → typed ChecksumMismatchError on tamper
+  [x] idempotent: cache hit = zero network + zero byte writes
+  [x] 100% line+branch (key.py 34/8, store.py 41/6) [x] strict clean [x] TDD red f805f69.
+- Gate: 2 independent adversarial Opus reviews both PASS — both hand-recomputed the
+  pinned digest literals from the canonical encoding, tested key stability across
+  PYTHONHASHSEED, verified hit-idempotence by inode+mtime, confirmed no silent-corrupt
+  path. Deviations (missing-blob→FileNotFoundError; CacheKey self-guards its axis
+  invariant) judged sound. CI green 3.10/3.11/3.12. Auto-merged (squash), branch+worktrees cleaned.
+- STATE: merged={WP0, WP1, WP4} in-gate={WP3(#5 @a264e0b), WP2(#6 @9aaff4b)}
+  next={merge WP3 & WP2 on 2xPASS+CI → unblock WP5..WP9 fetchers, WP10/WP11 prep, WP13}
+  loop=notification-driven-cascade pending-user={}
+
 ## [0.2.1] - 2024-05-04
 ### Changed
 * feat: Add validation for exclusive arguments

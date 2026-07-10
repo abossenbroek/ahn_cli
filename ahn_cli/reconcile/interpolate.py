@@ -41,6 +41,14 @@ _MIN_TRIANGULATION_POINTS = 3
 _IDW_FALLBACK_POWER = 2.0
 """Distance exponent for the IDW estimate kriging falls back to when singular."""
 
+_KRIGING_RCOND = 1e-10
+"""Reciprocal-condition floor below which a kriging system is treated singular.
+
+Real LiDAR carries coincident/near-coincident returns, so with a zero nugget a
+neighbourhood's kriging matrix can be singular *to working precision* even when
+its determinant rounds to a tiny non-zero value. A relative smallest-singular-
+value test reliably catches those, where a determinant-sign test does not."""
+
 
 def interpolate(
     method: InterpMethod,
@@ -156,12 +164,12 @@ def _kriging(
     z_neighbours = source_xyz[:, 2][idx]
     lhs, rhs = _kriging_system(source_xy[idx], sq, method)
     # Start every cell at the deterministic IDW estimate, then overwrite the
-    # cells whose kriging system is non-singular with the kriging solution. A
-    # singular system (e.g. coincident neighbours with a zero nugget) keeps the
-    # IDW fallback -- detected up front so no per-cell exception handling runs.
+    # cells whose kriging system is well conditioned with the kriging solution.
+    # An ill-conditioned system (e.g. coincident neighbours with a zero nugget)
+    # keeps the IDW fallback -- detected up front so no per-cell exception
+    # handling runs and no near-singular solve is ever attempted.
     z = _idw_weighted_mean(sq, z_neighbours, _IDW_FALLBACK_POWER)
-    sign, _ = np.linalg.slogdet(lhs)
-    solvable = sign != 0.0
+    solvable = _well_conditioned(lhs)
     if solvable.any():
         weights = np.linalg.solve(
             lhs[solvable], rhs[solvable][:, :, np.newaxis]
@@ -197,3 +205,17 @@ def _kriging_system(
     rhs[:, :k_eff] = gamma_target
     rhs[:, k_eff] = 1.0
     return lhs, rhs
+
+
+def _well_conditioned(lhs: npt.NDArray[np.float64]) -> npt.NDArray[np.bool_]:
+    """Return, per system, whether it is well conditioned enough to solve.
+
+    A system is accepted when its smallest singular value exceeds
+    :data:`_KRIGING_RCOND` times its largest -- a reliable relative-conditioning
+    test that catches matrices singular to working precision (which a
+    determinant-sign test misses).
+    """
+    singular_values = np.linalg.svd(lhs, compute_uv=False)
+    smallest = singular_values[:, -1]
+    largest = singular_values[:, 0]
+    return smallest > _KRIGING_RCOND * largest

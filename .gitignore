@@ -173,6 +173,9 @@ imgui.ini
 *.copc.laz
 *.ply
 *.mlp
+# ...except the small committed test fixtures, which are versioned via git-LFS.
+!tests/**/fixtures/*.laz
+!tests/**/fixtures/*.ply
 !tests/testdata/**
 
 # Ad hoc local assets / agent config, not part of the package

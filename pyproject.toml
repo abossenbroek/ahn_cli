@@ -38,22 +38,62 @@ line-length = 78
 target-version = "py310"
 
 [tool.ruff.lint]
-# Enable flake8-style linting plus additional rules
-select = [
-    "E",   # pycodestyle errors
-    "W",   # pycodestyle warnings  
-    "F",   # pyflakes
-    "I",   # isort
-    "B",   # flake8-bugbear
-    "C4",  # flake8-comprehensions
-    "UP",  # pyupgrade
-]
+# Strictest: enable every rule, then subtract only rules that conflict with the
+# formatter, the mutually-exclusive docstring-convention pairs, and line length
+# (owned by the formatter). Docstrings (D) and annotations (ANN) stay ON.
+select = ["ALL"]
 ignore = [
-    "E501",  # line too long (handled by line-length)
+    "E501",   # line length is enforced by the formatter (line-length = 78)
+    "COM812", # trailing comma: conflicts with the formatter
+    "COM819", # prohibited trailing comma: conflicts with the formatter
+    "ISC001", # single-line implicit str concat: conflicts with the formatter
+    "ISC002", # multi-line implicit str concat: conflicts with the formatter
+    "Q000",   # inline quote style: owned by the formatter
+    "Q001",   # multiline quote style: owned by the formatter
+    "Q002",   # docstring quote style: owned by the formatter
+    "Q003",   # avoidable escaped quote: owned by the formatter
+    "D206",   # docstring indentation: owned by the formatter
+    "D300",   # triple-quote style: owned by the formatter
+    "E111",   # indentation multiple: owned by the formatter
+    "E114",   # indentation multiple (comment): owned by the formatter
+    "E117",   # over-indentation: owned by the formatter
+    "W191",   # tab indentation: owned by the formatter
+    "D203",   # incompatible with D211; keep D211 (no blank line before class)
+    "D213",   # incompatible with D212; keep D212 (summary on first line)
 ]
 
 [tool.ruff.lint.isort]
 known-first-party = ["ahn_cli"]
+
+[tool.ruff.lint.per-file-ignores]
+# KEEP IN SYNC with [tool.coverage.run] omit and [tool.pyright] exclude.
+# Legacy files predate the 7rad epic and are grandfathered from strict ruff.
+# De-grandfathering a file (a WP rewriting it) removes it from ALL THREE lists
+# and requires it to pass strict ruff ALL + strict pyright + 100% branch cov.
+"ahn_cli/main.py" = ["ALL"]
+"ahn_cli/process.py" = ["ALL"]
+"ahn_cli/config.py" = ["ALL"]
+"ahn_cli/kwargs.py" = ["ALL"]
+"ahn_cli/validator.py" = ["ALL"]
+"ahn_cli/fetcher/**" = ["ALL"]
+"ahn_cli/manipulator/**" = ["ALL"]
+"tests/fetcher/test_geotiles.py" = ["ALL"]
+"tests/fetcher/test_municipality.py" = ["ALL"]
+"tests/manipulator/test_transformer.py" = ["ALL"]
+"tests/manipulator/test_verifier.py" = ["ALL"]
+"tests/test_extra_bytes_harmonization.py" = ["ALL"]
+"tests/test_geojson_integration.py" = ["ALL"]
+"tests/test_pipeline.py" = ["ALL"]
+"tests/test_rasterize.py" = ["ALL"]
+"tests/test_validator.py" = ["ALL"]
+# Allowances every test file legitimately needs under ALL; new tests must
+# otherwise pass strict. Each is justified:
+"tests/**" = [
+    "S101",    # asserts are how pytest tests assert
+    "PLR2004", # comparing against literal expected values is normal in tests
+    "S603",    # tests shell out to trusted subprocesses (sys.executable)
+    "INP001",  # pytest test dirs are intentionally not import packages
+]
 
 [tool.ruff.format]
 quote-style = "double"
@@ -65,11 +105,13 @@ line-ending = "auto"
 branch = true
 source = ["ahn_cli"]
 # Legacy modules predate the 7rad §10 data-acquisition epic and are exempt
-# from the 100% gate. RULE: when a work package substantively rewrites a
-# legacy file, that same WP removes it from this list and brings the file to
-# 100% branch coverage. New packages the epic adds (domain/, cli/, fetch/,
-# prep/, provenance/, cache/, ...) are intentionally absent here, so they are
-# gated at 100% the moment they land.
+# from the 100% gate. KEEP IN SYNC with [tool.ruff.lint.per-file-ignores] and
+# [tool.pyright] exclude. RULE: de-grandfathering a file (a WP rewriting it)
+# removes it from ALL THREE lists and requires it to pass strict ruff ALL +
+# strict pyright + 100% branch coverage. (Coverage measures only ahn_cli, so
+# the legacy *test* files in the other two lists have no entry here.) New
+# packages the epic adds (domain/, cli/, fetch/, prep/, provenance/, cache/,
+# ...) are intentionally absent here, so they are gated the moment they land.
 omit = [
     "ahn_cli/main.py",
     "ahn_cli/process.py",
@@ -86,12 +128,13 @@ show_missing = true
 
 # Pyright configuration
 [tool.pyright]
+typeCheckingMode = "strict"
 include = ["ahn_cli", "tests"]
-# Grandfather the SAME legacy set exempted from the coverage gate, plus the
-# legacy test files that carry pre-existing type issues. RULE (identical to
-# coverage's omit): when a work package substantively rewrites a legacy file,
-# that WP removes it from this exclude list and makes it pyright-clean. New
-# epic code and any new tests must be pyright-clean.
+# Grandfather the SAME legacy set as coverage `omit` + ruff per-file-ignores,
+# plus the legacy test files. KEEP IN SYNC with those two lists. RULE:
+# de-grandfathering a file (a WP rewriting it) removes it from ALL THREE lists
+# and requires it to pass strict ruff ALL + strict pyright + 100% branch
+# coverage. New epic code and any new tests must be strict-pyright-clean.
 exclude = [
     "ahn_cli/main.py",
     "ahn_cli/process.py",
@@ -100,16 +143,21 @@ exclude = [
     "ahn_cli/validator.py",
     "ahn_cli/fetcher/**",
     "ahn_cli/manipulator/**",
+    "tests/fetcher/test_geotiles.py",
+    "tests/fetcher/test_municipality.py",
     "tests/manipulator/test_transformer.py",
     "tests/manipulator/test_verifier.py",
     "tests/test_extra_bytes_harmonization.py",
     "tests/test_geojson_integration.py",
+    "tests/test_pipeline.py",
     "tests/test_rasterize.py",
+    "tests/test_validator.py",
 ]
 
 [dependency-groups]
 dev = [
     "hypothesis>=6.156.4",
+    "pre-commit>=4.6.0",
     "pyright>=1.1.411",
     "pytest>=8.4.1",
     "pytest-cov>=7.1.0",

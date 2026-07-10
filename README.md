@@ -128,6 +128,21 @@ Encountering issues or bugs? We greatly appreciate your feedback. Please report 
 
 Your contributions are welcome! If you're looking to contribute to the AHN CLI project, please first review our Contribution Guidelines. Whether it's fixing bugs, adding new features, or improving documentation, we value your help.
 
+### Local development setup
+
+```bash
+# Install dependencies (creates the uv-managed virtualenv)
+make install
+
+# Install the pre-commit hooks (strict ruff lint + format, typos, pyright);
+# they run automatically on every `git commit`.
+uv run pre-commit install
+
+# Run the full gate locally (lint, typos, pyright, tests + 100% coverage,
+# format-check) — this is exactly what CI runs:
+make check
+```
+
 To get started:
 
 - Fork the repository on GitHub.

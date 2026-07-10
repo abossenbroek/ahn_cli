@@ -1,0 +1,35 @@
+# Fast pre-commit gates that mirror the CI checks exactly. Each hook shells out
+# to the same `make` target CI runs, and every make target runs its tool via
+# `uv run ...`, so hooks execute in the synced venv and cannot drift from CI.
+# The full test suite + 100% coverage gate is deliberately left to CI (`make
+# test`), keeping commits fast. Install once with: uv run pre-commit install
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-lint
+        name: ruff check (strict lint)
+        entry: make lint
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: ruff-format
+        name: ruff format (check)
+        entry: make format-check
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: typos
+        name: typos
+        entry: make typos
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: pyright
+        name: pyright (strict typecheck)
+        entry: make typecheck
+        language: system
+        pass_filenames: false
+        always_run: true

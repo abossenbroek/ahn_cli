@@ -111,6 +111,7 @@ def test_gate_bites_on_uncovered_branch(tmp_path: Path) -> None:
             cwd=tmp_path,
             capture_output=True,
             text=True,
+            check=False,
         )
         assert run.returncode == 0, run.stderr
         return subprocess.run(
@@ -126,6 +127,7 @@ def test_gate_bites_on_uncovered_branch(tmp_path: Path) -> None:
             cwd=tmp_path,
             capture_output=True,
             text=True,
+            check=False,
         )
 
     # Only the True branch is taken -> gate must bite.

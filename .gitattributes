@@ -10,3 +10,8 @@ tests/**/cassettes/** filter=lfs diff=lfs merge=lfs -text
 tests/**/fixtures/*.xml !filter !diff !merge text
 tests/**/fixtures/*.geojson !filter !diff !merge text
 tests/**/fixtures/*.json !filter !diff !merge text
+# The small (~130 KB) reconcile Amsterdam fixtures are kept as normal binary git
+# objects, not LFS: GitHub blocks LFS uploads to public forks, and they are tiny
+# enough that plain git storage is fine.
+tests/reconcile/fixtures/*.tif !filter !diff !merge -text
+tests/reconcile/fixtures/*.laz !filter !diff !merge -text

@@ -322,6 +322,31 @@ def test_acquire_reports_an_unregistered_generation(tmp_path: Path) -> None:
         acquire(request, http_get=_Recorder(), now=_fixed_now)
 
 
+def test_acquire_funnels_an_invalid_feed(tmp_path: Path) -> None:
+    """A changed/invalid distribution feed surfaces as AcquisitionError."""
+
+    def broken_feed(_url: str) -> bytes:
+        return b"<<< not a valid ATOM feed"
+
+    request = _bbox_request(tmp_path / "s")
+    with pytest.raises(AcquisitionError):
+        acquire(request, http_get=broken_feed, now=_fixed_now)
+
+
+def test_acquire_funnels_a_download_failure(tmp_path: Path) -> None:
+    """A tile-download HTTP failure surfaces as AcquisitionError, not a raw one."""
+
+    def failing_download(url: str) -> bytes:
+        if url.endswith(".LAZ"):
+            msg = "503 Server Error"
+            raise requests.HTTPError(msg)
+        return _ATOM_BYTES
+
+    request = _bbox_request(tmp_path / "delft")
+    with pytest.raises(AcquisitionError, match="download failed"):
+        acquire(request, http_get=failing_download, now=_fixed_now)
+
+
 def test_default_http_get_returns_body_and_raises_for_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

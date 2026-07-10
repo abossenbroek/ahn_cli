@@ -174,3 +174,7 @@ imgui.ini
 *.ply
 *.mlp
 !tests/testdata/**
+
+# Ad hoc local assets / agent config, not part of the package
+/assets
+/.claude

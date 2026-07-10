@@ -1,22 +1,24 @@
 """Reconcile-context raster/point-cloud IO (GDAL via rasterio, laspy).
 
-Loads the two inputs the reconcile verb bridges:
+Loads the two inputs the reconcile verb bridges, shaped for streaming so an
+arbitrarily large area never materialises whole:
 
-* :func:`load_ortho` -- the Beeldmateriaal orthophoto GeoTIFF, read through
-  rasterio (GDAL) into its :class:`~ahn_cli.domain.grid.PixelGrid` (the target
-  grid) plus its RGB pixels; the reconciled cloud inherits this grid.
-* :func:`load_cloud` -- the AHN point cloud LAZ, read through laspy into the
-  ``(n, 3)`` world coordinates the interpolation samples from.
+* :func:`open_ortho` returns an :class:`OrthoReader` -- the orthophoto opened
+  through rasterio (GDAL), exposing its :class:`~ahn_cli.domain.grid.PixelGrid`
+  (the target grid) and a windowed :meth:`OrthoReader.read_rows` so the RGB is
+  read one row-block at a time.
+* :func:`load_cloud` reads the AHN point cloud LAZ into the ``(n, 3)`` world
+  coordinates the interpolation samples from (one tile's cloud fits in memory;
+  a continental run tiles the cloud spatially, out of this module's scope).
 
-:func:`target_coordinates` expands the grid to the per-pixel-centre world XY the
-interpolation estimates ``Z`` at. Expected IO failures (a missing or unreadable
-file, an ortho without three colour bands) raise the typed :class:`ReconcileError`
-so the CLI reports a tidy message rather than a library traceback.
+:func:`block_target_coordinates` expands one row-block of the grid to its
+per-pixel-centre world XY without touching the rest of the grid. Expected IO
+failures (a missing/unreadable file, an ortho without three colour bands) raise
+the typed :class:`ReconcileError`.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
 import laspy
@@ -24,11 +26,16 @@ import numpy as np
 import numpy.typing as npt
 import rasterio
 from rasterio.errors import RasterioIOError
+from rasterio.windows import Window
 
 from ahn_cli.domain.grid import GeoTransform, PixelGrid
 
 if TYPE_CHECKING:
     from pathlib import Path
+    from types import TracebackType
+
+    from rasterio import DatasetReader
+    from typing_extensions import Self
 
 _RGB_BANDS = 3
 """An orthophoto must carry at least three bands (red, green, blue)."""
@@ -45,60 +52,79 @@ class ReconcileError(Exception):
     """
 
 
-@dataclass(frozen=True, eq=False)
-class OrthoRaster:
-    """A loaded orthophoto: its target grid and RGB pixels.
+class OrthoReader:
+    """An opened orthophoto: its target grid plus windowed RGB reads.
 
-    Contract (fields):
-        - ``grid`` is the :class:`~ahn_cli.domain.grid.PixelGrid` describing the
-          ortho's dimensions and geotransform -- the grid the reconciled cloud
-          is sampled on.
-        - ``rgb`` is the ``(height, width, 3)`` ``uint8`` colour array, band
-          order red, green, blue.
-
-    ``eq=False``: it wraps a large array, so instances are compared by identity,
-    never element-wise.
+    Holds the rasterio dataset open for the duration of a streaming run; use as
+    a context manager so the dataset is always closed.
     """
 
-    grid: PixelGrid
-    rgb: npt.NDArray[np.uint8]
+    def __init__(self, dataset: DatasetReader, grid: PixelGrid) -> None:
+        """Wrap an open dataset and its derived pixel grid."""
+        self._dataset = dataset
+        self.grid = grid
+
+    def read_rows(
+        self, row_start: int, row_count: int
+    ) -> npt.NDArray[np.uint8]:
+        """Read ``row_count`` rows of RGB starting at ``row_start``.
+
+        Returns a ``(row_count, width, 3)`` ``uint8`` array (bands red, green,
+        blue) for the requested horizontal strip of the orthophoto.
+        """
+        window = Window(0, row_start, self.grid.width, row_count)
+        bands = self._dataset.read(window=window)
+        return np.ascontiguousarray(
+            np.transpose(bands[:_RGB_BANDS], (1, 2, 0)), dtype=np.uint8
+        )
+
+    def __enter__(self) -> Self:
+        """Return self for use as a context manager."""
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        """Close the underlying rasterio dataset."""
+        self._dataset.close()
 
 
-def load_ortho(path: Path) -> OrthoRaster:
-    """Load an orthophoto GeoTIFF into its target grid and RGB pixels.
+def open_ortho(path: Path) -> OrthoReader:
+    """Open an orthophoto GeoTIFF for streaming reads.
 
     Contract:
-        - ``path`` is a readable GeoTIFF with at least three bands; the first
-          three are taken as red, green, blue.
-        - Returns an :class:`OrthoRaster` whose ``grid`` carries the ortho's
-          dimensions and geotransform and whose ``rgb`` is ``(h, w, 3)`` uint8.
+        - ``path`` is a readable GeoTIFF with at least three bands (the first
+          three are red, green, blue).
+        - Returns an :class:`OrthoReader` whose ``grid`` carries the ortho's
+          dimensions and geotransform.
 
     Failure modes:
         - :class:`ReconcileError` if the file is unreadable or has fewer than
           three bands.
     """
     try:
-        with rasterio.open(str(path)) as dataset:
-            if dataset.count < _RGB_BANDS:
-                msg = (
-                    f"orthophoto {path} has {dataset.count} band(s); "
-                    f"at least {_RGB_BANDS} (RGB) are required."
-                )
-                raise ReconcileError(msg)
-            bands = dataset.read()
-            affine = cast("tuple[float, ...]", dataset.transform)
-            transform = cast("GeoTransform", affine[:6])
-            width = int(dataset.width)
-            height = int(dataset.height)
+        dataset = rasterio.open(str(path))
     except RasterioIOError as exc:
         msg = f"orthophoto at {path} is not readable: {exc}"
         raise ReconcileError(msg) from exc
-
-    rgb = np.ascontiguousarray(
-        np.transpose(bands[:_RGB_BANDS], (1, 2, 0)), dtype=np.uint8
+    if dataset.count < _RGB_BANDS:
+        band_count = dataset.count
+        dataset.close()
+        msg = (
+            f"orthophoto {path} has {band_count} band(s); "
+            f"at least {_RGB_BANDS} (RGB) are required."
+        )
+        raise ReconcileError(msg)
+    affine = cast("tuple[float, ...]", dataset.transform)
+    grid = PixelGrid(
+        width=int(dataset.width),
+        height=int(dataset.height),
+        transform=cast("GeoTransform", affine[:6]),
     )
-    grid = PixelGrid(width=width, height=height, transform=transform)
-    return OrthoRaster(grid=grid, rgb=rgb)
+    return OrthoReader(dataset, grid)
 
 
 def load_cloud(path: Path) -> npt.NDArray[np.float64]:
@@ -128,20 +154,28 @@ def load_cloud(path: Path) -> npt.NDArray[np.float64]:
     return xyz
 
 
-def target_coordinates(
-    grid: PixelGrid,
+def block_target_coordinates(
+    grid: PixelGrid, row_start: int, row_count: int
 ) -> tuple[
     npt.NDArray[np.float64], npt.NDArray[np.float64], npt.NDArray[np.float64]
 ]:
-    """Return the grid's per-pixel-centre world coordinates.
+    """Return one row-block's per-pixel-centre world coordinates.
 
     Contract:
+        - Computes the coordinates of rows ``[row_start, row_start + row_count)``
+          across the full width, using the grid's pixel-centre convention
+          (``(col + 0.5, row + 0.5)``) so a blocked traversal is identical to the
+          whole-grid mesh.
         - Returns ``(target_xy, eastings, northings)`` where ``eastings`` and
-          ``northings`` are the ``(h, w)`` pixel-centre world X / Y and
-          ``target_xy`` is the ``(h*w, 2)`` row-major flattening used as the
-          interpolation query points.
+          ``northings`` are ``(row_count, width)`` and ``target_xy`` is the
+          ``(row_count * width, 2)`` row-major flattening.
     """
-    eastings = grid.eastings()
-    northings = grid.northings()
+    t = grid.transform
+    cols = (np.arange(grid.width, dtype=np.float64) + 0.5)[np.newaxis, :]
+    rows = (
+        np.arange(row_start, row_start + row_count, dtype=np.float64) + 0.5
+    )[:, np.newaxis]
+    eastings = t[0] * cols + t[1] * rows + t[2]
+    northings = t[3] * cols + t[4] * rows + t[5]
     target_xy = np.column_stack([eastings.ravel(), northings.ravel()])
     return target_xy, eastings, northings

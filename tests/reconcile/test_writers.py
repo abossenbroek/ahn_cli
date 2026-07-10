@@ -9,7 +9,11 @@ import numpy as np
 import numpy.typing as npt
 import pytest
 
-from ahn_cli.reconcile.writers import OutputFormat, write_reconciled
+from ahn_cli.reconcile.writers import (
+    OutputFormat,
+    open_writer,
+    write_reconciled,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -127,3 +131,50 @@ def test_writers_are_deterministic(
     write_reconciled(output_format, grid, mask, first)
     write_reconciled(output_format, grid, mask, second)
     assert first.read_bytes() == second.read_bytes()
+
+
+def _big_grid() -> tuple[npt.NDArray[np.float64], npt.NDArray[np.bool_]]:
+    """Return a 10x7 grid with a mixed mask (incl. a fully-void row block)."""
+    rng = np.random.default_rng(0)
+    grid = np.zeros((10, 7, 6), dtype=np.float64)
+    grid[:, :, 0] = np.arange(7)[None, :] + 100.0
+    grid[:, :, 1] = (200.0 - np.arange(10))[:, None]
+    grid[:, :, 2] = rng.random((10, 7)) * 50.0
+    grid[:, :, 3:6] = rng.integers(0, 256, (10, 7, 3))
+    mask = rng.random((10, 7)) > 0.2
+    mask[4:8] = False  # a fully-void block exercises the laz empty-block skip
+    return grid, mask
+
+
+@pytest.mark.parametrize("output_format", list(OutputFormat))
+def test_streaming_matches_single_block(
+    output_format: OutputFormat, tmp_path: Path
+) -> None:
+    """Streaming a grid in row-blocks equals writing it as one block.
+
+    Uncompressed formats are byte-identical; LAZ (chunk-compressed) is compared
+    by point read-back. A fully-void middle block exercises the empty-block path.
+    """
+    grid, mask = _big_grid()
+    single = tmp_path / f"single.{output_format.value}"
+    streamed = tmp_path / f"streamed.{output_format.value}"
+    count_single = write_reconciled(output_format, grid, mask, single)
+
+    x_offset = float(np.floor(grid[:, :, 0].min()))
+    y_offset = float(np.floor(grid[:, :, 1].min()))
+    writer = open_writer(output_format, streamed, 7, 10, x_offset, y_offset)
+    for start in (0, 4, 8):
+        writer.write_block(grid[start : start + 4], mask[start : start + 4])
+    count_streamed = writer.close()
+
+    assert count_streamed == count_single
+    if output_format is OutputFormat.LAZ:
+        with laspy.open(str(single)) as reader:
+            one = reader.read()
+        with laspy.open(str(streamed)) as reader:
+            many = reader.read()
+        assert np.array_equal(
+            np.c_[one.x, one.y, one.z], np.c_[many.x, many.y, many.z]
+        )
+    else:
+        assert single.read_bytes() == streamed.read_bytes()

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import laspy
+import numpy as np
 import pytest
 
 from ahn_cli.reconcile.method import IdwInterp
@@ -65,6 +67,42 @@ def test_reconcile_is_deterministic(
     second = reconcile(_request(ortho_path, cloud_path, tmp_path / "b"))
     for left, right in zip(first.outputs, second.outputs, strict=True):
         assert left.read_bytes() == right.read_bytes()
+
+
+def test_reconcile_blocked_equals_whole_grid(
+    ortho_path: Path,
+    cloud_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Streaming in tiny row-blocks equals a whole-grid run.
+
+    The default block schedule fits the 6x6 fixture in one block; forcing one
+    row per block exercises the multi-block loop and proves the block schedule
+    does not change the result (bytes for the uncompressed formats; point
+    read-back for the chunk-compressed LAZ).
+    """
+    whole = reconcile(_request(ortho_path, cloud_path, tmp_path / "whole"))
+    monkeypatch.setattr(
+        "ahn_cli.reconcile.reconcile._BLOCK_CELLS", 6
+    )  # width 6 -> one row per block
+    blocked = reconcile(
+        _request(ortho_path, cloud_path, tmp_path / "blocked")
+    )
+    assert blocked.valid_points == whole.valid_points
+    for whole_path, blocked_path in zip(
+        whole.outputs, blocked.outputs, strict=True
+    ):
+        if whole_path.suffix == ".laz":
+            with laspy.open(str(whole_path)) as reader:
+                one = reader.read()
+            with laspy.open(str(blocked_path)) as reader:
+                many = reader.read()
+            assert np.array_equal(
+                np.c_[one.x, one.y, one.z], np.c_[many.x, many.y, many.z]
+            )
+        else:
+            assert whole_path.read_bytes() == blocked_path.read_bytes()
 
 
 def test_reconcile_missing_ortho_raises(

@@ -1,27 +1,37 @@
-"""Deterministic writers for the reconciled cloud (laz / ply / pt / exr).
+"""Streaming, deterministic writers for the reconciled cloud (laz/ply/pt/exr).
 
-The reconcile result is a dense ``(h, w, 6)`` grid -- ``X, Y, Z, R, G, B`` per
-ortho pixel (RGB as ``0..255`` floats) -- plus a ``(h, w)`` validity mask. The
-four writers, chosen by typed dispatch on :class:`OutputFormat`, differ by how
-each format treats the grid:
+The reconcile pipeline feeds the grid to a writer **one row-block at a time**
+(``(rows, w, 6)`` -- ``X, Y, Z, R, G, B``; RGB as ``0..255`` floats -- plus a
+``(rows, w)`` validity mask), so an arbitrarily large area streams to disk with
+flat memory. :func:`open_writer` returns a :class:`ReconciledWriter` chosen by
+typed dispatch on :class:`OutputFormat`; the caller pushes blocks with
+:meth:`ReconciledWriter.write_block` and finalises with
+:meth:`ReconciledWriter.close`. The formats differ by how each treats the grid:
 
-* **laz / ply / pt** are point lists: they flatten and emit only the *valid*
-  cells (``mask`` true). RGB is scaled to each format's native colour type.
-* **exr** is a dense image: it emits the *full* grid, collapsing a void cell's
-  ``Z`` to a ``0.0`` sentinel (its X/Y/RGB are kept), mirroring ``positions.exr``.
+* **laz / ply / pt** are point lists: each block emits only its *valid* cells
+  (``mask`` true), in row-major order, so the concatenation is the whole cloud.
+  RGB is scaled to each format's native colour type.
+* **exr** is a dense image: it writes the header and scanline offset table up
+  front (the height is known) and appends every row's scanline, collapsing a
+  void cell's ``Z`` to a ``0.0`` sentinel (X/Y/RGB kept), mirroring
+  ``positions.exr``.
 
-Every writer is byte-deterministic: no timestamps or host metadata are written.
-The LAZ header's date/software fields are pinned to constants; the PLY, PT, and
-EXR payloads are hand-packed little-endian, so identical input yields identical
-bytes across runs and machines.
+Every writer is byte-deterministic for a fixed block schedule: no timestamps or
+host metadata are written. The PLY, PT and EXR payloads are hand-packed
+little-endian; the LAZ header's date/software/offset fields are pinned to
+constants. (LAZ compression chunks on the write schedule, so its *bytes* depend
+on the fixed block size while its *points* do not; the uncompressed formats are
+block-size-independent.) :func:`write_reconciled` writes a whole grid as a single
+block for callers that have it in memory.
 """
 
 from __future__ import annotations
 
 import datetime
+import shutil
 import struct
 from enum import Enum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 import laspy
 import numpy as np
@@ -91,111 +101,237 @@ class OutputFormat(Enum):
     EXR = "exr"
 
 
+class ReconciledWriter(Protocol):
+    """A streaming writer: push row-blocks, then close to finalise."""
+
+    def write_block(
+        self,
+        grid_block: npt.NDArray[np.float64],
+        mask_block: npt.NDArray[np.bool_],
+    ) -> None:
+        """Append one ``(rows, w, 6)`` grid block with its ``(rows, w)`` mask."""
+        ...
+
+    def close(self) -> int:
+        """Finalise the file and return the count written (points, or pixels)."""
+        ...
+
+
+def open_writer(
+    output_format: OutputFormat,
+    path: Path,
+    width: int,
+    height: int,
+    x_offset: float,
+    y_offset: float,
+) -> ReconciledWriter:
+    """Open a streaming writer for ``output_format`` (typed dispatch).
+
+    ``width``/``height`` are the full grid dimensions (the EXR offset table and
+    LAS header need them up front); ``x_offset``/``y_offset`` are the LAS
+    coordinate offsets (the grid's south-west corner), known before any block.
+    """
+    if output_format is OutputFormat.LAZ:
+        return _LazWriter(path, x_offset, y_offset)
+    if output_format is OutputFormat.PLY:
+        return _PlyWriter(path)
+    if output_format is OutputFormat.PT:
+        return _PtWriter(path)
+    return _ExrWriter(path, width, height)
+
+
 def write_reconciled(
     output_format: OutputFormat,
     grid: npt.NDArray[np.float64],
     mask: npt.NDArray[np.bool_],
     path: Path,
 ) -> int:
-    """Write the reconciled grid in ``output_format``, returning the count.
+    """Write a whole grid as a single block (in-memory convenience).
 
     Contract:
         - ``grid`` is ``(h, w, 6)`` ``float64`` (``X, Y, Z, R, G, B``; RGB in
           ``0..255``); ``mask`` is ``(h, w)`` ``bool``.
-        - For ``laz``/``ply``/``pt`` the return is the number of valid points
-          written; for ``exr`` it is the pixel count ``h * w``.
-
-    Typed dispatch on the format variant -- no stringly-typed format switch.
+        - Returns the point count (laz/ply/pt) or pixel count (exr) written.
     """
-    if output_format is OutputFormat.EXR:
-        return _write_exr(grid, mask, path)
-    points = grid[mask]
-    if output_format is OutputFormat.LAZ:
-        return _write_laz(points, path)
-    if output_format is OutputFormat.PLY:
-        return _write_ply(points, path)
-    return _write_pt(points, path)
+    height, width = mask.shape
+    x_offset = float(np.floor(grid[:, :, 0].min()))
+    y_offset = float(np.floor(grid[:, :, 1].min()))
+    writer = open_writer(
+        output_format, path, width, height, x_offset, y_offset
+    )
+    writer.write_block(grid, mask)
+    return writer.close()
 
 
-def _write_laz(points: npt.NDArray[np.float64], path: Path) -> int:
-    """Write valid points to a deterministic LAZ (point format 2, RGB)."""
-    count = points.shape[0]
-    header = laspy.LasHeader(point_format=2)
-    header.scales = np.array([_LAS_SCALE, _LAS_SCALE, _LAS_SCALE])
-    if count == 0:
-        header.offsets = np.zeros(3)
-    else:
-        header.offsets = np.floor(points[:, :3].min(axis=0))
-    header.creation_date = _PINNED_DATE
-    header.generating_software = _GENERATING_SOFTWARE
-    header.system_identifier = _SYSTEM_IDENTIFIER
-
-    record = laspy.ScaleAwarePointRecord.zeros(count, header=header)
-    record.x = points[:, 0]
-    record.y = points[:, 1]
-    record.z = points[:, 2]
-    rgb16 = points[:, 3:6].astype(np.uint16) * _RGB_TO_UINT16
-    record.red = rgb16[:, 0]
-    record.green = rgb16[:, 1]
-    record.blue = rgb16[:, 2]
-
-    las = laspy.LasData(header)
-    las.points = record
-    las.write(str(path))
-    return count
-
-
-def _write_ply(points: npt.NDArray[np.float64], path: Path) -> int:
-    """Write valid points to a deterministic binary coloured PLY."""
-    count = points.shape[0]
-    record = np.empty(count, dtype=_PLY_DTYPE)
-    record["x"] = points[:, 0]
-    record["y"] = points[:, 1]
-    record["z"] = points[:, 2]
-    record["red"] = points[:, 3].astype(np.uint8)
-    record["green"] = points[:, 4].astype(np.uint8)
-    record["blue"] = points[:, 5].astype(np.uint8)
-    header = _PLY_HEADER_TEMPLATE.format(count=count)
-    with path.open("wb") as sink:
-        sink.write(header.encode("ascii"))
-        sink.write(record.tobytes())
-    return count
-
-
-def _write_pt(points: npt.NDArray[np.float64], path: Path) -> int:
-    """Write valid points as a raw little-endian ``float32`` ``[N, 6]`` blob.
+class _PtWriter:
+    """Streams valid points as a raw little-endian ``float32`` ``[N, 6]`` blob.
 
     The layout is ``(x, y, z, r, g, b)`` per point with RGB in ``0..255``,
     loadable via ``torch.frombuffer``/``numpy.fromfile`` -- no torch dependency.
     """
-    count = points.shape[0]
-    path.write_bytes(points.astype("<f4", copy=False).tobytes())
-    return count
+
+    def __init__(self, path: Path) -> None:
+        """Open the output blob for streaming appends."""
+        self._sink = path.open("wb")
+        self._count = 0
+
+    def write_block(
+        self,
+        grid_block: npt.NDArray[np.float64],
+        mask_block: npt.NDArray[np.bool_],
+    ) -> None:
+        """Append this block's valid points as float32 rows."""
+        points = grid_block[mask_block]
+        self._sink.write(points.astype("<f4", copy=False).tobytes())
+        self._count += points.shape[0]
+
+    def close(self) -> int:
+        """Close the blob and return the point count."""
+        self._sink.close()
+        return self._count
 
 
-def _write_exr(
-    grid: npt.NDArray[np.float64],
-    mask: npt.NDArray[np.bool_],
-    path: Path,
-) -> int:
-    """Write the full grid as a 6-channel uncompressed OpenEXR (void Z -> 0)."""
-    height, width = mask.shape
-    easting = grid[:, :, 0].astype(np.float32)
-    northing = grid[:, :, 1].astype(np.float32)
-    elevation = np.where(mask, grid[:, :, 2], 0.0).astype(np.float32)
-    red = (grid[:, :, 3] / 255.0).astype(np.float32)
-    green = (grid[:, :, 4] / 255.0).astype(np.float32)
-    blue = (grid[:, :, 5] / 255.0).astype(np.float32)
-    planes = {
-        b"B": blue,
-        b"G": green,
-        b"R": red,
-        b"X": easting,
-        b"Y": northing,
-        b"Z": elevation,
-    }
-    path.write_bytes(_encode_exr(planes, width, height))
-    return width * height
+class _PlyWriter:
+    """Streams valid points to a binary coloured PLY (header written on close).
+
+    The vertex count is unknown until every block is seen, so the payload is
+    streamed to a temp file and the final PLY (header + payload) is assembled on
+    :meth:`close` -- bounded extra disk, never memory.
+    """
+
+    def __init__(self, path: Path) -> None:
+        """Open a temp payload file for streaming vertex records."""
+        self._path = path
+        self._tmp = path.with_name(path.name + ".payload")
+        self._sink = self._tmp.open("wb")
+        self._count = 0
+
+    def write_block(
+        self,
+        grid_block: npt.NDArray[np.float64],
+        mask_block: npt.NDArray[np.bool_],
+    ) -> None:
+        """Append this block's valid points as packed PLY vertex records."""
+        points = grid_block[mask_block]
+        record = np.empty(points.shape[0], dtype=_PLY_DTYPE)
+        record["x"] = points[:, 0]
+        record["y"] = points[:, 1]
+        record["z"] = points[:, 2]
+        record["red"] = points[:, 3].astype(np.uint8)
+        record["green"] = points[:, 4].astype(np.uint8)
+        record["blue"] = points[:, 5].astype(np.uint8)
+        self._sink.write(record.tobytes())
+        self._count += points.shape[0]
+
+    def close(self) -> int:
+        """Assemble ``header + payload`` and return the vertex count."""
+        self._sink.close()
+        header = _PLY_HEADER_TEMPLATE.format(count=self._count)
+        with self._path.open("wb") as out:
+            out.write(header.encode("ascii"))
+            with self._tmp.open("rb") as payload:
+                shutil.copyfileobj(payload, out)
+        self._tmp.unlink()
+        return self._count
+
+
+class _LazWriter:
+    """Streams valid points to a deterministic LAZ (point format 2, RGB)."""
+
+    def __init__(self, path: Path, x_offset: float, y_offset: float) -> None:
+        """Open a LAZ writer with a pinned header and fixed coordinate offsets."""
+        header = laspy.LasHeader(point_format=2)
+        header.scales = np.array([_LAS_SCALE, _LAS_SCALE, _LAS_SCALE])
+        header.offsets = np.array([x_offset, y_offset, 0.0])
+        header.creation_date = _PINNED_DATE
+        header.generating_software = _GENERATING_SOFTWARE
+        header.system_identifier = _SYSTEM_IDENTIFIER
+        self._header = header
+        self._writer = laspy.open(str(path), mode="w", header=header)
+        self._count = 0
+
+    def write_block(
+        self,
+        grid_block: npt.NDArray[np.float64],
+        mask_block: npt.NDArray[np.bool_],
+    ) -> None:
+        """Append this block's valid points to the LAZ stream."""
+        points = grid_block[mask_block]
+        if points.shape[0] == 0:
+            return
+        record = laspy.ScaleAwarePointRecord.zeros(
+            points.shape[0], header=self._header
+        )
+        record.x = points[:, 0]
+        record.y = points[:, 1]
+        record.z = points[:, 2]
+        rgb16 = points[:, 3:6].astype(np.uint16) * _RGB_TO_UINT16
+        record.red = rgb16[:, 0]
+        record.green = rgb16[:, 1]
+        record.blue = rgb16[:, 2]
+        self._writer.write_points(record)
+        self._count += points.shape[0]
+
+    def close(self) -> int:
+        """Close the LAZ stream and return the point count."""
+        self._writer.close()
+        return self._count
+
+
+class _ExrWriter:
+    """Streams the full grid as a 6-channel uncompressed OpenEXR (void Z -> 0).
+
+    The header and the scanline offset table are written on open (the height is
+    known), then each row's scanline is appended, so the image streams with flat
+    memory.
+    """
+
+    def __init__(self, path: Path, width: int, height: int) -> None:
+        """Write the header and precomputed scanline offset table."""
+        self._sink = path.open("wb")
+        self._width = width
+        self._height = height
+        self._row = 0
+        header = _exr_header(width, height)
+        row_bytes = width * 4
+        block_size = 8 + row_bytes * len(_EXR_CHANNELS)
+        self._data_size = struct.pack("<i", row_bytes * len(_EXR_CHANNELS))
+        first_block = len(header) + height * 8
+        offset_table = b"".join(
+            struct.pack("<Q", first_block + row * block_size)
+            for row in range(height)
+        )
+        self._sink.write(header + offset_table)
+
+    def write_block(
+        self,
+        grid_block: npt.NDArray[np.float64],
+        mask_block: npt.NDArray[np.bool_],
+    ) -> None:
+        """Append every row of this block as an EXR scanline."""
+        planes = {
+            b"X": grid_block[:, :, 0].astype(np.float32),
+            b"Y": grid_block[:, :, 1].astype(np.float32),
+            b"Z": np.where(mask_block, grid_block[:, :, 2], 0.0).astype(
+                np.float32
+            ),
+            b"R": (grid_block[:, :, 3] / 255.0).astype(np.float32),
+            b"G": (grid_block[:, :, 4] / 255.0).astype(np.float32),
+            b"B": (grid_block[:, :, 5] / 255.0).astype(np.float32),
+        }
+        for row in range(grid_block.shape[0]):
+            self._sink.write(struct.pack("<i", self._row))
+            self._sink.write(self._data_size)
+            for name in _EXR_CHANNELS:
+                self._sink.write(
+                    planes[name][row].astype("<f4", copy=False).tobytes()
+                )
+            self._row += 1
+
+    def close(self) -> int:
+        """Close the EXR and return the pixel count ``width * height``."""
+        self._sink.close()
+        return self._width * self._height
 
 
 def _exr_attribute(name: bytes, type_name: bytes, value: bytes) -> bytes:
@@ -249,26 +385,3 @@ def _exr_header(width: int, height: int) -> bytes:
     )
     prefix = struct.pack("<I", _EXR_MAGIC) + struct.pack("<I", _EXR_VERSION)
     return prefix + attributes + b"\x00"
-
-
-def _encode_exr(
-    planes: dict[bytes, npt.NDArray[np.float32]], width: int, height: int
-) -> bytes:
-    """Encode the named ``(h, w)`` float planes to uncompressed EXR bytes."""
-    header = _exr_header(width, height)
-    row_bytes = width * 4
-    channel_count = len(_EXR_CHANNELS)
-    block_size = 8 + row_bytes * channel_count
-    data_size = struct.pack("<i", row_bytes * channel_count)
-    first_block = len(header) + height * 8
-    offset_table = b"".join(
-        struct.pack("<Q", first_block + row * block_size)
-        for row in range(height)
-    )
-    blocks = bytearray()
-    for row in range(height):
-        blocks += struct.pack("<i", row)
-        blocks += data_size
-        for name in _EXR_CHANNELS:
-            blocks += planes[name][row].astype("<f4", copy=False).tobytes()
-    return header + offset_table + bytes(blocks)

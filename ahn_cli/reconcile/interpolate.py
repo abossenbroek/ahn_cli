@@ -1,23 +1,27 @@
 """The reconcile interpolation methods (typed dispatch on the request variant).
 
-Each method estimates an elevation ``Z`` at every target XY from the AHN source
-points ``(x, y, z)``, returning ``(z, valid)`` where ``valid`` marks the cells
-an estimate could be produced for:
+Each method estimates an elevation ``Z`` at target XY from the AHN source points
+``(x, y, z)``, returning ``(z, valid)`` where ``valid`` marks the cells an
+estimate could be produced for:
 
-* :func:`_linear` -- Delaunay-barycentric linear interpolation via scipy; cells
-  outside the convex hull (or a degenerate point set) are void.
-* :func:`_idw` -- inverse-distance weighting over the ``k`` nearest points.
-* :func:`_kriging` -- ordinary kriging over the ``k`` nearest points; a singular
-  per-cell system falls back deterministically to the IDW estimate.
+* linear -- Delaunay-barycentric linear interpolation via scipy; cells outside
+  the convex hull (or a degenerate point set) are void.
+* IDW -- inverse-distance weighting over the ``k`` nearest points.
+* kriging -- ordinary kriging over the ``k`` nearest points; a singular per-cell
+  system falls back deterministically to the IDW estimate.
 
-IDW and kriging obtain their neighbours from the scipy ``cKDTree`` reference
-(:func:`ahn_cli.reconcile.neighbors.knn`) -- a fast, indexed, C-backed search.
-Every step is deterministic, so identical inputs yield byte-identical output.
+The neighbour structure (a scipy Delaunay for linear, a ``cKDTree`` for IDW and
+kriging) is built **once** by :func:`build_interpolator`; the returned
+:class:`Interpolator` then answers :meth:`Interpolator.estimate` for any batch of
+targets. This is what lets the reconcile pipeline stream an arbitrarily large
+grid in row-blocks with flat memory -- a blocked run is byte-identical to a
+whole-grid one because every estimate is per-target. :func:`interpolate` is the
+build-and-estimate convenience for callers that hold all targets at once.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
 import numpy.typing as npt
@@ -29,7 +33,7 @@ from ahn_cli.reconcile.method import (
     KrigingInterp,
     LinearInterp,
 )
-from ahn_cli.reconcile.neighbors import knn
+from ahn_cli.reconcile.neighbors import build_tree, query_knn
 
 if TYPE_CHECKING:
     from ahn_cli.reconcile.method import InterpMethod
@@ -49,27 +53,44 @@ its determinant rounds to a tiny non-zero value. A relative smallest-singular-
 value test reliably catches those, where a determinant-sign test does not."""
 
 
+class Interpolator(Protocol):
+    """A prebuilt interpolator: estimate ``Z`` for any batch of target XY."""
+
+    def estimate(
+        self, target_xy: npt.NDArray[np.float64]
+    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.bool_]]:
+        """Return ``(z, valid)`` for ``target_xy`` (``NaN``/``False`` where void)."""
+        ...
+
+
+def build_interpolator(
+    method: InterpMethod, source_xyz: npt.NDArray[np.float64]
+) -> Interpolator:
+    """Build the interpolator for ``method`` over ``source_xyz`` (structure once).
+
+    Typed dispatch on the request variant -- no stringly-typed method switch.
+    """
+    if isinstance(method, LinearInterp):
+        return _LinearInterpolator(source_xyz)
+    if isinstance(method, IdwInterp):
+        return _IdwInterpolator(source_xyz, method)
+    return _KrigingInterpolator(source_xyz, method)
+
+
 def interpolate(
     method: InterpMethod,
     source_xyz: npt.NDArray[np.float64],
     target_xy: npt.NDArray[np.float64],
 ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.bool_]]:
-    """Estimate ``Z`` at each target XY, dispatching on the method variant.
+    """Estimate ``Z`` at each target XY (build-and-estimate convenience).
 
     Contract:
         - ``source_xyz`` is ``(n, 3)`` world ``(x, y, z)``; ``target_xy`` is
-          ``(q, 2)`` world XY at which to estimate ``Z``.
+          ``(q, 2)`` world XY.
         - Returns ``(z, valid)`` each length ``q``: ``z`` holds the estimate
-          (``NaN`` where void) and ``valid`` is ``True`` where an estimate was
-          produced.
-
-    Typed dispatch on the request variant -- no stringly-typed method switch.
+          (``NaN`` where void) and ``valid`` is ``True`` where produced.
     """
-    if isinstance(method, LinearInterp):
-        return _linear(source_xyz, target_xy)
-    if isinstance(method, IdwInterp):
-        return _idw(source_xyz, target_xy, method)
-    return _kriging(source_xyz, target_xy, method)
+    return build_interpolator(method, source_xyz).estimate(target_xy)
 
 
 def _void(
@@ -79,38 +100,96 @@ def _void(
     return np.full(q, np.nan), np.zeros(q, dtype=np.bool_)
 
 
-def _linear(
-    source_xyz: npt.NDArray[np.float64],
-    target_xy: npt.NDArray[np.float64],
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.bool_]]:
+class _LinearInterpolator:
     """Delaunay-barycentric linear interpolation; outside-hull cells are void."""
-    q = target_xy.shape[0]
-    if source_xyz.shape[0] < _MIN_TRIANGULATION_POINTS:
-        return _void(q)
-    try:
-        interp = LinearNDInterpolator(
-            source_xyz[:, :2], source_xyz[:, 2], fill_value=np.nan
+
+    def __init__(self, source_xyz: npt.NDArray[np.float64]) -> None:
+        """Build the Delaunay interpolant, or none for a degenerate point set."""
+        self._interp: LinearNDInterpolator | None = None
+        if source_xyz.shape[0] >= _MIN_TRIANGULATION_POINTS:
+            try:
+                self._interp = LinearNDInterpolator(
+                    source_xyz[:, :2], source_xyz[:, 2], fill_value=np.nan
+                )
+            except QhullError:
+                self._interp = None
+
+    def estimate(
+        self, target_xy: npt.NDArray[np.float64]
+    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.bool_]]:
+        """Evaluate the interpolant; out-of-hull (or degenerate) cells are void."""
+        q = target_xy.shape[0]
+        if self._interp is None:
+            return _void(q)
+        z = np.asarray(self._interp(target_xy), dtype=np.float64).reshape(q)
+        return z, ~np.isnan(z)
+
+
+class _IdwInterpolator:
+    """Inverse-distance weighting over the ``k`` nearest points."""
+
+    def __init__(
+        self, source_xyz: npt.NDArray[np.float64], method: IdwInterp
+    ) -> None:
+        """Build the ``cKDTree`` once and hold the source Z and parameters."""
+        self._z = source_xyz[:, 2]
+        self._count = source_xyz.shape[0]
+        self._tree = build_tree(source_xyz[:, :2])
+        self._power = method.power
+        self._k = method.k
+
+    def estimate(
+        self, target_xy: npt.NDArray[np.float64]
+    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.bool_]]:
+        """Return the inverse-distance-weighted estimate for ``target_xy``."""
+        sq, idx = query_knn(self._tree, target_xy, self._count, self._k)
+        q, k_eff = sq.shape
+        if k_eff == 0:
+            return _void(q)
+        z = _idw_weighted_mean(sq, self._z[idx], self._power)
+        return z, np.ones(q, dtype=np.bool_)
+
+
+class _KrigingInterpolator:
+    """Ordinary kriging over the ``k`` nearest points with a fixed variogram."""
+
+    def __init__(
+        self, source_xyz: npt.NDArray[np.float64], method: KrigingInterp
+    ) -> None:
+        """Build the ``cKDTree`` once and hold the source XY/Z and the request."""
+        self._xy = source_xyz[:, :2]
+        self._z = source_xyz[:, 2]
+        self._count = source_xyz.shape[0]
+        self._tree = build_tree(self._xy)
+        self._method = method
+
+    def estimate(
+        self, target_xy: npt.NDArray[np.float64]
+    ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.bool_]]:
+        """Return the ordinary-kriging estimate for ``target_xy``."""
+        sq, idx = query_knn(
+            self._tree, target_xy, self._count, self._method.k
         )
-        estimate = interp(target_xy)
-    except QhullError:
-        return _void(q)
-    z = np.asarray(estimate, dtype=np.float64).reshape(q)
-    return z, ~np.isnan(z)
-
-
-def _idw(
-    source_xyz: npt.NDArray[np.float64],
-    target_xy: npt.NDArray[np.float64],
-    method: IdwInterp,
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.bool_]]:
-    """Inverse-distance-weighted interpolation over the ``k`` nearest points."""
-    sq, idx = knn(target_xy, source_xyz[:, :2], method.k)
-    q, k_eff = sq.shape
-    if k_eff == 0:
-        return _void(q)
-    z_neighbours = source_xyz[:, 2][idx]
-    z = _idw_weighted_mean(sq, z_neighbours, method.power)
-    return z, np.ones(q, dtype=np.bool_)
+        q, k_eff = sq.shape
+        if k_eff == 0:
+            return _void(q)
+        z_neighbours = self._z[idx]
+        lhs, rhs = _kriging_system(self._xy[idx], sq, self._method)
+        # Start every cell at the deterministic IDW estimate, then overwrite the
+        # cells whose kriging system is well conditioned with the kriging
+        # solution. An ill-conditioned system (e.g. coincident neighbours with a
+        # zero nugget) keeps the IDW fallback -- detected up front so no per-cell
+        # exception handling runs and no near-singular solve is ever attempted.
+        z = _idw_weighted_mean(sq, z_neighbours, _IDW_FALLBACK_POWER)
+        solvable = _well_conditioned(lhs)
+        if solvable.any():
+            weights = np.linalg.solve(
+                lhs[solvable], rhs[solvable][:, :, np.newaxis]
+            )[:, :, 0]
+            z[solvable] = (weights[:, :k_eff] * z_neighbours[solvable]).sum(
+                axis=1
+            )
+        return z, np.ones(q, dtype=np.bool_)
 
 
 def _idw_weighted_mean(
@@ -143,36 +222,6 @@ def _idw_weighted_mean(
         where=coincident_count > 0,
     )
     return np.where(coincident.any(axis=1), exact, general)
-
-
-def _kriging(
-    source_xyz: npt.NDArray[np.float64],
-    target_xy: npt.NDArray[np.float64],
-    method: KrigingInterp,
-) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.bool_]]:
-    """Ordinary kriging over the ``k`` nearest points with a fixed variogram."""
-    source_xy = source_xyz[:, :2]
-    sq, idx = knn(target_xy, source_xy, method.k)
-    q, k_eff = sq.shape
-    if k_eff == 0:
-        return _void(q)
-    z_neighbours = source_xyz[:, 2][idx]
-    lhs, rhs = _kriging_system(source_xy[idx], sq, method)
-    # Start every cell at the deterministic IDW estimate, then overwrite the
-    # cells whose kriging system is well conditioned with the kriging solution.
-    # An ill-conditioned system (e.g. coincident neighbours with a zero nugget)
-    # keeps the IDW fallback -- detected up front so no per-cell exception
-    # handling runs and no near-singular solve is ever attempted.
-    z = _idw_weighted_mean(sq, z_neighbours, _IDW_FALLBACK_POWER)
-    solvable = _well_conditioned(lhs)
-    if solvable.any():
-        weights = np.linalg.solve(
-            lhs[solvable], rhs[solvable][:, :, np.newaxis]
-        )[:, :, 0]
-        z[solvable] = (weights[:, :k_eff] * z_neighbours[solvable]).sum(
-            axis=1
-        )
-    return z, np.ones(q, dtype=np.bool_)
 
 
 def _kriging_system(

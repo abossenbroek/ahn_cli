@@ -13,9 +13,9 @@ from rasterio.transform import from_bounds
 from ahn_cli.domain.grid import PixelGrid
 from ahn_cli.reconcile.raster import (
     ReconcileError,
+    block_target_coordinates,
     load_cloud,
-    load_ortho,
-    target_coordinates,
+    open_ortho,
 )
 
 if TYPE_CHECKING:
@@ -25,22 +25,27 @@ if TYPE_CHECKING:
 _FIXTURE_SIZE = 6
 
 
-def test_load_ortho_returns_grid_and_rgb(ortho_path: Path) -> None:
-    """A valid ortho yields its grid dimensions and (h, w, 3) uint8 RGB."""
-    ortho = load_ortho(ortho_path)
-    assert ortho.grid.width == _FIXTURE_SIZE
-    assert ortho.grid.height == _FIXTURE_SIZE
-    assert ortho.rgb.shape == (_FIXTURE_SIZE, _FIXTURE_SIZE, 3)
-    assert ortho.rgb.dtype == np.uint8
+def test_open_ortho_grid_and_windowed_read(ortho_path: Path) -> None:
+    """A valid ortho exposes its grid and reads RGB row-blocks."""
+    with open_ortho(ortho_path) as ortho:
+        assert ortho.grid.width == _FIXTURE_SIZE
+        assert ortho.grid.height == _FIXTURE_SIZE
+        full = ortho.read_rows(0, _FIXTURE_SIZE)
+        assert full.shape == (_FIXTURE_SIZE, _FIXTURE_SIZE, 3)
+        assert full.dtype == np.uint8
+        block = ortho.read_rows(2, 3)
+        assert block.shape == (3, _FIXTURE_SIZE, 3)
+        # The windowed strip equals the corresponding rows of the full read.
+        assert np.array_equal(block, full[2:5])
 
 
-def test_load_ortho_missing_raises(tmp_path: Path) -> None:
+def test_open_ortho_missing_raises(tmp_path: Path) -> None:
     """An unreadable ortho path raises the typed ReconcileError."""
     with pytest.raises(ReconcileError, match="not readable"):
-        load_ortho(tmp_path / "absent.tif")
+        open_ortho(tmp_path / "absent.tif")
 
 
-def test_load_ortho_too_few_bands_raises(tmp_path: Path) -> None:
+def test_open_ortho_too_few_bands_raises(tmp_path: Path) -> None:
     """An ortho with fewer than three bands raises ReconcileError."""
     path = tmp_path / "gray.tif"
     transform = from_bounds(0.0, 0.0, 2.0, 2.0, 2, 2)
@@ -55,9 +60,9 @@ def test_load_ortho_too_few_bands_raises(tmp_path: Path) -> None:
         crs="EPSG:28992",
         transform=transform,
     ) as dst:
-        dst.write(np.zeros((2, 2, 2), dtype=np.uint8).transpose(2, 0, 1))
+        dst.write(np.zeros((2, 2, 2), dtype=np.uint8))
     with pytest.raises(ReconcileError, match="band"):
-        load_ortho(path)
+        open_ortho(path)
 
 
 def test_load_cloud_returns_xyz(cloud_path: Path) -> None:
@@ -73,16 +78,27 @@ def test_load_cloud_missing_raises(tmp_path: Path) -> None:
         load_cloud(tmp_path / "absent.laz")
 
 
-def test_target_coordinates_shapes_and_first_centre() -> None:
-    """Target XY flattens the grid; the first entry is the top-left centre."""
+def test_block_target_coordinates_full_grid() -> None:
+    """Whole-grid block coordinates match the pixel-centre convention."""
     # North-up: origin top-left (10, 20), 2 m pixels, 3 wide x 2 high.
     grid = PixelGrid(
         width=3, height=2, transform=(2.0, 0.0, 10.0, 0.0, -2.0, 20.0)
     )
-    target_xy, eastings, northings = target_coordinates(grid)
+    target_xy, eastings, northings = block_target_coordinates(grid, 0, 2)
     assert target_xy.shape == (6, 2)
     assert eastings.shape == (2, 3)
     assert northings.shape == (2, 3)
     # Pixel-centre of column 0, row 0: easting 10 + 1, northing 20 - 1.
     assert math.isclose(target_xy[0, 0], 11.0)
     assert math.isclose(target_xy[0, 1], 19.0)
+
+
+def test_block_target_coordinates_partial_block() -> None:
+    """A partial block starts at the requested row (centre convention held)."""
+    grid = PixelGrid(
+        width=3, height=4, transform=(2.0, 0.0, 10.0, 0.0, -2.0, 20.0)
+    )
+    _, _, northings = block_target_coordinates(grid, 2, 1)
+    assert northings.shape == (1, 3)
+    # Row index 2 centre: northing 20 - 2*(2.5) = 20 - 5 = 15.
+    assert math.isclose(northings[0, 0], 15.0)

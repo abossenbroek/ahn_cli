@@ -4,11 +4,31 @@ from pathlib import Path
 from typing import cast
 
 import click
+import numpy as np
+import rasterio
 from click.testing import CliRunner
+from rasterio.transform import from_bounds
 
 from ahn_cli.cli import cli
 from ahn_cli.fetch.acquisition import SITE_SUBDIRS
 from ahn_cli.fetch.generation import default_registry
+
+
+def _write_geotiff(path: Path) -> None:
+    """Write a tiny valid single-band GeoTIFF at ``path``."""
+    transform = from_bounds(3.0, 50.0, 7.0, 53.0, 4, 3)
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        height=3,
+        width=4,
+        count=1,
+        dtype="float32",
+        crs="EPSG:4326",
+        transform=transform,
+    ) as dst:
+        dst.write(np.arange(12, dtype="float32").reshape(1, 3, 4))
 
 
 def _short_flags(command: click.Command) -> list[str]:
@@ -148,6 +168,58 @@ def test_fetch_rejects_an_unknown_generation(tmp_path: Path) -> None:
     )
 
     assert result.exit_code == 2
+
+
+def test_fetch_viirs_imports_a_geotiff(tmp_path: Path) -> None:
+    """``fetch --viirs`` copies the raster into <out>/viirs/ with provenance."""
+    source = tmp_path / "lights.tif"
+    _write_geotiff(source)
+    site = tmp_path / "delft"
+
+    result = CliRunner().invoke(
+        cli, ["fetch", "--out", str(site), "--viirs", str(source)]
+    )
+
+    assert result.exit_code == 0
+    assert "Imported VIIRS raster" in result.output
+    dest = site / "viirs" / "lights.tif"
+    assert dest.read_bytes() == source.read_bytes()
+    assert (site / "viirs" / "lights.tif.provenance.json").is_file()
+
+
+def test_fetch_viirs_rejects_an_area_selector(tmp_path: Path) -> None:
+    """``--viirs`` combined with an area selector is a usage error."""
+    source = tmp_path / "lights.tif"
+    _write_geotiff(source)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "fetch",
+            "--out",
+            str(tmp_path / "delft"),
+            "--viirs",
+            str(source),
+            "--city",
+            "delft",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "cannot be combined" in result.output
+
+
+def test_fetch_viirs_rejects_a_non_raster_file(tmp_path: Path) -> None:
+    """A --viirs file that is not a raster is reported as a Click error."""
+    source = tmp_path / "broken.tif"
+    source.write_bytes(b"not a GeoTIFF")
+
+    result = CliRunner().invoke(
+        cli,
+        ["fetch", "--out", str(tmp_path / "delft"), "--viirs", str(source)],
+    )
+
+    assert result.exit_code == 1
 
 
 def test_prep_parses_filters_then_reports_not_wired(tmp_path: Path) -> None:

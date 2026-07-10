@@ -23,6 +23,7 @@ from ahn_cli.fetch.acquisition import (
     create_site_layout,
 )
 from ahn_cli.fetch.generation import AUTO_CHOICE, default_registry
+from ahn_cli.fetch.viirs import ViirsImportError, import_viirs
 from ahn_cli.prep.transform import (
     PrepRequest,
     TransformNotWiredError,
@@ -87,6 +88,28 @@ def _parse_classes(spec: str | None) -> tuple[int, ...]:
         raise click.BadParameter(msg) from exc
 
 
+def _reject_selectors_with_viirs(
+    city: str | None,
+    bbox: str | None,
+    geojson: str | None,
+) -> None:
+    """Reject area selectors given alongside a ``--viirs`` import.
+
+    A ``--viirs`` import consumes a prepared raster and ignores the area of
+    interest, so combining it with an AHN area selector is contradictory.
+
+    Failure modes:
+        - :class:`click.UsageError` if any of ``city`` / ``bbox`` / ``geojson``
+          is given together with ``--viirs``.
+    """
+    if any(value is not None for value in (city, bbox, geojson)):
+        msg = (
+            "--viirs imports a prepared raster and cannot be combined with "
+            "--city, --bbox, or --geojson."
+        )
+        raise click.UsageError(msg)
+
+
 def _reject_class_overlap(
     include: tuple[int, ...],
     exclude: tuple[int, ...],
@@ -146,20 +169,39 @@ def cli() -> None:
     show_default=True,
     help="AHN generation to fetch; 'auto' picks the newest available.",
 )
+@click.option(
+    "--viirs",
+    "viirs",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Import an externally-produced VIIRS GeoTIFF into <out>/viirs/.",
+)
 def fetch(
     out: Path,
     city: str | None,
     bbox: str | None,
     geojson: str | None,
     ahn: str,
+    viirs: Path | None,
 ) -> None:
     """Acquire raw source tiles for one site (acquisition stage only).
 
-    Validates that exactly one area selector is given, resolves the requested
-    AHN generation, creates the ``<out>/{ahn,ortho,viirs}/`` layout, and
-    dispatches to the fetch context. Downloading (and the newest-available
-    ``auto`` probe) is not wired until WP6, so this reports the un-wired seam.
+    With ``--viirs`` this instead imports a prepared VIIRS GeoTIFF into
+    ``<out>/viirs/`` (verify-open, checksum, byte-preserving copy, provenance)
+    and returns. Otherwise it validates that exactly one area selector is
+    given, resolves the requested AHN generation, creates the
+    ``<out>/{ahn,ortho,viirs}/`` layout, and dispatches to the fetch context.
+    Downloading (and the newest-available ``auto`` probe) is not wired until
+    WP6, so the AHN path reports the un-wired seam.
     """
+    if viirs is not None:
+        _reject_selectors_with_viirs(city, bbox, geojson)
+        try:
+            result = import_viirs(viirs, out)
+        except ViirsImportError as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(f"Imported VIIRS raster to {result.dest_path}")
+        return
     selector, area = _select_area(city, bbox, geojson)
     generation = _GENERATION_REGISTRY.resolve_token(ahn)
     create_site_layout(out)

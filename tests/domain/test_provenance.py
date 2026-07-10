@@ -1,5 +1,6 @@
 """Tests for the :class:`Provenance` value object."""
 
+import math
 from datetime import datetime, timezone
 
 import pytest
@@ -70,6 +71,12 @@ def test_provenance_rejects_degenerate_bbox() -> None:
     """A degenerate extent is rejected via the shared validator."""
     with pytest.raises(ValueError, match="minx < maxx"):
         _minimal_provenance(bbox=(10.0, 0.0, 0.0, 10.0))
+
+
+def test_provenance_rejects_non_finite_bbox() -> None:
+    """A non-finite extent is rejected when constructing a Provenance."""
+    with pytest.raises(ValueError, match="finite"):
+        _minimal_provenance(bbox=(math.nan, math.nan, 10.0, 10.0))
 
 
 def test_provenance_rejects_finish_before_start() -> None:

@@ -1,5 +1,7 @@
 """Tests for the :class:`Tile` value object and the shared bbox validator."""
 
+import math
+
 import pytest
 
 from ahn_cli.domain import (
@@ -28,6 +30,41 @@ def test_ensure_valid_bbox_rejects_inverted_y() -> None:
     """A box whose y extent is empty or inverted is rejected."""
     with pytest.raises(ValueError, match="minx < maxx"):
         ensure_valid_bbox((0.0, 10.0, 10.0, 10.0))
+
+
+def test_ensure_valid_bbox_rejects_all_nan() -> None:
+    """A wholly non-finite box is not a real extent."""
+    with pytest.raises(ValueError, match="finite"):
+        ensure_valid_bbox((math.nan, math.nan, math.nan, math.nan))
+
+
+def test_ensure_valid_bbox_rejects_single_nan_coord() -> None:
+    """A single NaN coordinate makes the box non-finite."""
+    with pytest.raises(ValueError, match="finite"):
+        ensure_valid_bbox((0.0, 0.0, math.nan, 10.0))
+
+
+def test_ensure_valid_bbox_rejects_positive_infinity() -> None:
+    """A +inf coordinate makes the box non-finite."""
+    with pytest.raises(ValueError, match="finite"):
+        ensure_valid_bbox((0.0, 0.0, math.inf, 10.0))
+
+
+def test_ensure_valid_bbox_rejects_negative_infinity() -> None:
+    """A -inf coordinate makes the box non-finite."""
+    with pytest.raises(ValueError, match="finite"):
+        ensure_valid_bbox((-math.inf, 0.0, 10.0, 10.0))
+
+
+def test_tile_rejects_non_finite_bbox() -> None:
+    """A non-finite extent is rejected when constructing a Tile."""
+    with pytest.raises(ValueError, match="finite"):
+        Tile(
+            tile_id="37FN2",
+            product=Product.DSM,
+            bbox=(math.nan, math.nan, math.nan, math.nan),
+            generation=Generation(4),
+        )
 
 
 def test_tile_with_generation_axis_is_valid() -> None:

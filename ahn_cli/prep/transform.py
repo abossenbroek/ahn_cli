@@ -11,6 +11,8 @@ module's public surface.
 from dataclasses import dataclass
 from pathlib import Path
 
+from ahn_cli.prep.decimate import Thinning
+
 
 class TransformNotWiredError(NotImplementedError):
     """No real prep transform is wired yet (WP10-WP13).
@@ -31,6 +33,9 @@ class PrepRequest:
           classification filters; empty tuples mean "no filter on this side".
           The caller guarantees the two do not overlap.
         - ``export_points`` requests the point-cloud export.
+        - ``thinning`` is the validated graded-thinning request (voxel-grid or
+          Poisson-disk), or ``None`` for no additional thinning. It is additive
+          to the legacy nth-point decimation, which is unaffected.
 
     Invariants:
         - Frozen: an immutable, hashable value object, equal by field value.
@@ -40,6 +45,7 @@ class PrepRequest:
     include_classes: tuple[int, ...] = ()
     exclude_classes: tuple[int, ...] = ()
     export_points: bool = False
+    thinning: Thinning | None = None
 
 
 def prepare(request: PrepRequest) -> None:

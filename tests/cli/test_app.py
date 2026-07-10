@@ -330,3 +330,156 @@ def test_prep_rejects_class_in_both_include_and_exclude(
 
     assert result.exit_code == 2
     assert "included and excluded" in result.output
+
+
+def test_prep_accepts_voxel_thinning(tmp_path: Path) -> None:
+    """A valid voxel request parses and reaches the un-wired seam."""
+    result = CliRunner().invoke(
+        cli,
+        [
+            "prep",
+            "--data",
+            str(tmp_path),
+            "--thin-method",
+            "voxel",
+            "--thin-grade",
+            "3",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "wired" in result.output.lower()
+
+
+def test_prep_accepts_poisson_thinning(tmp_path: Path) -> None:
+    """A valid Poisson request parses and reaches the un-wired seam."""
+    result = CliRunner().invoke(
+        cli,
+        [
+            "prep",
+            "--data",
+            str(tmp_path),
+            "--thin-method",
+            "poisson",
+            "--thin-radius",
+            "1.5",
+            "--thin-seed",
+            "7",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "wired" in result.output.lower()
+
+
+def test_prep_rejects_thin_param_without_method(tmp_path: Path) -> None:
+    """A grade or radius without a method is a usage error."""
+    result = CliRunner().invoke(
+        cli,
+        ["prep", "--data", str(tmp_path), "--thin-grade", "3"],
+    )
+
+    assert result.exit_code == 2
+    assert "require --thin-method" in result.output
+
+
+def test_prep_rejects_voxel_without_grade(tmp_path: Path) -> None:
+    """Voxel thinning demands a grade."""
+    result = CliRunner().invoke(
+        cli,
+        ["prep", "--data", str(tmp_path), "--thin-method", "voxel"],
+    )
+
+    assert result.exit_code == 2
+    assert "requires --thin-grade" in result.output
+
+
+def test_prep_rejects_voxel_with_radius(tmp_path: Path) -> None:
+    """A radius is meaningless for voxel thinning."""
+    result = CliRunner().invoke(
+        cli,
+        [
+            "prep",
+            "--data",
+            str(tmp_path),
+            "--thin-method",
+            "voxel",
+            "--thin-grade",
+            "3",
+            "--thin-radius",
+            "1.0",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "not valid for voxel" in result.output
+
+
+def test_prep_rejects_out_of_range_voxel_grade(tmp_path: Path) -> None:
+    """An out-of-range grade is a bad parameter (validated by the VO)."""
+    result = CliRunner().invoke(
+        cli,
+        [
+            "prep",
+            "--data",
+            str(tmp_path),
+            "--thin-method",
+            "voxel",
+            "--thin-grade",
+            "42",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "voxel grade" in result.output
+
+
+def test_prep_rejects_poisson_without_radius(tmp_path: Path) -> None:
+    """Poisson thinning demands a radius."""
+    result = CliRunner().invoke(
+        cli,
+        ["prep", "--data", str(tmp_path), "--thin-method", "poisson"],
+    )
+
+    assert result.exit_code == 2
+    assert "requires --thin-radius" in result.output
+
+
+def test_prep_rejects_poisson_with_grade(tmp_path: Path) -> None:
+    """A grade is meaningless for Poisson thinning."""
+    result = CliRunner().invoke(
+        cli,
+        [
+            "prep",
+            "--data",
+            str(tmp_path),
+            "--thin-method",
+            "poisson",
+            "--thin-radius",
+            "1.0",
+            "--thin-grade",
+            "3",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "not valid for poisson" in result.output
+
+
+def test_prep_rejects_non_positive_poisson_radius(tmp_path: Path) -> None:
+    """A non-positive radius is a bad parameter (validated by the VO)."""
+    result = CliRunner().invoke(
+        cli,
+        [
+            "prep",
+            "--data",
+            str(tmp_path),
+            "--thin-method",
+            "poisson",
+            "--thin-radius",
+            "-1.0",
+        ],
+    )
+
+    assert result.exit_code == 2
+    assert "poisson radius" in result.output

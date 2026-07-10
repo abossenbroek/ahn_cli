@@ -29,6 +29,13 @@ from ahn_cli.fetch.source import (
     source_kind_tokens,
 )
 from ahn_cli.fetch.viirs import ViirsImportError, import_viirs
+from ahn_cli.prep.decimate import (
+    DEFAULT_SEED,
+    PoissonThinning,
+    ThinMethod,
+    Thinning,
+    VoxelThinning,
+)
 from ahn_cli.prep.transform import (
     PrepRequest,
     TransformNotWiredError,
@@ -107,6 +114,56 @@ def _reject_class_overlap(
     if overlap:
         msg = f"classes cannot be both included and excluded: {overlap}."
         raise click.UsageError(msg)
+
+
+def _parse_thinning(
+    method: str | None,
+    grade: int | None,
+    radius: float | None,
+    seed: int,
+) -> Thinning | None:
+    """Build the validated graded-thinning request from the CLI options.
+
+    Contract:
+        - ``method`` is ``None`` (no thinning), ``"voxel"`` or ``"poisson"``.
+        - Voxel thinning requires ``--thin-grade`` and forbids ``--thin-radius``;
+          Poisson thinning requires ``--thin-radius`` and forbids
+          ``--thin-grade``. ``--thin-seed`` applies to Poisson only.
+        - Returns the matching :data:`~ahn_cli.prep.decimate.Thinning`, or
+          ``None`` when no method is requested.
+
+    Failure modes:
+        - :class:`click.UsageError` if a grade/radius is supplied without a
+          method, or paired with the wrong method, or the required one is
+          missing.
+        - :class:`click.BadParameter` if the grade/radius value is out of range.
+    """
+    if method is None:
+        if grade is not None or radius is not None:
+            msg = "--thin-grade/--thin-radius require --thin-method."
+            raise click.UsageError(msg)
+        return None
+    if method == ThinMethod.VOXEL.value:
+        if grade is None:
+            msg = "voxel thinning requires --thin-grade."
+            raise click.UsageError(msg)
+        if radius is not None:
+            msg = "--thin-radius is not valid for voxel thinning."
+            raise click.UsageError(msg)
+        try:
+            return VoxelThinning(grade=grade)
+        except ValueError as exc:
+            raise click.BadParameter(str(exc)) from exc
+    if radius is None:
+        msg = "poisson thinning requires --thin-radius."
+        raise click.UsageError(msg)
+    if grade is not None:
+        msg = "--thin-grade is not valid for poisson thinning."
+        raise click.UsageError(msg)
+    try:
+        return PoissonThinning(radius=radius, seed=seed)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc)) from exc
 
 
 @click.group()
@@ -222,27 +279,64 @@ def fetch(
     is_flag=True,
     help="Export the point cloud.",
 )
+@click.option(
+    "--thin-method",
+    "thin_method",
+    type=click.Choice([m.value for m in ThinMethod]),
+    default=None,
+    help="Graded thinning method (additive to the legacy --decimate step).",
+)
+@click.option(
+    "--thin-grade",
+    "thin_grade",
+    type=int,
+    default=None,
+    help="Voxel thinning grade 0-9 (0 keeps all; higher is coarser).",
+)
+@click.option(
+    "--thin-radius",
+    "thin_radius",
+    type=float,
+    default=None,
+    help="Poisson-disk minimum spacing in metres.",
+)
+@click.option(
+    "--thin-seed",
+    "thin_seed",
+    type=int,
+    default=DEFAULT_SEED,
+    show_default=True,
+    help="Poisson-disk RNG seed (deterministic sampling).",
+)
 def prep(
     data: Path,
     include_class: str | None,
     exclude_class: str | None,
+    thin_method: str | None,
+    thin_grade: int | None,
+    thin_radius: float | None,
+    thin_seed: int,
     *,
     points: bool,
 ) -> None:
     """Transform and export a fetched site (transform stage only).
 
-    Parses and validates the classification filters, then dispatches to the
-    prep context. The transforms themselves are not wired in WP2, so this
-    reports the un-wired seam.
+    Parses and validates the classification filters and the graded-thinning
+    request, then dispatches to the prep context. The transforms themselves are
+    not wired yet, so this reports the un-wired seam.
     """
     include = _parse_classes(include_class)
     exclude = _parse_classes(exclude_class)
     _reject_class_overlap(include, exclude)
+    thinning = _parse_thinning(
+        thin_method, thin_grade, thin_radius, thin_seed
+    )
     request = PrepRequest(
         data_dir=data,
         include_classes=include,
         exclude_classes=exclude,
         export_points=points,
+        thinning=thinning,
     )
     try:
         prepare(request)

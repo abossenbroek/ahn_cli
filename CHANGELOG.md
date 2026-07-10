@@ -149,6 +149,26 @@
   resolved-spikes={SPIKE-PDAL, SPIKE-GPU} gate={2 adversarial reviews + green CI}
   pending-user={}
 
+### 2026-07-10 — Overnight autonomous run authorized
+- Directive: "spread out remaining work over teams of agents to work the night."
+- Model: coordinator (this session) stays thin; engineers are Opus background
+  worktree agents dispatched one wave at a time; gate + merge + fan-out driven
+  by the coordinator on each engineer-completion notification.
+- DAG is gated at the top: WP2/WP3/WP4 import WP1 domain value objects, so the
+  full board (#3–#15) cannot branch until WP1 (#2) merges. Overnight throughput
+  = maximum fan-out per wave, dispatched the instant each wave unblocks.
+- Waves: WP1 (now) → {WP2,WP3,WP4} (3-wide) → {WP5..WP9} (≤5-wide) →
+  {WP10,WP11} → {WP12,WP13} → WP14.
+- Auto-merge gate per PR: 2 independent adversarial reviews of the PR's latest
+  commit (each instructed to break it: correctness, determinism, DDD/TDD/100%-cov
+  guardrail violations) + green CI + coverage gate. Any blocking finding →
+  SendMessage bounce to the authoring engineer, no merge, re-review after fix.
+- Recovery: state = TaskList (#1–#17) + this append-only log. On compaction,
+  reconcile board vs `gh pr list`/`git log`, newest STATE line wins, resume.
+- STATE: merged={WP0} in-flight={WP1} branch={wp1-domain-model, no PR yet}
+  loop=notification-driven-cascade next={gate+merge WP1 → dispatch WP2,WP3,WP4}
+  pending-user={}
+
 ## [0.2.1] - 2024-05-04
 ### Changed
 * feat: Add validation for exclusive arguments

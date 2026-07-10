@@ -4,3 +4,9 @@
 # live in git-LFS).
 tests/**/fixtures/** filter=lfs diff=lfs merge=lfs -text
 tests/**/cassettes/** filter=lfs diff=lfs merge=lfs -text
+# Small text fixtures (feed XML, sample GeoJSON) are prose-sized, not the
+# binary point-cloud/raster the rule above targets: keep them as normal git
+# text so they diff/review inline and need no LFS upload.
+tests/**/fixtures/*.xml !filter !diff !merge text
+tests/**/fixtures/*.geojson !filter !diff !merge text
+tests/**/fixtures/*.json !filter !diff !merge text

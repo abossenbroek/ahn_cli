@@ -1,84 +1,60 @@
-"""Fetch-context acquisition seam.
+"""WP6 red stub: fetch-context acquisition actuation (not yet implemented)."""
 
-The ``fetch`` bounded context turns a validated area of interest into raw,
-cached source tiles on disk. WP2 ships only the *seam*: it materialises the
-canonical ``data/<site>/{ahn,ortho,viirs}/`` directory layout and records the
-intent to acquire, then refuses to fabricate data by raising
-:class:`SourceNotWiredError`. Real portal fetchers arrive in WP5-WP9 and
-replace :func:`acquire`'s body without changing this module's public surface.
-"""
+from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum
-from pathlib import Path
+from typing import TYPE_CHECKING
 
-from ahn_cli.domain import Generation
+from ahn_cli.fetch.geotiles_source import GeotilesSource
+from ahn_cli.fetch.pdok import PdokSource
+from ahn_cli.fetch.source import FetchSource, HttpGet, SourceKind
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+    from ahn_cli.domain import Generation
 
 SITE_SUBDIRS: tuple[str, ...] = ("ahn", "ortho", "viirs")
-"""Per-product subdirectories created under every site directory, in order."""
+
+Clock = Callable[[], datetime]
 
 
 class AreaSelectorKind(Enum):
-    """Which area-of-interest selector an acquisition request was built from.
-
-    Modelled as an enum so the selected area is a closed, immutable value the
-    fetch context can record and later branch on without a stringly-typed
-    switch. WP2 only records it; WP5-WP9 dispatch on it.
-    """
+    """AOI selector kind (stub)."""
 
     CITY = "city"
     BBOX = "bbox"
     GEOJSON = "geojson"
 
 
-class SourceNotWiredError(NotImplementedError):
-    """No real fetcher is wired for the requested source yet (WP5-WP9).
+class AcquisitionError(RuntimeError):
+    """Base acquisition failure (stub)."""
 
-    A :class:`NotImplementedError` subclass so a caller may catch it broadly
-    while still distinguishing the deliberate "not yet built" state from an
-    accidental one.
-    """
+
+class MalformedBboxError(AcquisitionError):
+    """Malformed bbox (stub)."""
+
+
+class SelectorNotWiredError(AcquisitionError):
+    """Selector AOI derivation not wired (stub)."""
 
 
 @dataclass(frozen=True)
 class AcquisitionRequest:
-    """A validated intent to acquire source data for one site.
-
-    Contract:
-        - ``site_dir`` is the site root beneath which :func:`create_site_layout`
-          materialises the product subdirectories.
-        - ``selector`` records which area-of-interest kind was chosen; the
-          caller guarantees exactly one was given.
-        - ``area`` is that selector's raw value (a city name, a bbox string, or
-          a GeoJSON path), carried verbatim for the fetchers that land later.
-        - ``generation`` is the requested AHN generation: an explicit
-          :class:`~ahn_cli.domain.Generation`, or ``None`` (the default) to
-          request automatic newest-available selection at download time. WP5
-          resolves the ``--ahn`` flag to this field; WP6 consults it when the
-          real fetcher actuates and records it in the provenance sidecar.
-
-    Invariants:
-        - Frozen: an immutable, hashable value object, equal by field value, so
-          it is safe as a cache key and a set/dict member.
-    """
+    """Acquisition intent (stub)."""
 
     site_dir: Path
     selector: AreaSelectorKind
     area: str
+    source: SourceKind = SourceKind.PDOK
     generation: Generation | None = None
 
 
 def create_site_layout(site_dir: Path) -> tuple[Path, ...]:
-    """Create ``data/<site>/{ahn,ortho,viirs}/`` and return the subdir paths.
-
-    Contract:
-        - Creates ``site_dir`` and each :data:`SITE_SUBDIRS` entry beneath it,
-          including any missing parents.
-        - Idempotent: pre-existing directories are left intact and no error is
-          raised when the layout already exists.
-        - Returns the subdirectory paths in :data:`SITE_SUBDIRS` order, giving
-          callers a deterministic, stable result.
-    """
+    """Create the site subdirectories and return their paths."""
     created: list[Path] = []
     for name in SITE_SUBDIRS:
         subdir = site_dir / name
@@ -87,19 +63,37 @@ def create_site_layout(site_dir: Path) -> tuple[Path, ...]:
     return tuple(created)
 
 
-def acquire(request: AcquisitionRequest) -> None:
-    """Fetch-context seam: record intent, then refuse until a fetcher is wired.
+_SOURCE_REGISTRY: dict[SourceKind, FetchSource] = {
+    SourceKind.PDOK: PdokSource(),
+    SourceKind.GEOTILES: GeotilesSource(),
+}
 
-    Contract:
-        - Accepts a fully validated :class:`AcquisitionRequest`.
-        - Performs no network I/O in WP2 and never fabricates data.
 
-    Failure modes:
-        - :class:`SourceNotWiredError`, unconditionally: WP2 wires no portal
-          client, so acquisition cannot yet proceed. WP5-WP9 replace this body.
-    """
-    msg = (
-        f"No fetch source is wired yet for site {request.site_dir}; "
-        "real acquisition lands in WP5-WP9."
-    )
-    raise SourceNotWiredError(msg)
+def source_for(kind: SourceKind) -> FetchSource:
+    """Return the source registered for ``kind`` (stub)."""
+    return _SOURCE_REGISTRY[kind]
+
+
+def default_http_get(url: str) -> bytes:
+    """Not yet implemented (stub)."""
+    del url
+    return b""
+
+
+def _utcnow() -> datetime:
+    """Return the current UTC time."""
+    return datetime.now(timezone.utc)
+
+
+def acquire(
+    request: AcquisitionRequest,
+    *,
+    http_get: HttpGet = default_http_get,
+    now: Clock = _utcnow,
+    cache_root: Path | None = None,
+    tool_version: str | None = None,
+) -> tuple[Path, ...]:
+    """Not yet implemented (stub): creates the layout, downloads nothing."""
+    del http_get, now, cache_root, tool_version
+    create_site_layout(request.site_dir)
+    return ()

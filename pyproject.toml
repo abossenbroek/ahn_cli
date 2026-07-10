@@ -85,11 +85,11 @@ known-first-party = ["ahn_cli"]
 [tool.ruff.lint.pylint]
 # Click subcommands bind one function parameter per CLI option, so a command
 # with many flags legitimately exceeds the default 5-argument limit. The
-# `fetch` verb carries out/city/bbox/geojson/ahn/source (WP6), and the `prep`
-# verb carries data + two class filters + four thinning options (WP11) -- the
-# larger of the two sets the bound. This raises ONLY the argument-count
-# threshold; every other lint rule stays at full strictness (ruff select=ALL,
-# pyright strict). It is NOT a per-file-ignore, coverage-omit, or
+# `fetch` verb carries out/city/bbox/geojson/ahn/source plus the WP7 --dsm flag,
+# and the `prep` verb carries data + two class filters + four thinning options
+# (WP11) -- the larger of the two sets the bound. This raises ONLY the
+# argument-count threshold; every other lint rule stays at full strictness (ruff
+# select=ALL, pyright strict). It is NOT a per-file-ignore, coverage-omit, or
 # pyright-exclude, and no plain (non-Click-entrypoint) function reaches it.
 max-args = 8
 

@@ -22,6 +22,7 @@ from ahn_cli.fetch.acquisition import (
     acquire,
     create_site_layout,
 )
+from ahn_cli.fetch.dsm import fetch_dsm
 from ahn_cli.fetch.generation import AUTO_CHOICE, default_registry
 from ahn_cli.fetch.source import (
     SourceKind,
@@ -217,6 +218,12 @@ def cli() -> None:
     show_default=True,
     help="Distribution source; 'pdok' is primary, 'geotiles' the fallback.",
 )
+@click.option(
+    "--dsm",
+    "dsm",
+    is_flag=True,
+    help="Also fetch the DSM raster, windowed-clipped to <out>/dsm.tif.",
+)
 def fetch(
     out: Path,
     city: str | None,
@@ -224,13 +231,17 @@ def fetch(
     geojson: str | None,
     ahn: str,
     source: str,
+    *,
+    dsm: bool,
 ) -> None:
     """Acquire raw source tiles for one site (acquisition stage only).
 
     Validates that exactly one area selector is given, resolves the requested
     AHN generation and distribution source, creates the
     ``<out>/{ahn,ortho,viirs}/`` layout, and downloads the covering sheets
-    (through the content cache) with a provenance sidecar per sheet.
+    (through the content cache) with a provenance sidecar per sheet. With
+    ``--dsm`` it additionally windowed-reads the DSM COG and clips it to
+    ``<out>/dsm.tif`` with its own provenance sidecar.
     """
     selector, area = _select_area(city, bbox, geojson)
     generation = _GENERATION_REGISTRY.resolve_token(ahn)
@@ -245,6 +256,8 @@ def fetch(
     )
     try:
         acquire(request)
+        if dsm:
+            fetch_dsm(request)
     except AcquisitionError as exc:
         raise click.ClickException(str(exc)) from exc
 

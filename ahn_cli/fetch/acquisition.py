@@ -224,7 +224,7 @@ def acquire(
           failure is funnelled here so the CLI reports it cleanly.
     """
     create_site_layout(request.site_dir)
-    aoi = _aoi_bbox(request)
+    aoi = aoi_bbox(request)
     source = source_for(request.source)
     try:
         registry = source.generation_registry(http_get)
@@ -295,8 +295,11 @@ def _downloader(http_get: HttpGet, url: str) -> Callable[[], bytes]:
     return fetch
 
 
-def _aoi_bbox(request: AcquisitionRequest) -> BBox:
+def aoi_bbox(request: AcquisitionRequest) -> BBox:
     """Derive the EPSG:28992 AOI bbox from the request's selector.
+
+    Shared by the AHN point-cloud fetch and the DSM raster fetch so both derive
+    the area of interest identically from one request.
 
     Failure modes:
         - :class:`MalformedBboxError` for a bad ``--bbox`` value.

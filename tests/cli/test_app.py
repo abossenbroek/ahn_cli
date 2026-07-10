@@ -133,6 +133,73 @@ def test_fetch_bbox_dispatches_to_acquire(
     assert spy.request.source is SourceKind.PDOK
 
 
+class _DsmSpy:
+    """Records the request the CLI dispatched, standing in for fetch_dsm."""
+
+    def __init__(self) -> None:
+        self.request: AcquisitionRequest | None = None
+
+    def __call__(self, request: AcquisitionRequest) -> Path:
+        self.request = request
+        return request.site_dir / "dsm.tif"
+
+
+def test_fetch_without_dsm_flag_skips_dsm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Absent --dsm, the DSM fetch is not invoked."""
+    monkeypatch.setattr(app, "acquire", _AcquireSpy())
+    dsm_spy = _DsmSpy()
+    monkeypatch.setattr(app, "fetch_dsm", dsm_spy)
+
+    result = CliRunner().invoke(
+        cli, ["fetch", "--out", str(tmp_path / "s"), "--bbox", "0,0,1,1"]
+    )
+
+    assert result.exit_code == 0
+    assert dsm_spy.request is None
+
+
+def test_fetch_dsm_flag_dispatches_to_fetch_dsm(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With --dsm, the same request is dispatched to the DSM fetch."""
+    monkeypatch.setattr(app, "acquire", _AcquireSpy())
+    dsm_spy = _DsmSpy()
+    monkeypatch.setattr(app, "fetch_dsm", dsm_spy)
+
+    result = CliRunner().invoke(
+        cli,
+        ["fetch", "--out", str(tmp_path / "s"), "--bbox", "0,0,1,1", "--dsm"],
+    )
+
+    assert result.exit_code == 0
+    assert dsm_spy.request is not None
+    assert dsm_spy.request.selector.value == "bbox"
+
+
+def test_fetch_dsm_error_is_a_click_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A DSM acquisition failure becomes a tidy Click error, not a traceback."""
+    monkeypatch.setattr(app, "acquire", _AcquireSpy())
+
+    def boom(request: AcquisitionRequest) -> Path:
+        del request
+        msg = "no DSM sheet covers the AOI"
+        raise app.AcquisitionError(msg)
+
+    monkeypatch.setattr(app, "fetch_dsm", boom)
+
+    result = CliRunner().invoke(
+        cli,
+        ["fetch", "--out", str(tmp_path / "s"), "--bbox", "0,0,1,1", "--dsm"],
+    )
+
+    assert result.exit_code == 1
+    assert "no DSM sheet" in result.output
+
+
 def test_fetch_source_flag_selects_geotiles(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

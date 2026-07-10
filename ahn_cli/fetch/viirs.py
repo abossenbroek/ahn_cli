@@ -11,15 +11,31 @@ re-colormapping or normalisation is ever performed.
 
 from __future__ import annotations
 
+import hashlib
+import shutil
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from importlib.metadata import version
 from typing import TYPE_CHECKING
+
+import rasterio
+from rasterio.errors import RasterioIOError
+
+from ahn_cli.domain import Product, Provenance
+from ahn_cli.provenance import write_provenance
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from datetime import datetime
     from pathlib import Path
 
-    from ahn_cli.domain import BBox, Provenance
+    from ahn_cli.domain import BBox
+
+_VIIRS_SUBDIR = "viirs"
+_SOURCE_PORTAL = "google_earth_engine"
+_LICENCE = "public-domain"
+_ATTRIBUTION = (
+    "VIIRS Day/Night Band (NASA/NOAA), imported via Google Earth Engine"
+)
 
 
 class ViirsImportError(ValueError):
@@ -75,7 +91,17 @@ class ViirsImport:
     provenance: Provenance
 
 
-def inspect_viirs(source: Path) -> ViirsRaster:  # noqa: ARG001
+def _utcnow() -> datetime:
+    """Return the current time as a timezone-aware UTC datetime."""
+    return datetime.now(timezone.utc)
+
+
+def _sha256_hex(source: Path) -> str:
+    """Return the SHA-256 hex digest of the bytes at ``source``."""
+    return hashlib.sha256(source.read_bytes()).hexdigest()
+
+
+def inspect_viirs(source: Path) -> ViirsRaster:
     """Verify-open ``source`` and read its metadata and content checksum.
 
     Contract:
@@ -87,14 +113,30 @@ def inspect_viirs(source: Path) -> ViirsRaster:  # noqa: ARG001
     Failure modes:
         - :class:`ViirsImportError` if ``source`` cannot be opened as a raster.
     """
-    raise NotImplementedError
+    try:
+        with rasterio.open(source) as dataset:
+            crs = str(dataset.crs)
+            box = dataset.bounds
+            bounds: BBox = (box.left, box.bottom, box.right, box.top)
+            band_count = dataset.count
+            dtypes = tuple(dataset.dtypes)
+    except RasterioIOError as exc:
+        msg = f"{source} is not a readable raster: {exc}"
+        raise ViirsImportError(msg) from exc
+    return ViirsRaster(
+        crs=crs,
+        bounds=bounds,
+        band_count=band_count,
+        dtypes=dtypes,
+        checksum=_sha256_hex(source),
+    )
 
 
 def import_viirs(
     source: Path,
     site_dir: Path,
     *,
-    clock: Callable[[], datetime] | None = None,  # noqa: ARG001
+    clock: Callable[[], datetime] | None = None,
 ) -> ViirsImport:
     """Import ``source`` into ``site_dir/viirs/`` and write its provenance.
 
@@ -110,4 +152,40 @@ def import_viirs(
     Failure modes:
         - :class:`ViirsImportError` if ``source`` is not a readable raster.
     """
-    raise NotImplementedError
+    tick = _utcnow if clock is None else clock
+    raster = inspect_viirs(source)
+
+    viirs_dir = site_dir / _VIIRS_SUBDIR
+    viirs_dir.mkdir(parents=True, exist_ok=True)
+    dest_path = viirs_dir / source.name
+    provenance_path = viirs_dir / f"{source.name}.provenance.json"
+
+    started_at = tick()
+    shutil.copyfile(source, dest_path)
+    finished_at = tick()
+
+    provenance = Provenance(
+        source_portal=_SOURCE_PORTAL,
+        product=Product.VIIRS,
+        licence=_LICENCE,
+        attribution=_ATTRIBUTION,
+        bbox=raster.bounds,
+        download_started_at=started_at,
+        download_finished_at=finished_at,
+        input_checksum=raster.checksum,
+        output_checksum=raster.checksum,
+        tool_version=version("ahn_cli"),
+        request_keys=(
+            ("source_path", str(source)),
+            ("crs", raster.crs),
+            ("band_count", str(raster.band_count)),
+            ("band_dtypes", ",".join(raster.dtypes)),
+        ),
+    )
+    write_provenance(provenance, provenance_path)
+    return ViirsImport(
+        dest_path=dest_path,
+        provenance_path=provenance_path,
+        raster=raster,
+        provenance=provenance,
+    )

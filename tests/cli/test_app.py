@@ -41,9 +41,9 @@ def _short_flags(command: click.Command) -> list[str]:
     ]
 
 
-def test_group_exposes_exactly_fetch_and_prep() -> None:
-    """The restructured CLI is a group with the two required verbs."""
-    assert set(cli.commands) == {"fetch", "prep"}
+def test_group_exposes_fetch_prep_and_import_viirs() -> None:
+    """The CLI group exposes the acquisition/transform verbs plus VIIRS import."""
+    assert set(cli.commands) == {"fetch", "prep", "import-viirs"}
 
 
 def test_no_duplicate_short_flags_anywhere() -> None:
@@ -170,14 +170,14 @@ def test_fetch_rejects_an_unknown_generation(tmp_path: Path) -> None:
     assert result.exit_code == 2
 
 
-def test_fetch_viirs_imports_a_geotiff(tmp_path: Path) -> None:
-    """``fetch --viirs`` copies the raster into <out>/viirs/ with provenance."""
+def test_import_viirs_copies_geotiff_with_provenance(tmp_path: Path) -> None:
+    """``import-viirs`` copies the raster into <out>/viirs/ with provenance."""
     source = tmp_path / "lights.tif"
     _write_geotiff(source)
     site = tmp_path / "delft"
 
     result = CliRunner().invoke(
-        cli, ["fetch", "--out", str(site), "--viirs", str(source)]
+        cli, ["import-viirs", "--out", str(site), str(source)]
     )
 
     assert result.exit_code == 0
@@ -187,39 +187,28 @@ def test_fetch_viirs_imports_a_geotiff(tmp_path: Path) -> None:
     assert (site / "viirs" / "lights.tif.provenance.json").is_file()
 
 
-def test_fetch_viirs_rejects_an_area_selector(tmp_path: Path) -> None:
-    """``--viirs`` combined with an area selector is a usage error."""
-    source = tmp_path / "lights.tif"
-    _write_geotiff(source)
-
-    result = CliRunner().invoke(
-        cli,
-        [
-            "fetch",
-            "--out",
-            str(tmp_path / "delft"),
-            "--viirs",
-            str(source),
-            "--city",
-            "delft",
-        ],
-    )
-
-    assert result.exit_code == 2
-    assert "cannot be combined" in result.output
-
-
-def test_fetch_viirs_rejects_a_non_raster_file(tmp_path: Path) -> None:
-    """A --viirs file that is not a raster is reported as a Click error."""
+def test_import_viirs_rejects_a_non_raster_file(tmp_path: Path) -> None:
+    """An import-viirs file that is not a raster is a Click error, not a crash."""
     source = tmp_path / "broken.tif"
     source.write_bytes(b"not a GeoTIFF")
 
     result = CliRunner().invoke(
         cli,
-        ["fetch", "--out", str(tmp_path / "delft"), "--viirs", str(source)],
+        ["import-viirs", "--out", str(tmp_path / "delft"), str(source)],
     )
 
     assert result.exit_code == 1
+    assert "not a readable raster" in result.output
+
+
+def test_import_viirs_requires_an_existing_file(tmp_path: Path) -> None:
+    """A missing geotiff path is rejected by Click before importing."""
+    result = CliRunner().invoke(
+        cli,
+        ["import-viirs", "--out", str(tmp_path / "delft"), "nope.tif"],
+    )
+
+    assert result.exit_code == 2
 
 
 def test_prep_parses_filters_then_reports_not_wired(tmp_path: Path) -> None:

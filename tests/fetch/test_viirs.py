@@ -29,6 +29,7 @@ from ahn_cli.fetch.viirs import (
 from ahn_cli.provenance import read_provenance
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
 _BOUNDS = (3.0, 50.0, 7.0, 53.0)
@@ -67,7 +68,7 @@ def _write_geotiff(
 
 def _fixed_clock(
     values: tuple[datetime, ...],
-) -> object:
+) -> Callable[[], datetime]:
     """Return a callable yielding ``values`` cyclically, one per call."""
     cursor = itertools.cycle(values)
     return lambda: next(cursor)
@@ -144,7 +145,10 @@ def test_import_writes_a_complete_provenance_sidecar(tmp_path: Path) -> None:
 
     result = import_viirs(source, site, clock=_fixed_clock((_START, _FINISH)))
 
-    assert result.provenance_path == site / "viirs" / "lights.tif.provenance.json"
+    assert (
+        result.provenance_path
+        == site / "viirs" / "lights.tif.provenance.json"
+    )
     provenance = read_provenance(result.provenance_path)
     assert provenance == result.provenance
     assert provenance.product is Product.VIIRS

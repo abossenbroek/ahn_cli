@@ -436,8 +436,10 @@ def test_export_positions_requires_an_existing_directory(
     assert result.exit_code == 2
 
 
-def test_prep_parses_filters_then_reports_not_wired(tmp_path: Path) -> None:
-    """A valid prep parses class filters and stops at the un-wired seam."""
+def test_prep_parses_filters_then_reports_missing_tiles(
+    tmp_path: Path,
+) -> None:
+    """A valid prep parses class filters, then fails tidily with no tiles."""
     result = CliRunner().invoke(
         cli,
         [
@@ -451,15 +453,15 @@ def test_prep_parses_filters_then_reports_not_wired(tmp_path: Path) -> None:
     )
 
     assert result.exit_code == 1
-    assert "wired" in result.output.lower()
+    assert "ahn" in result.output.lower()
 
 
-def test_prep_with_no_filters_reports_not_wired(tmp_path: Path) -> None:
-    """Prep without class filters still dispatches to the un-wired seam."""
+def test_prep_with_no_filters_reports_missing_tiles(tmp_path: Path) -> None:
+    """Prep without class filters dispatches and fails tidily with no tiles."""
     result = CliRunner().invoke(cli, ["prep", "--data", str(tmp_path)])
 
     assert result.exit_code == 1
-    assert "wired" in result.output.lower()
+    assert "ahn" in result.output.lower()
 
 
 def test_prep_rejects_non_integer_class(tmp_path: Path) -> None:
@@ -495,7 +497,7 @@ def test_prep_rejects_class_in_both_include_and_exclude(
 
 
 def test_prep_accepts_voxel_thinning(tmp_path: Path) -> None:
-    """A valid voxel request parses and reaches the un-wired seam."""
+    """A valid voxel request parses and reaches the transform stage."""
     result = CliRunner().invoke(
         cli,
         [
@@ -510,11 +512,11 @@ def test_prep_accepts_voxel_thinning(tmp_path: Path) -> None:
     )
 
     assert result.exit_code == 1
-    assert "wired" in result.output.lower()
+    assert "ahn" in result.output.lower()
 
 
 def test_prep_accepts_poisson_thinning(tmp_path: Path) -> None:
-    """A valid Poisson request parses and reaches the un-wired seam."""
+    """A valid Poisson request parses and reaches the transform stage."""
     result = CliRunner().invoke(
         cli,
         [
@@ -531,7 +533,7 @@ def test_prep_accepts_poisson_thinning(tmp_path: Path) -> None:
     )
 
     assert result.exit_code == 1
-    assert "wired" in result.output.lower()
+    assert "ahn" in result.output.lower()
 
 
 def test_prep_rejects_thin_param_without_method(tmp_path: Path) -> None:

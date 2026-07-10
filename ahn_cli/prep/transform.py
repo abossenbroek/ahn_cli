@@ -1,11 +1,27 @@
-"""Prep-context transform/export seam.
+"""Prep-context transform/export orchestration.
 
 The ``prep`` bounded context turns cached source tiles into finished
-deliverables (classification filtering, clipping, decimation, export, and the
-provenance sidecar). WP2 ships only the *seam*: it records the requested
-transform intent and raises :class:`TransformNotWiredError`. Real transforms
-arrive in WP10-WP13 and replace :func:`prepare`'s body without changing this
-module's public surface.
+deliverables. WP14 wires the pipeline end to end over the already-merged prep
+transforms, preserving this module's public surface (:class:`PrepRequest`,
+:func:`prepare`):
+
+1. Read the cached AHN tiles a prior ``fetch`` wrote under ``<data_dir>/ahn/``,
+   each paired with its provenance-recorded extent.
+2. :func:`~ahn_cli.prep.dedup.deduplicate_tiles` -- crop-before-merge plus an
+   exact XYZ+GPS-time sweep -- into ``<data_dir>/pointcloud.laz``.
+3. Apply the classification ``include``/``exclude`` filter.
+4. Apply the graded :data:`~ahn_cli.prep.decimate.Thinning` request (voxel-grid
+   or Poisson-disk) via the CPU reference backend, when one is requested. This
+   is additive to the legacy nth-point decimation, which is untouched.
+5. Write the site-root ``provenance.json`` recording the prep lineage.
+6. Export ``<data_dir>/pointcloud.ply`` when ``export_points`` is set.
+
+The mirrored ordering is the documented "filter classes -> clip -> decimate"
+with WP10's crop-before-merge folded into step 2 (the merge is where the crop
+must happen). Every stage is deterministic, so identical inputs yield
+byte-identical outputs. Expected failures (a missing site layout, no tiles, a
+tile with no provenance sidecar) raise the typed :class:`PrepError` so the CLI
+reports a tidy message rather than leaking a traceback.
 """
 
 from dataclasses import dataclass
@@ -14,12 +30,13 @@ from pathlib import Path
 from ahn_cli.prep.decimate import Thinning
 
 
-class TransformNotWiredError(NotImplementedError):
-    """No real prep transform is wired yet (WP10-WP13).
+class PrepError(RuntimeError):
+    """Raised when a prep run cannot proceed for an expected reason.
 
-    A :class:`NotImplementedError` subclass so a caller may catch it broadly
-    while still distinguishing the deliberate "not yet built" state from an
-    accidental one.
+    Signals a missing site layout (no ``<data_dir>/ahn/`` directory), no fetched
+    AHN tiles to prepare, or a tile whose provenance sidecar -- the source of its
+    crop extent -- is absent. Subclasses :class:`RuntimeError` so the CLI catches
+    it and reports a clean error rather than a traceback.
     """
 
 
@@ -49,19 +66,5 @@ class PrepRequest:
 
 
 def prepare(request: PrepRequest) -> None:
-    """Prep-context seam: record intent, then refuse until logic is wired.
-
-    Contract:
-        - Accepts a fully validated :class:`PrepRequest`.
-        - Performs no transform or export in WP2.
-
-    Failure modes:
-        - :class:`TransformNotWiredError`, unconditionally: WP2 wires no
-          transform, so preparation cannot yet proceed. WP10-WP13 replace this
-          body.
-    """
-    msg = (
-        f"No prep transform is wired yet for {request.data_dir}; "
-        "real transforms land in WP10-WP13."
-    )
-    raise TransformNotWiredError(msg)
+    """Not yet wired (assertion-level RED stub, replaced by the GREEN body)."""
+    del request

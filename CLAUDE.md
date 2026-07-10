@@ -9,6 +9,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # Install dependencies with uv (preferred)
 make install
 
+# Install pre-commit hooks (strict ruff lint + format, typos, pyright)
+uv run pre-commit install
+
 # Update dependencies
 make update
 ```

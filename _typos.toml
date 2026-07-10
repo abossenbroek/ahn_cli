@@ -1,1 +1,7 @@
+# Data fixtures are not prose: GeoJSON carries Dutch place names (e.g. "De
+# Bilt") and LAS/LAZ are binary, so exclude them from spell-checking now that
+# the typos scope covers whole directories.
+[files]
+extend-exclude = ["*.geojson", "*.json", "*.las", "*.laz"]
+
 [default.extend-words]

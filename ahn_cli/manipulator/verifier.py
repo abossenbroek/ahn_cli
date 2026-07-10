@@ -1,6 +1,17 @@
+# DEPRECATED; ANY LOGIC USED IN THIS CODE SHOULD BE MOVED
+# Legacy pre-7rad module, pending migration into the new bounded contexts.
 """
 Verification module for LAZ file integrity and bounds checking.
 """
+
+import warnings
+
+warnings.warn(
+    "ahn_cli.manipulator.verifier is a deprecated pre-7rad module; logic must move into the new bounded contexts",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
 
 import logging
 import shutil
@@ -120,7 +131,9 @@ def verify_bounds(
                     f"Bbox difference {max_diff:.2f}m is within tolerance {tolerance}m ✓"
                 )
         else:
-            logging.info("LAZ bounding box is fully contained within GeoJSON bounds ✓")
+            logging.info(
+                "LAZ bounding box is fully contained within GeoJSON bounds ✓"
+            )
 
         logging.info(f"Coverage: {coverage_pct:.1f}% of input area covered ✓")
 
@@ -167,7 +180,9 @@ def verify_with_pdal(output_path: str) -> bool:
         return True
 
     except subprocess.CalledProcessError as e:
-        logging.error(f"PDAL verification failed with exit code {e.returncode}")
+        logging.error(
+            f"PDAL verification failed with exit code {e.returncode}"
+        )
         if e.stderr:
             logging.error(f"PDAL error output:\n{e.stderr}")
         return False

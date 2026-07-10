@@ -1,3 +1,13 @@
+# DEPRECATED; ANY LOGIC USED IN THIS CODE SHOULD BE MOVED
+# Legacy pre-7rad module, pending migration into the new bounded contexts.
+import warnings
+
+warnings.warn(
+    "ahn_cli.fetcher.geotiles is a deprecated pre-7rad module; logic must move into the new bounded contexts",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
 import os
 
 import geopandas as gpd
@@ -59,7 +69,9 @@ def ahn_subunit_indices_of_geojson(geojson_path: str) -> list[str]:
     tiles_gdf = tiles_gdf.to_crs("EPSG:28992")
 
     # Use spatial join for efficient intersection
-    intersecting = gpd.sjoin(tiles_gdf, gdf, how="inner", predicate="intersects")
+    intersecting = gpd.sjoin(
+        tiles_gdf, gdf, how="inner", predicate="intersects"
+    )
 
     if intersecting.empty:
         return []

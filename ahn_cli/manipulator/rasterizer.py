@@ -1,3 +1,13 @@
+# DEPRECATED; ANY LOGIC USED IN THIS CODE SHOULD BE MOVED
+# Legacy pre-7rad module, pending migration into the new bounded contexts.
+import warnings
+
+warnings.warn(
+    "ahn_cli.manipulator.rasterizer is a deprecated pre-7rad module; logic must move into the new bounded contexts",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
 import numpy as np
 from rasterio.features import rasterize
 from rasterio.transform import Affine, from_origin

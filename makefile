@@ -1,4 +1,5 @@
 PACKAGE_DIR := ahn_cli
+LINT_DIRS := ahn_cli tests
 
 .PHONY: install
 install:
@@ -10,27 +11,27 @@ update:
 
 .PHONY: lint
 lint:
-	uv run ruff check $(PACKAGE_DIR)
+	uv run ruff check $(LINT_DIRS)
 
 .PHONY: typos
 typos:
-	uv run typos $(PACKAGE_DIR)/**/*.py
+	uv run typos $(LINT_DIRS)
 
 .PHONY: format
 format:
-	uv run ruff format $(PACKAGE_DIR)
+	uv run ruff format $(LINT_DIRS)
 
 .PHONY: format-check
 format-check:
-	uv run ruff format --check $(PACKAGE_DIR)
+	uv run ruff format --check $(LINT_DIRS)
 
 .PHONY: fix
 fix:
-	uv run ruff check --fix $(PACKAGE_DIR)
+	uv run ruff check --fix $(LINT_DIRS)
 
 .PHONY: test
 test:
-	uv run pytest
+	uv run pytest --cov=$(PACKAGE_DIR) --cov-branch
 
 .PHONY: check
 check: lint typos test format-check

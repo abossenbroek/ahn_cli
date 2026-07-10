@@ -59,7 +59,9 @@ def ahn_subunit_indices_of_geojson(geojson_path: str) -> list[str]:
     tiles_gdf = tiles_gdf.to_crs("EPSG:28992")
 
     # Use spatial join for efficient intersection
-    intersecting = gpd.sjoin(tiles_gdf, gdf, how="inner", predicate="intersects")
+    intersecting = gpd.sjoin(
+        tiles_gdf, gdf, how="inner", predicate="intersects"
+    )
 
     if intersecting.empty:
         return []

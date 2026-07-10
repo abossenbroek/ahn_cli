@@ -246,7 +246,9 @@ class PntCHandler:
         # Handle CRS transformation
         crs = gdf.crs
         if self.epsg is not None:
-            polygon = transform_polygon(unified_geometry, self.epsg, "EPSG:28992")
+            polygon = transform_polygon(
+                unified_geometry, self.epsg, "EPSG:28992"
+            )
         elif crs is not None:
             polygon = transform_polygon(unified_geometry, crs, "EPSG:28992")
         else:

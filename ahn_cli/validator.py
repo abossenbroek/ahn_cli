@@ -104,7 +104,11 @@ def validate_geojson(geojson: str | None) -> str | None:
 def validate_exclusive_args(
     bbox: list[float] | None, cityname: str | None, geojson: str | None
 ) -> None:
-    area_options = [bbox is not None, cityname is not None, geojson is not None]
+    area_options = [
+        bbox is not None,
+        cityname is not None,
+        geojson is not None,
+    ]
     if sum(area_options) != 1:
         raise ClickException(
             "You must specify exactly one of --city, --bbox, or --geojson"

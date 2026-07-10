@@ -1,0 +1,6 @@
+# Store integration-test fixtures and vcrpy cassettes in git-LFS so binary
+# point-cloud/raster fixtures and recorded HTTP interactions do not bloat the
+# git history. See TODO.md "Full Integration Test Suite" (fixtures/cassettes
+# live in git-LFS).
+tests/**/fixtures/** filter=lfs diff=lfs merge=lfs -text
+tests/**/cassettes/** filter=lfs diff=lfs merge=lfs -text

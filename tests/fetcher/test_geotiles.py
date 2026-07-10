@@ -1,8 +1,9 @@
 import os
 import unittest
+
 from ahn_cli.fetcher.geotiles import (
-    ahn_subunit_indices_of_city,
     ahn_subunit_indices_of_bbox,
+    ahn_subunit_indices_of_city,
     ahn_subunit_indices_of_geojson,
 )
 
@@ -69,69 +70,76 @@ class TestGeoTile(unittest.TestCase):
         ]
 
         self.assertListEqual(tiles, expected)
-    
+
     def test_ahn_subunit_indices_of_geojson(self) -> None:
         # Get the path to the test GeoJSON file
         test_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        geojson_path = os.path.join(test_dir, "testdata", "sample_polygon.geojson")
-        
+        geojson_path = os.path.join(
+            test_dir, "testdata", "sample_polygon.geojson"
+        )
+
         tiles = ahn_subunit_indices_of_geojson(geojson_path)
-        
+
         # The sample polygon covers a small area around (85000-86000, 445000-446000)
         # We expect it to intersect with some tiles
         self.assertIsInstance(tiles, list)
         self.assertGreater(len(tiles), 0)  # Should find at least one tile
-        
+
         # All returned values should be strings (tile IDs)
         for tile in tiles:
             self.assertIsInstance(tile, str)
-    
+
     def test_ahn_subunit_indices_of_geojson_multipolygon(self) -> None:
         # Test with multiple polygons
         test_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        geojson_path = os.path.join(test_dir, "testdata", "multipolygon.geojson")
-        
+        geojson_path = os.path.join(
+            test_dir, "testdata", "multipolygon.geojson"
+        )
+
         tiles = ahn_subunit_indices_of_geojson(geojson_path)
-        
+
         # Should find tiles for both polygons
         self.assertIsInstance(tiles, list)
         self.assertGreater(len(tiles), 0)
-        
+
         # All returned values should be strings (tile IDs)
         for tile in tiles:
             self.assertIsInstance(tile, str)
-    
+
     def test_ahn_subunit_indices_of_geojson_different_crs(self) -> None:
         # Test with WGS84 GeoJSON (will be transformed to EPSG:28992)
-        import tempfile
         import json
-        
+        import tempfile
+
         wgs84_geojson = {
             "type": "FeatureCollection",
-            "features": [{
-                "type": "Feature",
-                "properties": {},
-                "geometry": {
-                    "type": "Polygon",
-                    "coordinates": [[
-                        [4.351, 52.01],  # Roughly Delft area in WGS84
-                        [4.361, 52.01],
-                        [4.361, 52.02],
-                        [4.351, 52.02],
-                        [4.351, 52.01]
-                    ]]
+            "features": [
+                {
+                    "type": "Feature",
+                    "properties": {},
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": [
+                            [
+                                [4.351, 52.01],  # Roughly Delft area in WGS84
+                                [4.361, 52.01],
+                                [4.361, 52.02],
+                                [4.351, 52.02],
+                                [4.351, 52.01],
+                            ]
+                        ],
+                    },
                 }
-            }],
-            "crs": {
-                "type": "name",
-                "properties": {"name": "EPSG:4326"}
-            }
+            ],
+            "crs": {"type": "name", "properties": {"name": "EPSG:4326"}},
         }
-        
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.geojson', delete=False) as f:
+
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".geojson", delete=False
+        ) as f:
             json.dump(wgs84_geojson, f)
             temp_path = f.name
-        
+
         try:
             tiles = ahn_subunit_indices_of_geojson(temp_path)
             self.assertIsInstance(tiles, list)

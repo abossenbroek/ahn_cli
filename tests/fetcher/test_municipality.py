@@ -1,7 +1,9 @@
 import unittest
-from ahn_cli.fetcher.municipality import city_polygon
-from shapely.geometry import Polygon
+
 from geopandas import GeoDataFrame
+from shapely.geometry import Polygon
+
+from ahn_cli.fetcher.municipality import city_polygon
 
 
 class TestMunicipality(unittest.TestCase):

@@ -61,9 +61,16 @@ def test_legacy_omitted_but_future_packages_gated() -> None:
     omit = _load_config().get_option("run:omit") or []
     for legacy in LEGACY_OMIT:
         assert legacy in omit, f"legacy module dropped from omit: {legacy}"
-    joined = "\n".join(omit)
+    # Path-segment match so future ``fetch/`` is not confused with legacy
+    # ``fetcher/`` (a plain substring test would collide on that prefix).
     for pkg in FUTURE_GATED:
-        assert f"ahn_cli/{pkg}" not in joined, f"future package omitted: {pkg}"
+        prefix = f"ahn_cli/{pkg}/"
+        module = f"ahn_cli/{pkg}.py"
+        for entry in omit:
+            assert not entry.startswith(prefix), (
+                f"future pkg omitted: {entry}"
+            )
+            assert entry != module, f"future module omitted: {entry}"
 
 
 def test_gate_bites_on_uncovered_branch(tmp_path: Path) -> None:
@@ -91,7 +98,14 @@ def test_gate_bites_on_uncovered_branch(tmp_path: Path) -> None:
         driver = tmp_path / "driver.py"
         driver.write_text(textwrap.dedent(driver_body))
         run = subprocess.run(
-            [sys.executable, "-m", "coverage", "run", "--branch", "driver.py"],
+            [
+                sys.executable,
+                "-m",
+                "coverage",
+                "run",
+                "--branch",
+                "driver.py",
+            ],
             cwd=tmp_path,
             capture_output=True,
             text=True,

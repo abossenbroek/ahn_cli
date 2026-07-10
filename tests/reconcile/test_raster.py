@@ -65,11 +65,15 @@ def test_open_ortho_too_few_bands_raises(tmp_path: Path) -> None:
         open_ortho(path)
 
 
-def test_load_cloud_returns_xyz(cloud_path: Path) -> None:
-    """A valid LAZ yields its (n, 3) world coordinates."""
-    xyz = load_cloud(cloud_path)
-    assert xyz.shape == (200, 3)
-    assert xyz.dtype == np.float64
+def test_load_cloud_returns_coords_and_classification(
+    cloud_path: Path,
+) -> None:
+    """A valid LAZ yields its (n, 3) coordinates and (n,) classification."""
+    cloud = load_cloud(cloud_path)
+    assert cloud.coords.shape == (200, 3)
+    assert cloud.coords.dtype == np.float64
+    assert cloud.classification.shape == (200,)
+    assert cloud.classification.dtype == np.uint8
 
 
 def test_load_cloud_missing_raises(tmp_path: Path) -> None:

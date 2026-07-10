@@ -64,6 +64,8 @@ def test_amsterdam_idw_all_formats(tmp_path: Path) -> None:
     )
     assert (stats.width, stats.height) == (_SIZE, _SIZE)
     assert stats.valid_points == _PIXELS  # every cell has neighbours
+    # Real AHN overlap leaves coincident returns; dedup removes them.
+    assert 0 < stats.cleaned_points < stats.source_points
     assert {path.name for path in stats.outputs} == {
         "reconciled.laz",
         "reconciled.ply",

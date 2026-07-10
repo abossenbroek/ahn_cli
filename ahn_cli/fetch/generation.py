@@ -233,6 +233,9 @@ def select_source(
           registered.
         - :class:`GenerationUnavailableError` if automatic selection finds no
           generation covering ``aoi``.
+        - Propagates whatever an injected probe raises during automatic
+          selection (e.g. the default registry's
+          :class:`CoverageProbeNotWiredError`).
     """
     ensure_valid_bbox(aoi)
     if requested is not None:

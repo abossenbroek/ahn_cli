@@ -498,6 +498,44 @@
   pending-user={WP11 perf metal_kernel fast-follow; WP8 2023=8cm-not-7.5cm + "D20";
   WP12 float32 ~3cm precision undocumented}
 
+### 2026-07-10 — WP14 MERGED (#16) — 14/14 — 🏁 EPIC COMPLETE
+- **WP14 — Full integration + prep wiring (#16 → squash `7def94b`).** Wired
+  `ahn_cli/prep/transform.py` `prepare()` end-to-end (was `TransformNotWiredError`):
+  read sorted AHN tiles + provenance crop extents → `deduplicate_tiles`
+  (crop-before-merge + XYZ+GPS sweep) → include/exclude class filter → graded
+  voxel/Poisson thinning (CPU `NumpyBackend`) → deterministic site-root
+  `provenance.json` → `pointcloud.ply` (with `--points`). Public seam surface
+  unchanged; `TransformNotWiredError` deleted → typed `PrepError` funnelled to a
+  tidy Click error. `positions.exr` intentionally stays the separate
+  `export-positions` command (consumes a fetch DSM, not `PrepRequest`-driven).
+- Tests: offline vertical-slice acceptance test (fetch→prep→export-positions→
+  import-viirs asserts every artifact {ahn,ortho,viirs}/, dsm.tif, ortho.tif,
+  pointcloud.laz/.ply, positions.exr, schema-valid provenance.json + CC-BY on the
+  ortho sidecar); hypothesis exact-cover tile-enumeration property (completeness +
+  soundness, 150 examples); fast/nightly pytest tiers + scheduled portal-contract
+  CI job; LFS fixtures generated in-process (none committed).
+- Gate: 2 independent adversarial reviewers (rev-wp14-A2, rev-wp14-B) both PASS on
+  clean py3.10. rev-wp14-B INDEPENDENTLY injected overlapping + duplicate tiles and
+  observed the real transform 6→5 (crop drops seam point)→4 (sweep collapses exact
+  dup), byte-identical LAZ/PLY/provenance across two fresh processes. Property test
+  verified non-vacuous. CC0(AHN)/CC-BY(ortho) honest, no fabrication. Assertion-level
+  RED (da8f780). No gate-weakening; CI additive; TransformNotWiredError fully gone.
+  (One reviewer-A misfire — 0 tool-uses, garbled output — was discarded and re-run
+  as rev-wp14-A2, which PASSed on genuine evidence.)
+- FINAL ACCEPTANCE (local `make check` on integrated main `7def94b`): 100.00%
+  line+branch (1739 stmts / 278 branch, 0 miss — every shipped module at 100%),
+  414 passed / 2 skipped (MLX-on-Apple guards) / 2 deselected (nightly), ruff ALL +
+  pyright strict + typos + format all clean. CI green 3.10/3.11/3.12.
+- STATE: merged={WP0-14}=14/14 🏁 EPIC COMPLETE. All TODO.md work packages shipped,
+  each one PR through 2 adversarial reviews + green CI. Zero open PRs. Zero defective
+  merges (7 real defects caught + bounced pre-merge across the run). prep.prepare()
+  wired; full fetch→prep vertical slice green.
+  pending-user (non-blocking follow-ups, none block the epic): {WP11 perf —
+  metal_kernel fast-follow to hit 50-100M pts/s (correctness/determinism already met);
+  WP8 ortho pinned 2023=8cm vs spec's 7.5cm + unverified "D20" id (used researched
+  values); WP12 positions.exr float32 → ~3cm granularity on absolute EPSG:28992
+  coords, not spelled out in the contract docstring}.
+
 ## [0.2.1] - 2024-05-04
 ### Changed
 * feat: Add validation for exclusive arguments

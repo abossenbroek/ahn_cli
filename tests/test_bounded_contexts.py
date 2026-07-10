@@ -19,7 +19,9 @@ def test_domain_public_api_exports_the_value_objects() -> None:
     """The domain package re-exports every value object it owns."""
     assert set(domain.__all__) == {
         "BBox",
+        "GeoTransform",
         "Generation",
+        "PixelGrid",
         "Product",
         "Provenance",
         "Tile",

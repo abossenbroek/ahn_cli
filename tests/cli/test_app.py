@@ -44,8 +44,13 @@ def _short_flags(command: click.Command) -> list[str]:
 
 
 def test_group_exposes_fetch_prep_and_import_viirs() -> None:
-    """The CLI group exposes the acquisition/transform verbs plus VIIRS import."""
-    assert set(cli.commands) == {"fetch", "prep", "import-viirs"}
+    """The CLI group exposes the acquisition/transform verbs and the exporters."""
+    assert set(cli.commands) == {
+        "fetch",
+        "prep",
+        "import-viirs",
+        "export-positions",
+    }
 
 
 def test_no_duplicate_short_flags_anywhere() -> None:
@@ -384,6 +389,48 @@ def test_import_viirs_requires_an_existing_file(tmp_path: Path) -> None:
     result = CliRunner().invoke(
         cli,
         ["import-viirs", "--out", str(tmp_path / "delft"), "nope.tif"],
+    )
+
+    assert result.exit_code == 2
+
+
+def test_export_positions_writes_exr(tmp_path: Path) -> None:
+    """``export-positions`` turns <data>/dsm.tif into a <data>/positions.exr."""
+    site = tmp_path / "delft"
+    site.mkdir()
+    _write_geotiff(site / "dsm.tif")
+
+    result = CliRunner().invoke(
+        cli, ["export-positions", "--data", str(site)]
+    )
+
+    assert result.exit_code == 0
+    assert "Wrote" in result.output
+    exr = site / "positions.exr"
+    assert exr.read_bytes().startswith(b"\x76\x2f\x31\x01")
+
+
+def test_export_positions_missing_dsm_is_a_click_error(
+    tmp_path: Path,
+) -> None:
+    """A site directory with no dsm.tif is a tidy Click error, not a crash."""
+    site = tmp_path / "delft"
+    site.mkdir()
+
+    result = CliRunner().invoke(
+        cli, ["export-positions", "--data", str(site)]
+    )
+
+    assert result.exit_code == 1
+    assert "not readable" in result.output
+
+
+def test_export_positions_requires_an_existing_directory(
+    tmp_path: Path,
+) -> None:
+    """A missing site directory is rejected by Click before exporting."""
+    result = CliRunner().invoke(
+        cli, ["export-positions", "--data", str(tmp_path / "absent")]
     )
 
     assert result.exit_code == 2

@@ -100,6 +100,28 @@ equivalence test (skipped on CI — skipped tests do not lower coverage because 
 same host lines run under the fake). This build was verified by actually running
 the kernel under `uv sync --extra mlx` on Apple Silicon.
 
+### Performance (measured on the Amsterdam fixture, 65 536 queries × 9 491 pts)
+
+Honest finding from benchmarking the real fixture:
+
+- The raw float32 GPU kNN is ~10× faster than scipy `cKDTree` at *raw* neighbour
+  search (7 ms vs 86 ms).
+- **But** the raw float32 result selects a different neighbour *set* at the
+  k-boundary on dense data, swinging interpolated Z by up to 4.5 m (IDW) / 8.1 m
+  (kriging) versus the reference. Correctness requires the float64 host
+  refinement, which costs ~30 ms — so the *correct* mlx path (~113 ms) is
+  **slower than numpy (~86 ms) at this scale**.
+- Brute-force is `O(q·n)`; a full 12500² ortho tile against 23 M points is
+  astronomically large for it, whereas indexed `cKDTree` handles it. So the
+  metal path is **not** a robust at-scale speedup.
+
+Conclusion: the metal kernel is real, correct, and genuinely accelerates raw
+kNN, but the numpy default is the faster *and* more scalable choice for the
+sizes this tool sees. A **binned/grid metal kernel** (host-built spatial bins,
+kernel searches only nearby cells) is the route to an at-scale GPU win and is a
+scoped follow-up — deliberately not built speculatively, since the numpy path
+already meets the need and its benefit is unproven for this workload.
+
 ## Writers (`.laz / .ply / .pt / .exr`)
 
 Typed dispatch on an `OutputFormat` enum. All deterministic (no timestamps).

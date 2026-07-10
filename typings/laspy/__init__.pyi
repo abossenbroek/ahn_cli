@@ -14,12 +14,15 @@
 
 from typing import Any
 
+class LaspyException(Exception): ...
+
 class LasHeader:
     offsets: Any
     scales: Any
     point_format: Any
     def __init__(self, *args: Any, **kwargs: Any) -> None: ...
     def __getattr__(self, name: str) -> Any: ...
+    def __setattr__(self, name: str, value: Any) -> None: ...
 
 class ScaleAwarePointRecord:
     array: Any

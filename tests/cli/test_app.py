@@ -50,6 +50,7 @@ def test_group_exposes_fetch_prep_and_import_viirs() -> None:
         "prep",
         "import-viirs",
         "export-positions",
+        "reconcile",
     }
 
 

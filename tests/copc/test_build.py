@@ -12,6 +12,7 @@ from laspy.copc import CopcReader
 
 from ahn_cli.copc.build import build_copc
 from ahn_cli.copc.octree import CopcError
+from ahn_cli.copc.scatter import RECORD_DTYPE
 from ahn_cli.copc.writer import BARE_POINT_FORMAT, RGB_POINT_FORMAT
 
 if TYPE_CHECKING:
@@ -145,6 +146,64 @@ def test_explicit_workdir_is_used_and_drained(
     workdir = tmp_path / "scratch"
     build_copc(cloud, tmp_path / "w.copc.laz", workdir=workdir)
     assert list((workdir / "buckets").glob("*.bin")) == []
+
+
+def test_stale_buckets_from_an_aborted_run_never_leak(
+    write_laz: WriteLaz, tmp_path: Path
+) -> None:
+    """Records an aborted earlier run left in a persistent workdir are discarded.
+
+    Regression: bucket files used to be appended to, so a build reusing the
+    workdir of a run that died mid-build decoded the leftover records under
+    its own offsets — fabricated points far outside the new cloud's extent.
+    """
+    workdir = tmp_path / "scratch"
+    buckets = workdir / "buckets"
+    buckets.mkdir(parents=True)
+    stale = np.zeros(179, dtype=RECORD_DTYPE)
+    stale["x"] = 900_000_000  # decodes kilometres outside the new cube
+    stale["y"] = 900_000_000
+    stale["z"] = 900_000_000
+    stale.tofile(buckets / "bucket_000_000.bin")
+
+    cloud = write_laz(_grid_coords())
+    out = tmp_path / "fresh.copc.laz"
+    result = build_copc(cloud, out, workdir=workdir)
+
+    assert result.written_points == 36
+    with laspy.open(str(out)) as reader:
+        assert reader.header.point_count == 36
+        las = reader.read()
+    coords = np.column_stack([las.x, las.y, las.z])
+    lows = np.array([0.0, 0.0, -0.8])
+    highs = np.array([3.0, 3.0, -0.7])
+    assert bool(np.all(coords >= lows))
+    assert bool(np.all(coords <= highs))
+
+
+def test_failed_build_clears_its_bucket_scratch(
+    write_laz: WriteLaz, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed build removes its buckets directory, not just the output."""
+    cloud = write_laz(_grid_coords())
+    workdir = tmp_path / "scratch"
+    out = tmp_path / "aborted.copc.laz"
+
+    def exploding_add_node(
+        self: copclib.FileWriter,
+        key: copclib.VoxelKey,
+        uncompressed_data: copclib.VectorChar,
+    ) -> None:
+        del self, key, uncompressed_data
+        msg = "native writer exploded"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(copclib.FileWriter, "AddNode", exploding_add_node)
+
+    with pytest.raises(CopcError, match="failed to write node"):
+        build_copc(cloud, out, workdir=workdir)
+    assert not out.exists()
+    assert not (workdir / "buckets").exists()
 
 
 def test_empty_cloud_is_a_copc_error(tmp_path: Path) -> None:

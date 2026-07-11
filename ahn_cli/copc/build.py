@@ -24,6 +24,7 @@ RGB passes through untouched.
 
 from __future__ import annotations
 
+import shutil
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -105,7 +106,10 @@ def build_copc(
           or a native copclib write failure; a write phase that fails after
           the output was opened removes the partial ``.copc.laz`` before
           the error is raised, so a half-written file never looks like a
-          deliverable.
+          deliverable. A failed build also best-effort removes its bucket
+          scratch directory, and scatter recreates that directory empty
+          regardless, so a persistent ``workdir`` never feeds one run's
+          leftover records into the next.
 
     Invariants:
         - Deterministic: identical input yields an identical octree and
@@ -221,23 +225,24 @@ def _build(
 ) -> CopcBuildResult:
     """Run scatter + per-bucket dedup/sample/write with a fixed plan."""
     report = progress if progress is not None else _no_op_progress
-    scattered = scatter_cloud(
-        cloud,
-        plan,
-        workdir / "buckets",
-        chunk_points=chunk_points,
-        progress=lambda done, total: report(done, 2 * total),
-    )
-    point_format_id, widen = _choose_point_format(scattered)
-    writer = CopcNodeWriter(
-        out, plan, point_format_id=point_format_id, wkt=rd_new_wkt()
-    )
-    sampler = LodSampler(plan)
-    held_back: dict[NodeKey, list[npt.NDArray[np.void]]] = {}
-    node_count = 0
-    done = scattered.count
-    total = 2 * scattered.count
+    buckets_dir = workdir / "buckets"
     try:
+        scattered = scatter_cloud(
+            cloud,
+            plan,
+            buckets_dir,
+            chunk_points=chunk_points,
+            progress=lambda done, total: report(done, 2 * total),
+        )
+        point_format_id, widen = _choose_point_format(scattered)
+        writer = CopcNodeWriter(
+            out, plan, point_format_id=point_format_id, wkt=rd_new_wkt()
+        )
+        sampler = LodSampler(plan)
+        held_back: dict[NodeKey, list[npt.NDArray[np.void]]] = {}
+        node_count = 0
+        done = scattered.count
+        total = 2 * scattered.count
         for bucket in sorted(scattered.bucket_paths):
             path = scattered.bucket_paths[bucket]
             records = np.fromfile(path, dtype=RECORD_DTYPE)
@@ -264,8 +269,12 @@ def _build(
         written = writer.finish()
     except CopcError:
         # Never leave a half-written .copc.laz where it looks like a
-        # deliverable: best-effort remove the partial output, then re-raise.
+        # deliverable, nor stale bucket records that a later build in the
+        # same persistent workdir could mistake for its own: best-effort
+        # remove the partial output and the tool-owned bucket scratch
+        # directory, then re-raise.
         out.unlink(missing_ok=True)
+        shutil.rmtree(buckets_dir, ignore_errors=True)
         raise
     return CopcBuildResult(
         path=out,

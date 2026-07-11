@@ -125,6 +125,20 @@ def test_number_of_returns_never_below_return_number(
     assert records["number_of_returns"].tolist() == [3]
 
 
+def test_scatter_starts_from_an_empty_bucket_directory(
+    write_laz: WriteLaz, tmp_path: Path
+) -> None:
+    """A leftover record file from an earlier run is removed, not appended to."""
+    work = tmp_path / "work"
+    work.mkdir()
+    np.zeros(5, dtype=RECORD_DTYPE).tofile(work / "bucket_000_000.bin")
+    cloud = write_laz([(0.0, 0.0, 0.0)])
+    result = scatter_cloud(cloud, _plan(), work)
+    assert result.count == 1
+    records = np.fromfile(result.bucket_paths[(0, 0)], dtype=RECORD_DTYPE)
+    assert records.shape == (1,)
+
+
 def test_chunked_scatter_matches_single_pass(
     write_laz: WriteLaz, tmp_path: Path
 ) -> None:

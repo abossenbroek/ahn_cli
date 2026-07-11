@@ -117,7 +117,11 @@ def prepare(request: PrepRequest) -> None:
           tiles, a tile lacks the provenance sidecar its crop extent needs, or
           the finished cloud is degenerate (no points survived the class
           filter/thinning, or every point sits at one identical position) —
-          a degenerate deliverable is never emitted as genuine AHN output.
+          a degenerate deliverable is never emitted as genuine AHN output:
+          the rejected ``pointcloud.laz`` is removed before the error
+          propagates, and ``pointcloud.ply``/``provenance.json`` are only
+          written after the verification gate, so a rejected run leaves no
+          deliverable behind.
     """
     ahn_dir = request.data_dir / _AHN_SUBDIR
     if not ahn_dir.is_dir():
@@ -200,10 +204,15 @@ def _verify_output_cloud(output: Path) -> None:
     Runs after the class filter and thinning, before the PLY export and the
     provenance record, so a degenerate deliverable never leaves the prep
     stage: the written header must not describe an empty cloud or a stack of
-    points all at one identical position.
+    points all at one identical position. On rejection the degenerate
+    ``pointcloud.laz`` is removed before the error propagates, so it cannot
+    poison a later ``copc`` run that reads the canonical output path; the
+    PLY export and provenance record are written only after this gate, so
+    the LAZ is the sole artefact needing cleanup.
 
     Failure modes:
-        - :class:`PrepError` if the finished cloud is degenerate.
+        - :class:`PrepError` if the finished cloud is degenerate (the
+          rejected ``output`` file is removed first).
     """
     with laspy.open(str(output)) as reader:
         header = reader.header
@@ -216,6 +225,7 @@ def _verify_output_cloud(output: Path) -> None:
             if count == 0
             else f"all {count} points sit at one identical position"
         )
+        output.unlink(missing_ok=True)
         msg = (
             f"prepared cloud at {output} is degenerate ({detail}) — "
             "refusing to emit it as genuine AHN output."

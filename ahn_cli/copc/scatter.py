@@ -13,11 +13,14 @@ units, and return numbers are lifted into the LAS-valid ``1..15`` range
 (interpolated clouds legitimately carry zeros there).
 
 Determinism: chunks are processed in file order and appends are sequential,
-so identical input yields byte-identical bucket files.
+so identical input yields byte-identical bucket files. The bucket directory
+is recreated empty at the start of every scatter, so stale records from an
+aborted earlier run in the same workdir can never contaminate a build.
 """
 
 from __future__ import annotations
 
+import shutil
 from collections.abc import Callable
 from dataclasses import dataclass
 from itertools import pairwise
@@ -91,6 +94,11 @@ def scatter_cloud(
     Contract:
         - ``cloud`` is a readable LAS/LAZ whose points all fall inside the
           plan's cube (guaranteed when the plan came from this file's header).
+        - ``workdir`` is the tool-owned bucket scratch directory: this pass
+          creates it and it holds nothing but bucket record files, so if it
+          already exists (an aborted earlier run in a persistent workdir) it
+          is removed wholesale and recreated empty — records from another
+          cloud are never appended into this build.
         - Writes ``RECORD_DTYPE`` records to ``workdir/bucket_<bx>_<by>.bin``
           in input order; returns the per-bucket paths, the exact min/max of
           the quantized coordinates, and which optional dims the input has.
@@ -100,7 +108,9 @@ def scatter_cloud(
         - :class:`CopcError` if the file is unreadable or a point falls
           outside the planned cube (the header lied about its bounds).
     """
-    workdir.mkdir(parents=True, exist_ok=True)
+    if workdir.exists():
+        shutil.rmtree(workdir)
+    workdir.mkdir(parents=True)
     grid_dim = 2**plan.bucket_level
     bucket_paths: dict[tuple[int, int], Path] = {}
     mins = np.full(3, np.iinfo(np.int64).max, dtype=np.int64)

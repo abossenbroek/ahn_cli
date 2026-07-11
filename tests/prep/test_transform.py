@@ -320,7 +320,16 @@ def test_prepare_rejects_a_filter_that_empties_the_cloud(
     site = _fetched_site(tmp_path / "delft")
 
     with pytest.raises(PrepError, match="no points survived"):
-        prepare(PrepRequest(data_dir=site, include_classes=(26,)))
+        prepare(
+            PrepRequest(
+                data_dir=site, include_classes=(26,), export_points=True
+            )
+        )
+    # The rejected deliverable is removed and nothing past the gate ran:
+    # no degenerate LAZ remains for a later `copc` run to pick up.
+    assert not (site / "pointcloud.laz").exists()
+    assert not (site / "pointcloud.ply").exists()
+    assert not (site / "provenance.json").exists()
 
 
 def test_prepare_rejects_a_cloud_stacked_at_one_position(
@@ -342,4 +351,8 @@ def test_prepare_rejects_a_cloud_stacked_at_one_position(
     _write_sidecar(ahn_dir, "tile_a", _EXTENT_A)
 
     with pytest.raises(PrepError, match="identical position"):
-        prepare(PrepRequest(data_dir=site))
+        prepare(PrepRequest(data_dir=site, export_points=True))
+    # The rejected deliverable is removed and nothing past the gate ran.
+    assert not (site / "pointcloud.laz").exists()
+    assert not (site / "pointcloud.ply").exists()
+    assert not (site / "provenance.json").exists()

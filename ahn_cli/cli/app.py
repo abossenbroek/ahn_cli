@@ -19,6 +19,8 @@ from typing import NoReturn
 import click
 from tqdm import tqdm
 
+from ahn_cli.copc.build import build_copc
+from ahn_cli.copc.octree import CopcError
 from ahn_cli.fetch.acquisition import (
     AcquisitionError,
     AcquisitionRequest,
@@ -642,6 +644,58 @@ def reconcile_command(
         f"Reconciled {stats.width}x{stats.height}: "
         f"{stats.source_points} pts -> {stats.cleaned_points} cleaned -> "
         f"{stats.valid_points} written; {len(stats.outputs)} file(s)."
+    )
+
+
+@cli.command(name="copc")
+@click.option(
+    "--cloud",
+    "cloud",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help=(
+        "Point-cloud LAZ to convert (prep's pointcloud.laz or "
+        "reconcile's reconciled.laz)."
+    ),
+)
+@click.option(
+    "--out",
+    "out",
+    required=True,
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="Path of the .copc.laz file to write.",
+)
+@click.option(
+    "--workdir",
+    "workdir",
+    default=None,
+    type=click.Path(file_okay=False, path_type=Path),
+    help=(
+        "Scratch directory for the streaming bucket files "
+        "(default: a private temp dir, cleaned up afterwards)."
+    ),
+)
+def copc_command(cloud: Path, out: Path, workdir: Path | None) -> None:
+    """Build a Cloud-Optimized Point Cloud (.copc.laz) from a LAZ cloud.
+
+    Streams the cloud in bounded memory (arbitrarily large sites),
+    de-duplicates at AHN's native 0.5 m voxel — outlier-aware, never
+    coarser than the source grid — and builds the octree with cube and
+    header bounds consistent by construction, so flat, below-sea-level
+    Dutch terrain validates fully green under copc-validator.
+    """
+    bar: tqdm[NoReturn] = tqdm(unit="pt", desc="copc")
+    with bar:
+        try:
+            result = build_copc(
+                cloud, out, workdir=workdir, progress=_tqdm_progress(bar)
+            )
+        except CopcError as exc:
+            raise click.ClickException(str(exc)) from exc
+    click.echo(
+        f"COPC {out}: {result.input_points} pts -> "
+        f"{result.written_points} written across {result.node_count} "
+        f"node(s), point format {result.point_format_id}."
     )
 
 

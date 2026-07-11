@@ -163,61 +163,22 @@ ahn_cli reconcile --ortho data/delft/ortho/ortho.tif --cloud data/delft/pointclo
   --method kriging --kriging "spherical,0.0,1.0,50.0,16" --classes keep:2,6 --format laz
 ```
 
-## Exporting `reconcile` output to COPC
+## Exporting to COPC
 
-`reconcile --format laz` writes an ordinary LAZ file, not a [COPC](https://copc.io/) (Cloud Optimized Point Cloud) — COPC adds a spatial octree index that lets viewers (Potree, CesiumJS, QGIS, etc.) stream and LOD large clouds instead of loading the whole file. Building a valid COPC from `reconcile`'s output takes an extra [PDAL](https://pdal.io/) pass, and a naive pipeline will silently produce a COPC file that *looks* fine but fails strict validation (checked here with [`copc-validator`](https://github.com/hobuinc/copc-validator), the reference validator). These are the gotchas we hit converting a real `reconcile` output, and the pipeline that verifiably passes all 24 validator checks with no warnings.
-
-**Known gaps in `reconcile`'s own writers** (as of this writing) that you have to compensate for in the PDAL pipeline:
-- **No CRS is embedded** in any `reconcile` output (`laz`/`ply`/`pt`/`exr`) — you must pass the CRS explicitly. `reconcile` operates in EPSG:28992 (see [Coordinate systems](#coordinate-systems) below), so use `a_srs: "EPSG:28992"`, not the default WGS84 you'd get from an unset/guessed SRS.
-- **`ReturnNumber`/`NumberOfReturns` are unset** (all zero, in both `laz` and `ply`) — a strict COPC validator flags this as a `pointCountByReturn` mismatch. Since `reconcile` output is a single-return synthetic cloud (not real lidar), set both to `1` for every point.
-- **`ply`'s RGB is 8-bit** (`uchar red/green/blue`, correct for plain PLY) but LAS/COPC's RGB fields are 16-bit — PDAL cannot widen a dimension's type once `readers.ply` has registered it from the file header, so 8-bit-range color survives straight through to the COPC and a strict validator warns about it. Fix this *before* PDAL sees the file (script below).
-
-**PDAL also needs help of its own**, independent of `reconcile`:
-- `writers.copc`'s coordinate scale defaults to 1 cm (`0.01`) regardless of the source file's precision. At 1 cm, points near the tightly auto-fit octree cube edge can round *outside* the cube and fail the validator's `xyz` (bounds) check. Set `scale_x`/`scale_y`/`scale_z` to `0.001` (1 mm) explicitly.
-
-We verified the pipeline below against a real `reconcile` output (1,048,576 points) with `copc-validator` — 24/24 checks pass, no warnings, reproducibly across repeated runs. It starts from `reconciled.ply` because that route is the one we could get to pass cleanly and repeatably; building directly from `reconciled.laz` still tripped the `xyz` check in our testing even with the scale/CRS/return-number fixes applied, so we don't recommend it until that's root-caused.
-
-First, widen `ply`'s 8-bit RGB to 16-bit (requires `pip install plyfile`, a one-off scripting dependency — not an `ahn_cli` requirement):
-
-```python
-import numpy as np
-from plyfile import PlyData, PlyElement
-
-ply = PlyData.read("reconciled.ply")
-v = ply["vertex"].data
-out = np.empty(len(v), dtype=[("x", "f8"), ("y", "f8"), ("z", "f8"),
-                               ("red", "u2"), ("green", "u2"), ("blue", "u2")])
-out["x"], out["y"], out["z"] = v["x"], v["y"], v["z"]
-out["red"] = v["red"].astype(np.uint16) * 256
-out["green"] = v["green"].astype(np.uint16) * 256
-out["blue"] = v["blue"].astype(np.uint16) * 256
-PlyData([PlyElement.describe(out, "vertex")], text=False, byte_order="<").write("reconciled_rgb16.ply")
-```
-
-Then run this PDAL pipeline (`reconciled_to_copc.json`):
-
-```json
-{
-  "pipeline": [
-    { "type": "readers.ply", "filename": "reconciled_rgb16.ply" },
-    { "type": "filters.assign", "value": ["ReturnNumber = 1", "NumberOfReturns = 1"] },
-    {
-      "type": "writers.copc",
-      "filename": "reconciled.copc.laz",
-      "a_srs": "EPSG:28992",
-      "scale_x": 0.001,
-      "scale_y": 0.001,
-      "scale_z": 0.001
-    }
-  ]
-}
-```
+`ahn_cli copc` converts any pipeline LAZ (`prep`'s `pointcloud.laz` or `reconcile`'s `reconciled.laz`) into a [COPC](https://copc.io/) (Cloud Optimized Point Cloud) — the octree-indexed LAZ that viewers (Potree, CesiumJS, QGIS, etc.) can stream and LOD instead of loading whole:
 
 ```bash
-pdal pipeline reconciled_to_copc.json
+ahn_cli copc --cloud data/delft/reconciled/reconciled.laz --out data/delft/reconciled/reconciled.copc.laz
 ```
 
-Verify the result with `copc-validator` (no install needed, `npx` fetches it on demand):
+The command exists because external COPC writers break on Dutch-shaped data (see `docs/bugs/2026-07-11-pdal-copc-xyz-bounds-flat-terrain.md`: PDAL's `writers.copc` declares cube and header bounds through two different float64 paths, and on flat, horizontally-huge terrain — where every point is pinned to the octree cube's Z-minimum face — the resulting sub-millimetre epsilon fails `copc-validator`'s `xyz` check on hundreds of nodes, including the root). `ahn_cli copc` instead:
+
+- **streams in bounded memory** (chunked reads → on-disk XY buckets → one bucket at a time), so nationwide-scale inputs work;
+- **preserves AHN's native 0.5 m coarseness**: it never thins below the source grid, and de-duplicates only when multiple points share one 0.5 m voxel — the survivor is chosen by outlier reasoning (median/MAD on Z, nearest-to-median wins), never synthesised;
+- **builds the octree for Netherlands-shaped data by construction**: whole-metre cube anchor at least 1 m below/left of the data (below-NAP Z included), header bounds computed from the same quantized int32 → float64 path every reader decodes, and point→node assignment descending through the exact double-precision midpoints `copc.js` uses — so no boundary epsilon can exist;
+- normalises the attribute zoo (EPSG:28992 WKT1 SRS, return numbers lifted to the LAS-valid range, 8-bit-looking RGB widened to 16-bit, GPS-sorted nodes, GPS range in the COPC info VLR).
+
+Verify the result with `copc-validator` (no install needed, `npx` fetches it on demand) — a 46.3M-point real-world Zuidplaspolder site (Z from −8.57 m NAP) passes all 24 checks green:
 
 ```bash
 npx copc-validator -d reconciled.copc.laz

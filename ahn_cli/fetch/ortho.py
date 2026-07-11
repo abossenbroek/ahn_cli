@@ -50,6 +50,7 @@ from ahn_cli.domain import (
     Vintage,
     ensure_valid_bbox,
 )
+from ahn_cli.domain.authenticity import uniform_image
 from ahn_cli.fetch.acquisition import (
     AcquisitionError,
     AcquisitionRequest,
@@ -441,6 +442,9 @@ def mosaic_and_clip(
 
     Failure modes:
         - Propagates :class:`rasterio.errors.RasterioError` from a bad sheet.
+        - :class:`AcquisitionError` (the CLI-caught base) if the clipped
+          mosaic is one uniform colour across every pixel — placeholder
+          imagery, not genuine Beeldmateriaal photography.
     """
     ordered = sorted(tile_paths, key=lambda path: path.name)
     with rasterio.open(ordered[0]) as first:
@@ -450,6 +454,14 @@ def mosaic_and_clip(
         [str(path) for path in ordered], bounds=aoi, res=resolution_m
     )
     pixels: npt.NDArray[np.uint8] = mosaic
+    if uniform_image(pixels):
+        msg = (
+            "orthophoto mosaic is a single uniform colour across every "
+            "pixel — that is placeholder imagery, not genuine "
+            "Beeldmateriaal photography; refusing to write "
+            f"{out_path.name}."
+        )
+        raise AcquisitionError(msg)
     count = pixels.shape[0]
     height = pixels.shape[1]
     width = pixels.shape[2]

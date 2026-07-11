@@ -36,6 +36,7 @@ import numpy.typing as npt
 import rasterio
 from rasterio.errors import RasterioIOError
 
+from ahn_cli.domain.authenticity import flat_surface
 from ahn_cli.domain.grid import GeoTransform, PixelGrid
 
 if TYPE_CHECKING:
@@ -187,7 +188,10 @@ def export_positions(
         - The output image dimensions equal the source raster's dimensions.
 
     Failure modes:
-        - :class:`PositionsExportError` if the DSM raster is absent or unreadable.
+        - :class:`PositionsExportError` if the DSM raster is absent or
+          unreadable, or if it carries no genuine relief (no valid pixels at
+          all, or one constant elevation across every valid pixel — a
+          placeholder surface, not measured AHN DSM data).
     """
     try:
         with rasterio.open(str(dsm_path)) as dataset:
@@ -204,6 +208,15 @@ def export_positions(
     except RasterioIOError as exc:
         msg = f"DSM raster at {dsm_path} is not readable: {exc}"
         raise PositionsExportError(msg) from exc
+
+    if flat_surface(elevation, nodata):
+        msg = (
+            f"DSM raster at {dsm_path} carries no genuine relief (no valid "
+            "pixels, or one constant elevation everywhere) — that is a "
+            "placeholder surface, not measured AHN DSM data; refusing to "
+            "export a position map from it."
+        )
+        raise PositionsExportError(msg)
 
     grid = PixelGrid(width=width, height=height, transform=transform)
     easting = grid.eastings().astype(np.float32)

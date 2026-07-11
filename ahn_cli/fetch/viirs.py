@@ -6,7 +6,9 @@ does integration only, never a rebuild: it verify-opens the raster, records its
 CRS, extent, band count and dtypes plus a content checksum, copies the file
 **byte-for-byte untouched** into ``data/<site>/viirs/``, and writes a
 :class:`~ahn_cli.domain.Provenance` sidecar. No reprojection, resampling,
-re-colormapping or normalisation is ever performed.
+re-colormapping or normalisation is ever performed. A decimated pixel sample
+is read (never altered) to hard-verify the raster is genuine imagery, not a
+single-value placeholder grid.
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ import rasterio
 from rasterio.errors import RasterioIOError
 
 from ahn_cli.domain import Product, Provenance
+from ahn_cli.domain.authenticity import uniform_image
 from ahn_cli.provenance import write_provenance
 
 if TYPE_CHECKING:
@@ -31,6 +34,7 @@ if TYPE_CHECKING:
     from ahn_cli.domain import BBox
 
 _CHUNK_SIZE = 1 << 20  # 1 MiB: bound peak memory when hashing large rasters.
+_UNIFORMITY_SAMPLE = 512  # decimated read size for the placeholder guard
 _VIIRS_SUBDIR = "viirs"
 _SOURCE_PORTAL = "google_earth_engine"
 _LICENCE = "public-domain"
@@ -118,10 +122,13 @@ def inspect_viirs(source: Path) -> ViirsRaster:
         - Opens ``source`` with ``rasterio`` to confirm it is a valid raster,
           then returns its CRS, extent, band count, band dtypes and the SHA-256
           of its bytes.
-        - Reads only metadata; the pixel data is never decoded or altered.
+        - Reads metadata plus a decimated pixel sample for the authenticity
+          gate; the pixel data is never altered (the copy stays byte-exact).
 
     Failure modes:
-        - :class:`ViirsImportError` if ``source`` cannot be opened as a raster.
+        - :class:`ViirsImportError` if ``source`` cannot be opened as a
+          raster, or if every sampled pixel carries one identical value — a
+          placeholder grid, not genuine VIIRS imagery.
     """
     try:
         with rasterio.open(source) as dataset:
@@ -132,9 +139,23 @@ def inspect_viirs(source: Path) -> ViirsRaster:
             bounds: BBox = (box.left, box.bottom, box.right, box.top)
             band_count = dataset.count
             dtypes = tuple(dataset.dtypes)
+            sample = dataset.read(
+                out_shape=(
+                    band_count,
+                    min(int(dataset.height), _UNIFORMITY_SAMPLE),
+                    min(int(dataset.width), _UNIFORMITY_SAMPLE),
+                ),
+            )
     except RasterioIOError as exc:
         msg = f"{source} is not a readable raster: {exc}"
         raise ViirsImportError(msg) from exc
+    if uniform_image(sample):
+        msg = (
+            f"{source} is a single uniform value across every sampled "
+            "pixel — that is a placeholder grid, not genuine VIIRS "
+            "night-lights imagery; refusing to import it."
+        )
+        raise ViirsImportError(msg)
     return ViirsRaster(
         crs=crs,
         bounds=bounds,

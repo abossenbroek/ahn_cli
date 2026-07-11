@@ -22,6 +22,7 @@ fast test suite is deterministic and offline.
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -31,6 +32,7 @@ from importlib.metadata import version
 from pathlib import Path
 from typing import cast
 
+import laspy
 import requests
 from shapely.errors import ShapelyError
 from shapely.geometry import shape
@@ -44,6 +46,7 @@ from ahn_cli.domain import (
     Provenance,
     ensure_valid_bbox,
 )
+from ahn_cli.domain.authenticity import degenerate_cloud
 from ahn_cli.fetch.generation import (
     GenerationUnavailableError,
     UnknownGenerationError,
@@ -243,8 +246,10 @@ def acquire(
     Failure modes:
         - :class:`AcquisitionError` if the bbox is malformed, the selector is
           not wired, no registered generation covers the AOI, the distribution
-          feed/catalogue is invalid, or a tile download fails. Every expected
-          failure is funnelled here so the CLI reports it cleanly.
+          feed/catalogue is invalid, a tile download fails, or a downloaded
+          tile is not a genuine AHN point cloud (unparsable LAZ, no points,
+          or every point at one identical position). Every expected failure
+          is funnelled here so the CLI reports it cleanly.
     """
     create_site_layout(request.site_dir)
     aoi = aoi_bbox(request)
@@ -281,6 +286,7 @@ def acquire(
             msg = f"download failed for {tile.download_url}: {exc}"
             raise AcquisitionError(msg) from exc
         finished = now()
+        _verify_ahn_tile(content, tile.tile_id, tile.download_url)
         laz_path = ahn_dir / f"{tile.tile_id}.LAZ"
         laz_path.write_bytes(content)
         checksum = hashlib.sha256(content).hexdigest()
@@ -307,6 +313,42 @@ def acquire(
         )
         written.append(laz_path)
     return tuple(written)
+
+
+def _verify_ahn_tile(content: bytes, tile_id: str, url: str) -> None:
+    """Hard-verify a downloaded tile is a genuine AHN point cloud.
+
+    Runs before the tile lands in the site layout, so a placeholder or
+    corrupted download never becomes an output: the bytes must parse as a
+    LAS/LAZ header, and the header must not describe an empty cloud or a
+    stack of points all at one identical position.
+
+    Failure modes:
+        - :class:`AcquisitionError` if the tile is unparsable or degenerate.
+    """
+    try:
+        with laspy.open(io.BytesIO(content)) as reader:
+            header = reader.header
+            count = int(header.point_count)
+            mins = header.mins
+            maxs = header.maxs
+    except (OSError, ValueError, laspy.LaspyException) as exc:
+        msg = (
+            f"tile {tile_id} from {url} is not a readable LAZ point cloud "
+            f"({exc}); refusing to store it as AHN data."
+        )
+        raise AcquisitionError(msg) from exc
+    if degenerate_cloud(count, mins, maxs):
+        detail = (
+            "contains no points"
+            if count == 0
+            else f"stacks all {count} points at one identical position"
+        )
+        msg = (
+            f"tile {tile_id} from {url} {detail} — that is not genuine "
+            "AHN data; refusing to store it."
+        )
+        raise AcquisitionError(msg)
 
 
 def _downloader(http_get: HttpGet, url: str) -> Callable[[], bytes]:

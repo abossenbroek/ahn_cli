@@ -116,6 +116,30 @@ def test_inspect_checksum_is_deterministic(tmp_path: Path) -> None:
     assert first == second
 
 
+def test_inspect_rejects_a_uniform_placeholder_grid(tmp_path: Path) -> None:
+    """A raster whose every pixel is one identical value is refused."""
+    source = tmp_path / "flat.tif"
+    transform = from_bounds(*_BOUNDS, _WIDTH, _HEIGHT)
+    pixels: npt.NDArray[np.float32] = np.full(
+        (1, _HEIGHT, _WIDTH), 3.5, dtype=np.float32
+    )
+    with rasterio.open(
+        source,
+        "w",
+        driver="GTiff",
+        height=_HEIGHT,
+        width=_WIDTH,
+        count=1,
+        dtype="float32",
+        crs="EPSG:4326",
+        transform=transform,
+    ) as dst:
+        dst.write(pixels)
+
+    with pytest.raises(ViirsImportError, match="placeholder grid"):
+        inspect_viirs(source)
+
+
 def test_inspect_rejects_a_non_raster_file(tmp_path: Path) -> None:
     """A file that is not a raster is rejected with ViirsImportError."""
     source = tmp_path / "broken.tif"

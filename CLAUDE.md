@@ -59,7 +59,7 @@ make check
 ```
 
 ### Running the CLI
-`ahn_cli` is a Click **group**; every invocation names a subcommand (`fetch`, `prep`, `reconcile`, `import-viirs`, `export-positions`). Running it with no subcommand prints usage to stderr and exits with code 2 — that is expected `click.Group` behavior, not a bug.
+`ahn_cli` is a Click **group**; every invocation names a subcommand (`fetch`, `prep`, `reconcile`, `copc`, `import-viirs`, `export-positions`). Running it with no subcommand prints usage to stderr and exits with code 2 — that is expected `click.Group` behavior, not a bug.
 
 ```bash
 # Run the CLI with arguments (ARGS must start with a subcommand)
@@ -92,9 +92,12 @@ uv run ahn_cli import-viirs --out data/delft path/to/viirs.tif
 
 # Interpolate the AHN cloud onto the ortho's pixel grid (IDW, power=2, k=12), emit a coloured cloud
 uv run ahn_cli reconcile --ortho data/delft/ortho.tif --cloud data/delft/pointcloud.laz --out data/delft/reconciled --method idw --idw "2,12"
+
+# Convert a pipeline LAZ into a validator-green Cloud-Optimized Point Cloud (streaming, 0.5m dedup)
+uv run ahn_cli copc --cloud data/delft/reconciled/reconciled.laz --out data/delft/reconciled/reconciled.copc.laz
 ```
 
-A typical end-to-end run is `fetch` → `prep` → (`export-positions` and/or `reconcile`): each step reads the previous step's output from the site directory on disk and writes its own outputs plus an updated `provenance.json`; there is no in-memory handoff between subcommands.
+A typical end-to-end run is `fetch` → `prep` → (`export-positions` and/or `reconcile`) → optionally `copc`: each step reads the previous step's output from the site directory on disk and writes its own outputs plus an updated `provenance.json`; there is no in-memory handoff between subcommands.
 
 ## Architecture
 
@@ -104,7 +107,7 @@ AHN CLI acquires and transforms Dutch elevation data (AHN — Actueel Hoogtebest
 
 1. **CLI adapter** (`ahn_cli/cli/app.py`): the `ahn_cli` Click group and its five subcommands (`fetch`, `prep`, `import-viirs`, `export-positions`, `reconcile`). Registered via `pyproject.toml`'s `[project.scripts] ahn_cli = "ahn_cli.cli:cli"`. This layer owns argument parsing/validation and translates each context's typed errors (`AcquisitionError`, `PrepError`, `ViirsImportError`, `PositionsExportError`, `ReconcileError`) into `click.ClickException`; it holds no acquisition or transform logic of its own. `fetch`, `prep`, and `reconcile` map one-to-one onto their own context directories below; `import-viirs` and `export-positions` don't have their own directories — they're implemented inside `fetch/viirs.py` and `prep/positions.py` respectively, since they belong to the acquisition and transform contexts respectively.
 
-2. **`domain/`**: pure value objects shared by every context, with no I/O — `Tile`/`BBox` (identity, EPSG:28992), `PixelGrid`/`GeoTransform` (pixel ↔ world coords), `Generation` (AHN3/4/5…), `Product` (ahn/dsm/ortho/viirs), `Vintage` (acquisition year), `Provenance` (in-memory acquisition record).
+2. **`domain/`**: pure value objects shared by every context, with no I/O — `Tile`/`BBox` (identity, EPSG:28992), `PixelGrid`/`GeoTransform` (pixel ↔ world coords), `Generation` (AHN3/4/5…), `Product` (ahn/dsm/ortho/viirs), `Vintage` (acquisition year), `Provenance` (in-memory acquisition record), and `authenticity.py`'s pure data-authenticity predicates (`uniform_image` / `flat_surface` / `degenerate_cloud`) shared by every verb's output-step gate.
 
 3. **`fetch/`** (acquisition bounded context): turns an area of interest into raw, cached source tiles. Never transforms or exports pixel/point data.
    - `acquisition.py` — orchestrates resolve-AOI → download-through-cache → record-provenance for AHN point cloud tiles.
@@ -131,9 +134,17 @@ AHN CLI acquires and transforms Dutch elevation data (AHN — Actueel Hoogtebest
    - `raster.py` — raster/point-cloud IO (rasterio + laspy).
    - `writers.py` — deterministic `laz`/`ply`/`pt`/`exr` output writers.
 
-6. **`provenance/`**: `sidecar.py` — deterministic `provenance.json` codec shared by every fetcher/transform step.
+6. **`copc/`** (COPC export bounded context, added to resolve `docs/bugs/2026-07-11-pdal-copc-xyz-bounds-flat-terrain.md`): turns a pipeline LAZ (`prep`'s or `reconcile`'s output) into a `.copc.laz` whose LAS-header bounds and COPC octree cube are consistent **by construction** — PDAL's `writers.copc` computes them through two float64 paths that disagree by an epsilon on flat, horizontally-huge Dutch terrain (every point pinned to the cube's Z-min face), failing `copc-validator`'s `xyz` check. Fully streaming (chunked reads → on-disk XY bucket spill → one bucket in memory at a time), so nationwide-scale inputs work. Design doc: `docs/superpowers/specs/2026-07-11-copc-design.md`.
+   - `octree.py` — `CopcError`, `plan_build()` (whole-metre cube anchored ≥1 m outside the data, below-NAP Z included), copc.js-exact node bounds (`min + (max - min) / 2` midpoint halving, matching `Bounds.stepTo` bit for bit) and the `LodSampler` top-down grid-occupancy sampler that assigns each point to exactly one node via those same midpoints.
+   - `dedup.py` — 0.5 m-voxel de-duplication preserving AHN's native coarseness: only voxels holding >1 point collapse, survivor picked by outlier reasoning (median/MAD on Z, nearest-to-median, index tie-break); points are never moved or synthesised.
+   - `scatter.py` — pass-1 streaming scatter into per-column bucket record files; normalizes attributes (scan_angle_rank→scan_angle, return numbers lifted to 1..15).
+   - `writer.py` — typed façade over `copclib` (vendored stub in `typings/copclib/`): nodes handed over as raw pre-packed int32 PDRF 6/7 bytes (no second quantization path), header min/max set from the written quantized extremes, per-node GPS sort, WKT1 SRS (the validator's proj4js can't parse WKT2), and a post-Close binary patch of the COPC info VLR's `gpstime_minimum/maximum` (the copclib binding never fills them).
+   - `build.py` — `build_copc()` orchestrator: plan → scatter → per-bucket dedup/LOD-sample/write, ancestors above the bucket level held back and written last; RGB policy (no/black RGB → PDRF 6, 8-bit-looking RGB widened ×257, real 16-bit passthrough).
+   - Verified: the real 46.3M-point Moerkapelle site passes `npx copc-validator -d` 24/24 green; `_typos.toml` carries the `lod`/`LinearNDInterpolator`/legacy-geojson spell-check exceptions this work surfaced.
 
-7. **`cache/`**: `store.py`'s `ContentAddressedCache` + `key.py`'s `CacheKey` — a checksum-verified, idempotent cache keyed by (product, generation/vintage, tile id), making `fetch` safe to re-run.
+7. **`provenance/`**: `sidecar.py` — deterministic `provenance.json` codec shared by every fetcher/transform step.
+
+8. **`cache/`**: `store.py`'s `ContentAddressedCache` + `key.py`'s `CacheKey` — a checksum-verified, idempotent cache keyed by (product, generation/vintage, tile id), making `fetch` safe to re-run.
 
 ### Legacy / deprecated modules
 
@@ -143,10 +154,11 @@ AHN CLI acquires and transforms Dutch elevation data (AHN — Actueel Hoogtebest
 
 ### Key Design Patterns
 
-- Each bounded context (`fetch`, `prep`, `reconcile`) owns one pipeline stage and communicates through `domain/` value objects and the `provenance/` sidecar — no context reaches into another's internals.
-- `fetch` is idempotent via the content-addressed `cache/`; `prep` and `reconcile` are pure transforms over already-cached/fetched inputs with no network access.
+- Each bounded context (`fetch`, `prep`, `reconcile`, `copc`) owns one pipeline stage and communicates through `domain/` value objects and the `provenance/` sidecar — no context reaches into another's internals.
+- `fetch` is idempotent via the content-addressed `cache/`; `prep`, `reconcile`, and `copc` are pure transforms over already-cached/fetched inputs with no network access.
 - Point cloud processing streams/block-processes rather than loading whole tiles where practical (DSM windowed COG reads, `reconcile`'s block-streamed interpolation) to manage memory on large areas.
 - Deterministic outputs are a first-class requirement: `provenance.json`, the `reconcile` writers, and Poisson-disk thinning (via `--thin-seed`) are all designed to be reproducible given the same inputs.
+- Every verb's output step hard-verifies data authenticity (via the `domain/authenticity.py` predicates) before emitting: only a genuine AHN cloud / genuine imagery passes — placeholders, degenerate clouds, flat surfaces, and non-overlapping `reconcile` inputs are refused with the verb's typed error. Data is never infilled to satisfy a step.
 - The `cli/` layer is a thin adapter: argument parsing, validation, and error translation only. All business logic lives in the bounded-context packages, never in `cli/app.py`.
 
 ### Important Constants
@@ -174,7 +186,7 @@ The tool works primarily in the Dutch national grid, EPSG:28992 (RD New / Amersf
 ### Testing Structure
 
 Tests are organized to mirror the source layout:
-- `tests/domain/`, `tests/fetch/`, `tests/prep/`, `tests/reconcile/`, `tests/provenance/`, `tests/cache/`, `tests/cli/` — one directory per bounded context / adapter, matching `ahn_cli/`.
+- `tests/domain/`, `tests/fetch/`, `tests/prep/`, `tests/reconcile/`, `tests/copc/`, `tests/provenance/`, `tests/cache/`, `tests/cli/` — one directory per bounded context / adapter, matching `ahn_cli/`.
 - `tests/nightly/` — live checks against the real PDOK/Beeldmateriaal endpoints; marked `nightly`, excluded from `make test` by default (`addopts = "-m 'not nightly'"`), run explicitly via `make test-nightly`.
 - `tests/test_bounded_contexts.py` — contract test asserting the `fetch`/`prep` docstrings and `domain.__all__` match the bounded-context framing described above.
 - `tests/test_integration_vertical_slice.py` — end-to-end acceptance test for the full fetch → prep pipeline.
@@ -188,7 +200,7 @@ The project uses modern Python tooling:
 - `pyright` (strict mode) for type checking
 - `pytest` for testing (`--cov=ahn_cli --cov-branch`, `fail_under = 100` on non-legacy code)
 - Python 3.10–3.12 supported
-- Key libraries: laspy (point clouds), geopandas/shapely (geometry), rasterio (rasters/COGs), scipy (kNN), pdal (optional), mlx (optional, Apple-silicon GPU decimation)
+- Key libraries: laspy (point clouds), copclib (COPC container writing), geopandas/shapely (geometry), rasterio (rasters/COGs), scipy (kNN), pdal (optional), mlx (optional, Apple-silicon GPU decimation)
 
 ### CI
 

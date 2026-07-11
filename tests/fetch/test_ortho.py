@@ -378,6 +378,32 @@ def test_mosaic_is_overlap_free_and_seam_matches_reference(
     assert np.array_equal(produced_pixels, expected_pixels)
 
 
+def test_mosaic_rejects_a_uniform_single_colour(tmp_path: Path) -> None:
+    """A single-colour clipped mosaic is refused as placeholder imagery."""
+    path = tmp_path / "uniform.tif"
+    width = round((_AOI[2] - _AOI[0]) / _RES)
+    band: npt.NDArray[np.uint8] = np.full((_HEIGHT, width), 7, dtype=np.uint8)
+    pixels: npt.NDArray[np.uint8] = np.stack([band, band, band])
+    transform = from_bounds(
+        _AOI[0], _AOI[1], _AOI[2], _AOI[3], width, _HEIGHT
+    )
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        height=_HEIGHT,
+        width=width,
+        count=3,
+        dtype="uint8",
+        crs="EPSG:28992",
+        transform=transform,
+    ) as dst:
+        dst.write(pixels)
+
+    with pytest.raises(AcquisitionError, match="uniform colour"):
+        mosaic_and_clip((path,), _AOI, _RES, tmp_path / "ortho.tif")
+
+
 def test_mosaic_pixel_checksum_is_deterministic(tmp_path: Path) -> None:
     """The mosaic pixel checksum is stable across two independent runs."""
     tiles_dir = tmp_path / "tiles"

@@ -326,6 +326,28 @@ def test_inspect_dsm_funnels_a_read_failure() -> None:
         inspect_dsm(b"not a GeoTIFF")
 
 
+def test_inspect_dsm_rejects_a_constant_elevation_surface(
+    tmp_path: Path,
+) -> None:
+    """Valid pixels all at one constant value are a placeholder, not relief."""
+    pixels: npt.NDArray[np.float32] = np.full((4, 4), 10.0, dtype=np.float32)
+    content = _geotiff_bytes(tmp_path, pixels, nodata=_NODATA)
+
+    with pytest.raises(DsmError, match="genuine relief"):
+        inspect_dsm(content)
+
+
+def test_inspect_dsm_rejects_an_all_nodata_surface(tmp_path: Path) -> None:
+    """A raster with no valid pixel at all carries no genuine relief."""
+    pixels: npt.NDArray[np.float32] = np.full(
+        (4, 4), _NODATA, dtype=np.float32
+    )
+    content = _geotiff_bytes(tmp_path, pixels, nodata=_NODATA)
+
+    with pytest.raises(DsmError, match="genuine relief"):
+        inspect_dsm(content)
+
+
 # --------------------------------------------------------------------------- #
 # Source resolution
 # --------------------------------------------------------------------------- #

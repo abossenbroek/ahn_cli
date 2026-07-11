@@ -45,6 +45,7 @@ from rasterio.windows import Window, from_bounds
 
 from ahn_cli.cache import CacheKey, ContentAddressedCache
 from ahn_cli.domain import BBox, Product, Provenance, Vintage
+from ahn_cli.domain.authenticity import flat_surface
 from ahn_cli.fetch.acquisition import (
     AcquisitionError,
     AcquisitionRequest,
@@ -310,7 +311,10 @@ def inspect_dsm(content: bytes) -> DsmStats:
           resolution, nodata, void fraction, spike count, and pixel dimensions.
 
     Failure modes:
-        - :class:`DsmError` if ``content`` is not a readable raster.
+        - :class:`DsmError` if ``content`` is not a readable raster, or if it
+          carries no genuine relief (no valid pixels at all, or a single
+          constant elevation across every valid pixel — a placeholder
+          surface, not measured AHN DSM data).
     """
     try:
         with MemoryFile(content) as memfile, memfile.open() as dataset:
@@ -325,6 +329,13 @@ def inspect_dsm(content: bytes) -> DsmStats:
     except RasterioIOError as exc:
         msg = f"clipped DSM raster is not readable: {exc}"
         raise DsmError(msg) from exc
+    if flat_surface(pixels, nodata):
+        msg = (
+            "clipped DSM raster carries no genuine relief (no valid pixels, "
+            "or one constant elevation everywhere) — that is a placeholder "
+            "surface, not measured AHN DSM data; refusing to store it."
+        )
+        raise DsmError(msg)
     return DsmStats(
         crs=crs,
         bounds=bounds,

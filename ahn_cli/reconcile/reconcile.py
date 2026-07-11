@@ -68,6 +68,9 @@ _BLOCK_CELLS = 262_144
 ``(cells, k+1, k+1)`` system per block). The row count is derived from this and
 the grid width, so the block schedule is a deterministic function of the input."""
 
+_MIN_DISTINCT_POSITIONS = 2
+"""A cloud needs at least two distinct XY positions to define a surface."""
+
 
 @dataclass(frozen=True)
 class ReconcileRequest:
@@ -141,20 +144,29 @@ def reconcile(
           memory with respect to the grid area.
 
     Failure modes:
-        - :class:`ReconcileError` if an input is missing/unreadable or the
-          orthophoto lacks three colour bands.
+        - :class:`ReconcileError` if an input is missing/unreadable, the
+          orthophoto lacks three colour bands, or the orthophoto is a uniform
+          single colour (a placeholder grid, not real imagery). The ortho is
+          validated *first*, before the (potentially huge) cloud is loaded,
+          so a bad ortho fails in milliseconds.
+        - :class:`ReconcileError` if the cleaned cloud is not genuine AHN
+          data to interpolate from: empty, collapsed to a single XY position,
+          or spatially disjoint from the orthophoto extent. Interpolating any
+          of those would fabricate ("infill") elevations, which reconcile
+          never does.
     """
     report = progress if progress is not None else _no_op_progress
-    cloud = load_cloud(request.cloud_path)
-    coords = select_and_dedupe(
-        cloud.coords,
-        cloud.classification,
-        request.include_classes,
-        request.exclude_classes,
-    )
-    interpolator = build_interpolator(request.method, coords)
-
     with open_ortho(request.ortho_path) as ortho:
+        cloud = load_cloud(request.cloud_path)
+        coords = select_and_dedupe(
+            cloud.coords,
+            cloud.classification,
+            request.include_classes,
+            request.exclude_classes,
+        )
+        _verify_source_coords(coords, request.cloud_path)
+        _verify_cloud_overlaps_grid(coords, ortho.grid, request)
+        interpolator = build_interpolator(request.method, coords)
         grid = ortho.grid
         width, height = grid.width, grid.height
         x_offset, y_offset = _grid_corner(grid)
@@ -191,6 +203,73 @@ def reconcile(
         valid_points=valid_points,
         outputs=outputs,
     )
+
+
+def _verify_source_coords(
+    coords: npt.NDArray[np.float64], cloud_path: Path
+) -> None:
+    """Hard-verify the cleaned cloud is genuine data to interpolate from.
+
+    An empty cloud, or one whose points all share a single XY position,
+    carries no surface to estimate: every produced elevation would be
+    fabricated ("infill"), so reconcile refuses to proceed.
+
+    Failure modes:
+        - :class:`ReconcileError` if the cleaned cloud is empty or has no
+          XY extent.
+    """
+    if coords.shape[0] == 0:
+        msg = (
+            f"point cloud at {cloud_path} has no points left after the "
+            "class filter and de-duplication; there is nothing genuine to "
+            "interpolate from."
+        )
+        raise ReconcileError(msg)
+    xy = coords[:, :2]
+    if xy.shape[0] < _MIN_DISTINCT_POSITIONS or bool(np.all(xy == xy[:1])):
+        msg = (
+            f"point cloud at {cloud_path} collapses to a single XY "
+            "position — interpolating a whole grid from it would fabricate "
+            '("infill") elevations, which reconcile never does.'
+        )
+        raise ReconcileError(msg)
+
+
+def _verify_cloud_overlaps_grid(
+    coords: npt.NDArray[np.float64],
+    grid: PixelGrid,
+    request: ReconcileRequest,
+) -> None:
+    """Hard-verify the cloud and the ortho cover the same ground.
+
+    A cloud whose XY bounding box does not intersect the orthophoto extent
+    shares no terrain with the target grid: every estimated pixel would be
+    extrapolated from unrelated points — fabricated ("infill") data — so
+    reconcile refuses to proceed.
+
+    Failure modes:
+        - :class:`ReconcileError` if the cloud's XY bbox and the ortho
+          extent are disjoint.
+    """
+    t = grid.transform
+    cols = np.array([0.0, float(grid.width)])
+    rows = np.array([0.0, float(grid.height)])
+    xs = t[0] * cols[:, np.newaxis] + t[1] * rows[np.newaxis, :] + t[2]
+    ys = t[3] * cols[:, np.newaxis] + t[4] * rows[np.newaxis, :] + t[5]
+    disjoint = (
+        float(coords[:, 0].max()) < float(xs.min())
+        or float(coords[:, 0].min()) > float(xs.max())
+        or float(coords[:, 1].max()) < float(ys.min())
+        or float(coords[:, 1].min()) > float(ys.max())
+    )
+    if disjoint:
+        msg = (
+            f"point cloud at {request.cloud_path} does not overlap the "
+            f"orthophoto extent of {request.ortho_path}; interpolating "
+            'across disjoint areas would fabricate ("infill") data. Check '
+            "that both inputs cover the same site."
+        )
+        raise ReconcileError(msg)
 
 
 def _grid_corner(grid: PixelGrid) -> tuple[float, float]:

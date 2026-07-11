@@ -455,6 +455,48 @@ def test_fetch_dsm_is_idempotent_through_the_cache(tmp_path: Path) -> None:
     assert second.read_bytes() == first_bytes
 
 
+def test_fetch_dsm_recovers_after_a_flat_clip_poisoned_the_cache(
+    tmp_path: Path,
+) -> None:
+    """A gate-rejected flat clip is evicted; a retry re-reads and succeeds."""
+    site = tmp_path / "delft"
+    cog = tmp_path / "R_37EN1.TIF"
+    _write_cog(cog)
+    feed = _dsm_feed((str(cog), _SHEET_RD))
+    flat = _geotiff_bytes(
+        tmp_path,
+        np.full((4, 4), 10.0, dtype=np.float32),
+        nodata=_NODATA,
+    )
+
+    def flat_reader(url: str, aoi: BBox) -> bytes:
+        del url, aoi
+        return flat
+
+    with pytest.raises(DsmError, match="genuine relief"):
+        fetch_dsm(
+            _sheet_request(site),
+            http_get=_feed_get(feed),
+            reader=flat_reader,
+            now=_fixed_clock(),
+            tool_version="v",
+        )
+
+    reader = _RecordingReader()
+    dsm_path = fetch_dsm(
+        _sheet_request(site),
+        http_get=_feed_get(feed),
+        reader=reader,
+        now=_fixed_clock(),
+        tool_version="v",
+    )
+
+    # The poisoned clip was evicted, so the retry re-read the window
+    # instead of replaying the flat bytes from the cache.
+    assert len(reader.calls) == 1
+    assert dsm_path.is_file()
+
+
 def test_fetch_dsm_uses_default_clock_and_tool_version(
     tmp_path: Path,
 ) -> None:

@@ -46,6 +46,8 @@ class ContentAddressedCache:
           and raises :class:`ChecksumMismatchError` if the blob is corrupt.
         - :meth:`get_or_fetch` is idempotent: on a hit it neither calls the
           fetcher nor writes any bytes.
+        - :meth:`discard` evicts a key so the next :meth:`get_or_fetch`
+          re-fetches it; discarding a missing key is a no-op.
 
     Invariants:
         - Content addressing makes storage deterministic: identical content is
@@ -127,3 +129,18 @@ class ContentAddressedCache:
         content = fetch()
         self.put(key, content)
         return content
+
+    def discard(self, key: CacheKey) -> None:
+        """Evict ``key`` so the next :meth:`get_or_fetch` re-fetches it.
+
+        Contract:
+            - Removes the index entry mapping ``key`` to its content hash;
+              a key with no entry is a no-op, so eviction is idempotent.
+            - The blob itself is deliberately left in place: blobs are
+              addressed by content hash and may be shared by other keys, so
+              removing one here could corrupt an unrelated entry. An
+              orphaned blob is unreachable through :meth:`get` (which
+              requires an index entry), and a later :meth:`put` of the same
+              content deterministically re-uses its path.
+        """
+        self._index_path(key).unlink(missing_ok=True)

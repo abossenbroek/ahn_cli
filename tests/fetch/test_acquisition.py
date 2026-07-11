@@ -106,6 +106,25 @@ class _Recorder:
         return [url for url in self.urls if url.endswith(".LAZ")]
 
 
+class _SwitchablePayload:
+    """An injected HttpGet whose LAZ payload can change between runs.
+
+    Serves the ATOM feed for feed URLs and ``payload`` for .LAZ URLs,
+    counting the tile downloads so a test can prove a re-download happened.
+    """
+
+    def __init__(self, payload: bytes) -> None:
+        self.payload = payload
+        self.laz_calls = 0
+
+    def __call__(self, url: str) -> bytes:
+        """Return the feed or the current payload, counting LAZ downloads."""
+        if url.endswith(".LAZ"):
+            self.laz_calls += 1
+            return self.payload
+        return _ATOM_BYTES
+
+
 def _payload_recorder(payload: bytes) -> Callable[[str], bytes]:
     """Return an http_get serving the ATOM feed and ``payload`` per .LAZ URL."""
 
@@ -669,6 +688,41 @@ def test_acquire_rejects_an_empty_tile(tmp_path: Path) -> None:
             http_get=_payload_recorder(_laz_bytes([])),
             now=_fixed_now,
         )
+
+
+def test_acquire_recovers_after_a_rejected_tile_poisoned_the_cache(
+    tmp_path: Path,
+) -> None:
+    """A gate-rejected tile is evicted, so a retry re-downloads and succeeds.
+
+    The reviewer's repro: a degenerate first download must not stay cached,
+    or every retry replays the poisoned bytes and acquire can never recover.
+    """
+    site = tmp_path / "delft"
+    request = _bbox_request(site)
+    stacked = _laz_bytes(
+        [
+            (194008.0, 443008.0, 1.0, 1.0),
+            (194008.0, 443008.0, 1.0, 2.0),
+        ]
+    )
+    http_get = _SwitchablePayload(stacked)
+
+    with pytest.raises(AcquisitionError, match="identical position"):
+        acquire(request, http_get=http_get, now=_fixed_now, tool_version="v")
+    assert http_get.laz_calls == 1  # failed on the first covering sheet
+
+    http_get.payload = _genuine_laz_bytes()
+    written = acquire(
+        request, http_get=http_get, now=_fixed_now, tool_version="v"
+    )
+
+    assert [path.name for path in written] == ["C_37EN1.LAZ", "C_37EN2.LAZ"]
+    # The poisoned sheet was re-downloaded (plus the never-fetched second
+    # sheet), not replayed from the cache.
+    assert http_get.laz_calls == 3
+    for path in written:
+        assert path.read_bytes() == _genuine_laz_bytes()
 
 
 def test_default_http_get_returns_body_and_raises_for_status(

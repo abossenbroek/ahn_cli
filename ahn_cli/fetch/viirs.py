@@ -8,7 +8,9 @@ CRS, extent, band count and dtypes plus a content checksum, copies the file
 :class:`~ahn_cli.domain.Provenance` sidecar. No reprojection, resampling,
 re-colormapping or normalisation is ever performed. A decimated pixel sample
 is read (never altered) to hard-verify the raster is genuine imagery, not a
-single-value placeholder grid.
+constant non-zero placeholder grid. A uniform *all-zero* sample is accepted:
+VIIRS night-lights radiance is legitimately exactly zero over unlit terrain,
+so an all-dark raster is genuine data, not a placeholder.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ from datetime import datetime, timezone
 from importlib.metadata import version
 from typing import TYPE_CHECKING
 
+import numpy as np
 import rasterio
 from rasterio.errors import RasterioIOError
 
@@ -127,8 +130,11 @@ def inspect_viirs(source: Path) -> ViirsRaster:
 
     Failure modes:
         - :class:`ViirsImportError` if ``source`` cannot be opened as a
-          raster, or if every sampled pixel carries one identical value — a
-          placeholder grid, not genuine VIIRS imagery.
+          raster, or if every sampled pixel carries one identical *non-zero*
+          value — a constant placeholder grid, not genuine VIIRS imagery. A
+          uniform all-zero sample is accepted: zero radiance over unlit
+          terrain is genuine night-lights data (the sensor's zero floor),
+          not a placeholder.
     """
     try:
         with rasterio.open(source) as dataset:
@@ -149,11 +155,13 @@ def inspect_viirs(source: Path) -> ViirsRaster:
     except RasterioIOError as exc:
         msg = f"{source} is not a readable raster: {exc}"
         raise ViirsImportError(msg) from exc
-    if uniform_image(sample):
+    if uniform_image(sample) and not bool(np.all(sample == 0)):
         msg = (
-            f"{source} is a single uniform value across every sampled "
-            "pixel — that is a placeholder grid, not genuine VIIRS "
-            "night-lights imagery; refusing to import it."
+            f"{source} is a single uniform non-zero value across every "
+            "sampled pixel — that is a placeholder grid, not genuine VIIRS "
+            "night-lights imagery; refusing to import it. (A uniform "
+            "all-zero raster would be accepted: zero radiance over unlit "
+            "terrain is genuine.)"
         )
         raise ViirsImportError(msg)
     return ViirsRaster(

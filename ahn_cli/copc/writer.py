@@ -138,7 +138,12 @@ class CopcNodeWriter:
         self._gps_max = -np.inf
 
     def add_node(self, key: NodeKey, records: npt.NDArray[np.void]) -> None:
-        """Write one octree node from scatter records (must be non-empty)."""
+        """Write one octree node from scatter records (must be non-empty).
+
+        Failure modes:
+            - :class:`CopcError` for an empty node, or when the native
+              copclib writer fails to store the node's bytes.
+        """
         if records.shape[0] == 0:
             msg = (
                 f"node {key} has zero points; copc-validator warns on "
@@ -148,14 +153,23 @@ class CopcNodeWriter:
         order = np.argsort(records["gps_time"], kind="stable")
         ordered = records[order]
         packed = self._pack(ordered)
-        self._writer.AddNode(
-            copclib.VoxelKey(key.level, key.x, key.y, key.z),
-            copclib.VectorChar(np.frombuffer(packed, dtype=np.int8)),
-        )
+        try:
+            self._writer.AddNode(
+                copclib.VoxelKey(key.level, key.x, key.y, key.z),
+                copclib.VectorChar(np.frombuffer(packed, dtype=np.int8)),
+            )
+        except RuntimeError as exc:
+            msg = f"copclib failed to write node {key} to {self._path}: {exc}"
+            raise CopcError(msg) from exc
         self._track(ordered)
 
     def finish(self) -> int:
-        """Seal the file (header bounds, histogram, GPS patch); return count."""
+        """Seal the file (header bounds, histogram, GPS patch); return count.
+
+        Failure modes:
+            - :class:`CopcError` when no points were written, or when the
+              native copclib writer fails to close the file.
+        """
         if self._count == 0:
             msg = "refusing to finish a COPC file with no points written"
             raise CopcError(msg)
@@ -173,7 +187,11 @@ class CopcNodeWriter:
             float(self._int_maxs[2]) * scale + offsets[2],
         )
         header.points_by_return = [int(n) for n in self._by_return]
-        self._writer.Close()
+        try:
+            self._writer.Close()
+        except RuntimeError as exc:
+            msg = f"copclib failed to close {self._path}: {exc}"
+            raise CopcError(msg) from exc
         if (self._gps_min, self._gps_max) != (0.0, 0.0):
             patch_gps_range(self._path, self._gps_min, self._gps_max)
         return self._count

@@ -249,7 +249,10 @@ def acquire(
           feed/catalogue is invalid, a tile download fails, or a downloaded
           tile is not a genuine AHN point cloud (unparsable LAZ, no points,
           or every point at one identical position). Every expected failure
-          is funnelled here so the CLI reports it cleanly.
+          is funnelled here so the CLI reports it cleanly. A tile the
+          authenticity gate rejects is evicted from the cache before the
+          error is raised, so a retry re-downloads it instead of replaying
+          the poisoned bytes.
     """
     create_site_layout(request.site_dir)
     aoi = aoi_bbox(request)
@@ -286,7 +289,14 @@ def acquire(
             msg = f"download failed for {tile.download_url}: {exc}"
             raise AcquisitionError(msg) from exc
         finished = now()
-        _verify_ahn_tile(content, tile.tile_id, tile.download_url)
+        try:
+            _verify_ahn_tile(content, tile.tile_id, tile.download_url)
+        except AcquisitionError:
+            # A rejected download must never stay cached, or every retry
+            # would replay the same poisoned bytes; evict the entry so the
+            # next run re-downloads the tile.
+            cache.discard(key)
+            raise
         laz_path = ahn_dir / f"{tile.tile_id}.LAZ"
         laz_path.write_bytes(content)
         checksum = hashlib.sha256(content).hexdigest()

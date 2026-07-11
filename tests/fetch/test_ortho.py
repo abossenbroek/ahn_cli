@@ -174,6 +174,39 @@ def _write_tiles(tiles_dir: Path) -> dict[str, bytes]:
     return responses
 
 
+def _write_uniform_tiles(tiles_dir: Path) -> dict[str, bytes]:
+    """Write single-colour stand-ins for the two tiles (placeholder imagery).
+
+    Same tile ids and URLs as :func:`_write_tiles`, but every pixel carries
+    one identical value, so the clipped mosaic trips the authenticity gate.
+    """
+    tiles_dir.mkdir(parents=True, exist_ok=True)
+    responses: dict[str, bytes] = {}
+    for tile_id, rd_bbox in _two_overlapping_tiles():
+        minx, miny, maxx, maxy = rd_bbox
+        width = round((maxx - minx) / _RES)
+        band: npt.NDArray[np.uint8] = np.full(
+            (_HEIGHT, width), 7, dtype=np.uint8
+        )
+        pixels: npt.NDArray[np.uint8] = np.stack([band, band, band])
+        transform = from_bounds(minx, miny, maxx, maxy, width, _HEIGHT)
+        path = tiles_dir / f"{tile_id}.tif"
+        with rasterio.open(
+            path,
+            "w",
+            driver="GTiff",
+            height=_HEIGHT,
+            width=width,
+            count=3,
+            dtype="uint8",
+            crs="EPSG:28992",
+            transform=transform,
+        ) as dst:
+            dst.write(pixels)
+        responses[f"{_TILE_BASE}{tile_id}.tif"] = path.read_bytes()
+    return responses
+
+
 def _dataset(
     feed_url: str,
     tier: str,
@@ -517,6 +550,26 @@ def test_acquire_is_byte_deterministic(tmp_path: Path) -> None:
         first.provenance_path.read_bytes()
         == second.provenance_path.read_bytes()
     )
+
+
+def test_acquire_recovers_after_uniform_sheets_poisoned_the_cache(
+    tmp_path: Path,
+) -> None:
+    """Gate-rejected sheets are evicted; a retry re-downloads and succeeds."""
+    site = tmp_path / "delft"
+    uniform = _write_uniform_tiles(tmp_path / "uniform")
+
+    with pytest.raises(AcquisitionError, match="uniform colour"):
+        _acquire(site, _covering_http(uniform))
+
+    genuine = _write_tiles(tmp_path / "tiles")
+    http = _covering_http(genuine)
+    result = _acquire(site, http)
+
+    # Both poisoned sheets were re-downloaded, not replayed from the cache.
+    tile_calls = [call for call in http.calls if call.endswith(".tif")]
+    assert len(tile_calls) == 2
+    assert result.mosaic_path.exists()
 
 
 def test_acquire_funnels_a_download_failure(tmp_path: Path) -> None:

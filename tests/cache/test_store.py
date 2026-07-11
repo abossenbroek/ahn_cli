@@ -88,6 +88,70 @@ def test_put_then_get_round_trips(tmp_path: Path) -> None:
     assert cache.get(_key()) == _CONTENT
 
 
+def test_discard_evicts_the_key_so_the_next_fetch_refetches(
+    tmp_path: Path,
+) -> None:
+    """A discarded key misses, and get_or_fetch downloads fresh bytes."""
+    cache = ContentAddressedCache(root=tmp_path)
+    cache.put(_key(), _CONTENT)
+
+    cache.discard(_key())
+
+    assert cache.get(_key()) is None
+    calls = 0
+
+    def fetch() -> bytes:
+        nonlocal calls
+        calls += 1
+        return b"fresh-bytes"
+
+    assert cache.get_or_fetch(_key(), fetch) == b"fresh-bytes"
+    assert calls == 1
+
+
+def test_discard_of_a_missing_key_is_a_no_op(tmp_path: Path) -> None:
+    """Discarding a key that was never stored neither raises nor stores."""
+    cache = ContentAddressedCache(root=tmp_path)
+
+    cache.discard(_key())
+
+    assert cache.get(_key()) is None
+
+
+def test_discard_is_idempotent(tmp_path: Path) -> None:
+    """Discarding the same key twice is as safe as discarding it once."""
+    cache = ContentAddressedCache(root=tmp_path)
+    cache.put(_key(), _CONTENT)
+
+    cache.discard(_key())
+    cache.discard(_key())
+
+    assert cache.get(_key()) is None
+
+
+def test_discard_leaves_a_shared_blob_readable_via_another_key(
+    tmp_path: Path,
+) -> None:
+    """Discarding one key never corrupts another key sharing its content.
+
+    Blobs are addressed by content hash and shared across keys, so discard
+    removes only the key's index entry and leaves the blob in place.
+    """
+    cache = ContentAddressedCache(root=tmp_path)
+    other = CacheKey(
+        product=Product.AHN_POINT_CLOUD,
+        tile_id="37FN1",
+        generation=Generation(4),
+    )
+    cache.put(_key(), _CONTENT)
+    cache.put(other, _CONTENT)
+
+    cache.discard(_key())
+
+    assert cache.get(_key()) is None
+    assert cache.get(other) == _CONTENT
+
+
 def test_tampered_content_fails_checksum_verification(tmp_path: Path) -> None:
     """A corrupted stored blob fails verification instead of returning bytes."""
     cache = ContentAddressedCache(root=tmp_path)

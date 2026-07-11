@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import copclib
 import laspy
 import numpy as np
 import pytest
@@ -168,6 +169,48 @@ def test_missing_cloud_is_a_copc_error(tmp_path: Path) -> None:
     """A missing input surfaces as the context's typed error."""
     with pytest.raises(CopcError, match="not readable"):
         build_copc(tmp_path / "absent.laz", tmp_path / "out.copc.laz")
+
+
+def test_failed_node_write_removes_the_partial_output(
+    write_laz: WriteLaz, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A copclib write failure is a CopcError and leaves no partial file."""
+    cloud = write_laz(_grid_coords(), rgb=[(300, 400, 500)] * 36)
+    out = tmp_path / "partial.copc.laz"
+
+    def exploding_add_node(
+        self: copclib.FileWriter,
+        key: copclib.VoxelKey,
+        uncompressed_data: copclib.VectorChar,
+    ) -> None:
+        del self, key, uncompressed_data
+        msg = "native writer exploded"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(copclib.FileWriter, "AddNode", exploding_add_node)
+
+    with pytest.raises(CopcError, match="failed to write node"):
+        build_copc(cloud, out)
+    assert not out.exists()
+
+
+def test_failed_close_removes_the_partial_output(
+    write_laz: WriteLaz, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A copclib close failure is a CopcError and leaves no partial file."""
+    cloud = write_laz(_grid_coords(), rgb=[(300, 400, 500)] * 36)
+    out = tmp_path / "unsealed.copc.laz"
+
+    def exploding_close(self: copclib.FileWriter) -> None:
+        del self
+        msg = "native close exploded"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(copclib.FileWriter, "Close", exploding_close)
+
+    with pytest.raises(CopcError, match="failed to close"):
+        build_copc(cloud, out)
+    assert not out.exists()
 
 
 def test_build_is_deterministic(write_laz: WriteLaz, tmp_path: Path) -> None:

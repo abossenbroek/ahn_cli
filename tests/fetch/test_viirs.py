@@ -140,6 +140,49 @@ def test_inspect_rejects_a_uniform_placeholder_grid(tmp_path: Path) -> None:
         inspect_viirs(source)
 
 
+def _write_all_zero_geotiff(path: Path) -> None:
+    """Write a raster whose every pixel is exactly zero (unlit terrain)."""
+    transform = from_bounds(*_BOUNDS, _WIDTH, _HEIGHT)
+    pixels: npt.NDArray[np.float32] = np.zeros(
+        (1, _HEIGHT, _WIDTH), dtype=np.float32
+    )
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        height=_HEIGHT,
+        width=_WIDTH,
+        count=1,
+        dtype="float32",
+        crs="EPSG:4326",
+        transform=transform,
+    ) as dst:
+        dst.write(pixels)
+
+
+def test_inspect_accepts_a_uniform_all_zero_raster(tmp_path: Path) -> None:
+    """All-zero radiance is genuine unlit terrain, not a placeholder grid."""
+    source = tmp_path / "dark.tif"
+    _write_all_zero_geotiff(source)
+
+    raster = inspect_viirs(source)
+
+    assert raster.band_count == 1
+    assert raster.checksum == hashlib.sha256(source.read_bytes()).hexdigest()
+
+
+def test_import_accepts_a_uniform_all_zero_raster(tmp_path: Path) -> None:
+    """An all-dark VIIRS raster imports successfully and byte-exact."""
+    source = tmp_path / "dark.tif"
+    _write_all_zero_geotiff(source)
+    site = tmp_path / "delft"
+
+    result = import_viirs(source, site, clock=_fixed_clock((_START, _FINISH)))
+
+    assert result.dest_path == site / "viirs" / "dark.tif"
+    assert result.dest_path.read_bytes() == source.read_bytes()
+
+
 def test_inspect_rejects_a_non_raster_file(tmp_path: Path) -> None:
     """A file that is not a raster is rejected with ViirsImportError."""
     source = tmp_path / "broken.tif"

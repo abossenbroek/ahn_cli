@@ -5,6 +5,7 @@ from __future__ import annotations
 import struct
 from typing import TYPE_CHECKING
 
+import copclib
 import laspy
 import numpy as np
 import pytest
@@ -214,6 +215,57 @@ def test_finishing_with_no_points_is_an_error(tmp_path: Path) -> None:
         wkt=rd_new_wkt(),
     )
     with pytest.raises(CopcError, match="no points"):
+        writer.finish()
+
+
+def _exploding_add_node(
+    self: copclib.FileWriter,
+    key: copclib.VoxelKey,
+    uncompressed_data: copclib.VectorChar,
+) -> None:
+    """Stand in for copclib's native AddNode, always failing."""
+    del self, key, uncompressed_data
+    msg = "native writer exploded"
+    raise RuntimeError(msg)
+
+
+def _exploding_close(self: copclib.FileWriter) -> None:
+    """Stand in for copclib's native Close, always failing."""
+    del self
+    msg = "native close exploded"
+    raise RuntimeError(msg)
+
+
+def test_add_node_wraps_a_copclib_write_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A native copclib AddNode failure surfaces as the typed CopcError."""
+    writer = CopcNodeWriter(
+        tmp_path / "boom.copc.laz",
+        _plan(),
+        point_format_id=RGB_POINT_FORMAT,
+        wkt=rd_new_wkt(),
+    )
+    monkeypatch.setattr(copclib.FileWriter, "AddNode", _exploding_add_node)
+
+    with pytest.raises(CopcError, match="failed to write node"):
+        writer.add_node(NodeKey(0, 0, 0, 0), _records([(1, 1, 1)]))
+
+
+def test_finish_wraps_a_copclib_close_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A native copclib Close failure surfaces as the typed CopcError."""
+    writer = CopcNodeWriter(
+        tmp_path / "close.copc.laz",
+        _plan(),
+        point_format_id=RGB_POINT_FORMAT,
+        wkt=rd_new_wkt(),
+    )
+    writer.add_node(NodeKey(0, 0, 0, 0), _records([(1, 1, 1)]))
+    monkeypatch.setattr(copclib.FileWriter, "Close", _exploding_close)
+
+    with pytest.raises(CopcError, match="failed to close"):
         writer.finish()
 
 

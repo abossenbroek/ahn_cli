@@ -396,6 +396,9 @@ def fetch_dsm(
         - :class:`DsmError` if the DSM feed is invalid, no or more than one sheet
           covers the AOI, the COG is not EPSG:28992, or the windowed read fails.
           Every expected failure funnels here so the CLI reports it cleanly.
+          A clip the relief gate rejects is evicted from the cache before the
+          error is raised, so a retry re-reads the window instead of
+          replaying the poisoned bytes.
     """
     create_site_layout(request.site_dir)
     aoi = aoi_bbox(request)
@@ -423,7 +426,14 @@ def fetch_dsm(
     content = cache.get_or_fetch(key, lambda: reader(tile.download_url, aoi))
     finished = now()
 
-    stats = inspect_dsm(content)
+    try:
+        stats = inspect_dsm(content)
+    except DsmError:
+        # A rejected clip must never stay cached, or every retry would
+        # replay the same poisoned bytes; evict the entry so the next run
+        # re-reads the window.
+        cache.discard(key)
+        raise
     dsm_path = request.site_dir / _DSM_FILENAME
     dsm_path.write_bytes(content)
     checksum = hashlib.sha256(content).hexdigest()

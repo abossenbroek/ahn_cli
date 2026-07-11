@@ -95,7 +95,11 @@ def build_copc(
         - Returns the build summary (written count, node count, plan).
 
     Failure modes:
-        - :class:`CopcError` for unreadable/empty input or unwritable output.
+        - :class:`CopcError` for unreadable/empty input, unwritable output,
+          or a native copclib write failure; a write phase that fails after
+          the output was opened removes the partial ``.copc.laz`` before
+          the error is raised, so a half-written file never looks like a
+          deliverable.
 
     Invariants:
         - Deterministic: identical input yields an identical octree and
@@ -168,27 +172,36 @@ def _build(
     node_count = 0
     done = scattered.count
     total = 2 * scattered.count
-    for bucket in sorted(scattered.bucket_paths):
-        path = scattered.bucket_paths[bucket]
-        records = np.fromfile(path, dtype=RECORD_DTYPE)
-        path.unlink()  # scratch disk stays bounded to unprocessed buckets
-        survivors = _dedupe_bucket(records, plan)
-        if widen:
-            for channel in ("red", "green", "blue"):
-                survivors[channel] = survivors[channel] * _EIGHT_TO_SIXTEEN
-        for key, indices in sampler.sample(_decode(survivors, plan)).items():
-            picked = survivors[indices]
-            if key.level < plan.bucket_level:
-                held_back.setdefault(key, []).append(picked)
-            else:
-                writer.add_node(key, picked)
-                node_count += 1
-        done += records.shape[0]
-        report(done, total)
-    for key in sorted(held_back):
-        writer.add_node(key, np.concatenate(held_back[key]))
-        node_count += 1
-    written = writer.finish()
+    try:
+        for bucket in sorted(scattered.bucket_paths):
+            path = scattered.bucket_paths[bucket]
+            records = np.fromfile(path, dtype=RECORD_DTYPE)
+            path.unlink()  # scratch disk stays bounded to unprocessed buckets
+            survivors = _dedupe_bucket(records, plan)
+            if widen:
+                for channel in ("red", "green", "blue"):
+                    survivors[channel] = (
+                        survivors[channel] * _EIGHT_TO_SIXTEEN
+                    )
+            sampled = sampler.sample(_decode(survivors, plan))
+            for key, indices in sampled.items():
+                picked = survivors[indices]
+                if key.level < plan.bucket_level:
+                    held_back.setdefault(key, []).append(picked)
+                else:
+                    writer.add_node(key, picked)
+                    node_count += 1
+            done += records.shape[0]
+            report(done, total)
+        for key in sorted(held_back):
+            writer.add_node(key, np.concatenate(held_back[key]))
+            node_count += 1
+        written = writer.finish()
+    except CopcError:
+        # Never leave a half-written .copc.laz where it looks like a
+        # deliverable: best-effort remove the partial output, then re-raise.
+        out.unlink(missing_ok=True)
+        raise
     return CopcBuildResult(
         path=out,
         input_points=scattered.count,

@@ -508,6 +508,33 @@ def _parse_formats(specs: tuple[str, ...]) -> tuple[OutputFormat, ...]:
     return tuple(OutputFormat(spec) for spec in specs)
 
 
+def _parse_classes_spec(
+    spec: str | None,
+) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """Parse a ``--classes`` ``keep:LIST`` / ``drop:LIST`` spec.
+
+    Returns ``(include, exclude)`` class tuples; ``None`` keeps every class.
+
+    Failure modes:
+        - :class:`click.BadParameter` on an unknown mode, an empty list, or a
+          non-integer class code.
+    """
+    if not spec:
+        return ((), ())
+    mode, _, rest = spec.partition(":")
+    if mode not in {"keep", "drop"} or not rest:
+        msg = "--classes must be 'keep:LIST' or 'drop:LIST' (comma-int classes)."
+        raise click.BadParameter(msg)
+    try:
+        codes = tuple(int(part) for part in rest.split(","))
+    except ValueError as exc:
+        msg = (
+            f"--classes list must be comma-separated integers; got {rest!r}."
+        )
+        raise click.BadParameter(msg) from exc
+    return (codes, ()) if mode == "keep" else ((), codes)
+
+
 @cli.command(name="reconcile")
 @click.option(
     "--ortho",
@@ -556,6 +583,15 @@ def _parse_formats(specs: tuple[str, ...]) -> tuple[OutputFormat, ...]:
     ),
 )
 @click.option(
+    "--classes",
+    "classes",
+    default=None,
+    help=(
+        "Class filter 'keep:2,6' or 'drop:7,18' (LAS codes); default keeps all. "
+        "Coincident-XY returns are always de-duplicated (top Z kept)."
+    ),
+)
+@click.option(
     "--format",
     "formats",
     type=click.Choice([fmt.value for fmt in OutputFormat]),
@@ -569,6 +605,7 @@ def reconcile_command(
     method: str,
     idw: str,
     kriging: str,
+    classes: str | None,
     formats: tuple[str, ...],
 ) -> None:
     """Interpolate a point cloud onto an ortho grid, emit a coloured cloud.
@@ -576,21 +613,26 @@ def reconcile_command(
     Estimates an elevation at every ortho pixel centre from the AHN cloud
     (linear, IDW, or ordinary kriging), colours each pixel from the ortho, and
     writes the reconciled cloud as ``reconciled.<ext>`` for every requested
-    format (laz/ply/pt/exr). The output is byte-deterministic.
+    format (laz/ply/pt/exr). The cloud is de-duplicated (and optionally class-
+    filtered) before interpolation; the output is byte-deterministic.
     """
     interp_method = _parse_reconcile_method(method, idw, kriging)
+    include, exclude = _parse_classes_spec(classes)
     request = ReconcileRequest(
         ortho_path=ortho,
         cloud_path=cloud,
         output_dir=out,
         method=interp_method,
         formats=_parse_formats(formats),
+        include_classes=include,
+        exclude_classes=exclude,
     )
     try:
         stats = reconcile(request)
     except ReconcileError as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(
-        f"Reconciled {stats.width}x{stats.height} -> "
-        f"{stats.valid_points} points; wrote {len(stats.outputs)} file(s)."
+        f"Reconciled {stats.width}x{stats.height}: "
+        f"{stats.source_points} pts -> {stats.cleaned_points} cleaned -> "
+        f"{stats.valid_points} written; {len(stats.outputs)} file(s)."
     )

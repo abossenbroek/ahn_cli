@@ -19,6 +19,7 @@ the typed :class:`ReconcileError`.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
 import laspy
@@ -127,13 +128,29 @@ def open_ortho(path: Path) -> OrthoReader:
     return OrthoReader(dataset, grid)
 
 
-def load_cloud(path: Path) -> npt.NDArray[np.float64]:
-    """Load an AHN point-cloud LAZ into its ``(n, 3)`` world coordinates.
+@dataclass(frozen=True, eq=False)
+class SourceCloud:
+    """A loaded AHN point cloud: world coordinates and per-point class.
+
+    Contract (fields):
+        - ``coords`` is the ``(n, 3)`` ``float64`` world ``(x, y, z)``.
+        - ``classification`` is the matching ``(n,)`` ``uint8`` LAS class, so the
+          cleanup step can filter by class before interpolation.
+
+    ``eq=False``: it wraps large arrays, so instances compare by identity.
+    """
+
+    coords: npt.NDArray[np.float64]
+    classification: npt.NDArray[np.uint8]
+
+
+def load_cloud(path: Path) -> SourceCloud:
+    """Load an AHN point-cloud LAZ into its coordinates and per-point class.
 
     Contract:
         - ``path`` is a readable LAZ/LAS file.
-        - Returns the ``(n, 3)`` ``float64`` array of scaled ``(x, y, z)`` world
-          coordinates.
+        - Returns a :class:`SourceCloud` with the ``(n, 3)`` ``float64`` scaled
+          world ``(x, y, z)`` and the matching ``(n,)`` ``uint8`` classification.
 
     Failure modes:
         - :class:`ReconcileError` if the file is missing or unreadable.
@@ -141,17 +158,18 @@ def load_cloud(path: Path) -> npt.NDArray[np.float64]:
     try:
         with laspy.open(str(path)) as reader:
             las = reader.read()
-            xyz = np.column_stack(
+            coords = np.column_stack(
                 [
                     np.asarray(las.x, dtype=np.float64),
                     np.asarray(las.y, dtype=np.float64),
                     np.asarray(las.z, dtype=np.float64),
                 ]
             )
+            classification = np.asarray(las.classification, dtype=np.uint8)
     except (OSError, laspy.LaspyException) as exc:
         msg = f"point cloud at {path} is not readable: {exc}"
         raise ReconcileError(msg) from exc
-    return xyz
+    return SourceCloud(coords=coords, classification=classification)
 
 
 def block_target_coordinates(

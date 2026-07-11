@@ -153,6 +153,64 @@ def test_reconcile_bad_kriging_model_is_rejected(
     assert result.exit_code == 2
 
 
+def test_reconcile_classes_keep(
+    ortho_path: Path, cloud_path: Path, tmp_path: Path
+) -> None:
+    """'--classes keep:0' keeps the fixture's class-0 points and runs."""
+    result = _invoke(
+        ortho_path,
+        cloud_path,
+        tmp_path / "out",
+        ["--classes", "keep:0", "--format", "pt"],
+    )
+    assert result.exit_code == 0, result.output
+    assert "cleaned" in result.output
+
+
+def test_reconcile_classes_drop(
+    ortho_path: Path, cloud_path: Path, tmp_path: Path
+) -> None:
+    """'--classes drop:7' drops noise (none here) and runs."""
+    result = _invoke(
+        ortho_path,
+        cloud_path,
+        tmp_path / "out",
+        ["--classes", "drop:7", "--format", "pt"],
+    )
+    assert result.exit_code == 0, result.output
+
+
+def test_reconcile_classes_bad_mode_rejected(
+    ortho_path: Path, cloud_path: Path, tmp_path: Path
+) -> None:
+    """An unknown --classes mode is rejected (exit code 2)."""
+    result = _invoke(
+        ortho_path, cloud_path, tmp_path / "out", ["--classes", "foo:2"]
+    )
+    assert result.exit_code == 2
+    assert "--classes" in result.output
+
+
+def test_reconcile_classes_empty_list_rejected(
+    ortho_path: Path, cloud_path: Path, tmp_path: Path
+) -> None:
+    """A --classes spec with no class list is rejected (exit code 2)."""
+    result = _invoke(
+        ortho_path, cloud_path, tmp_path / "out", ["--classes", "keep:"]
+    )
+    assert result.exit_code == 2
+
+
+def test_reconcile_classes_non_integer_rejected(
+    ortho_path: Path, cloud_path: Path, tmp_path: Path
+) -> None:
+    """A --classes list with a non-integer code is rejected (exit code 2)."""
+    result = _invoke(
+        ortho_path, cloud_path, tmp_path / "out", ["--classes", "keep:x"]
+    )
+    assert result.exit_code == 2
+
+
 def test_reconcile_ortho_without_rgb_is_clean_error(
     cloud_path: Path, tmp_path: Path
 ) -> None:

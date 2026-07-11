@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import numpy.typing as npt
 
+from ahn_cli.reconcile.clean import select_and_dedupe
 from ahn_cli.reconcile.interpolate import build_interpolator
 from ahn_cli.reconcile.raster import (
     ReconcileError,
@@ -66,6 +67,9 @@ class ReconcileRequest:
         - ``output_dir`` receives one ``reconciled.<ext>`` file per format.
         - ``method`` is the validated interpolation request.
         - ``formats`` is the non-empty set of output formats to write.
+        - ``include_classes`` / ``exclude_classes`` are the LAS classes to keep /
+          drop before interpolation; empty tuples (the default) keep every class.
+          Coincident-XY returns are always de-duplicated regardless.
 
     Invariants:
         - Frozen value object, equal by field value.
@@ -76,6 +80,8 @@ class ReconcileRequest:
     output_dir: Path
     method: InterpMethod
     formats: tuple[OutputFormat, ...]
+    include_classes: tuple[int, ...] = ()
+    exclude_classes: tuple[int, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -84,6 +90,9 @@ class ReconcileStats:
 
     Contract (fields):
         - ``width`` / ``height``: the output grid's dimensions (the ortho's).
+        - ``source_points``: the raw point count read from the cloud.
+        - ``cleaned_points``: the point count after the class filter and XY
+          de-duplication (what the interpolator actually sees).
         - ``valid_points``: the number of pixels with an interpolated elevation
           (the point count in the laz/ply/pt outputs).
         - ``outputs``: the written file paths, in requested-format order.
@@ -94,6 +103,8 @@ class ReconcileStats:
 
     width: int
     height: int
+    source_points: int
+    cleaned_points: int
     valid_points: int
     outputs: tuple[Path, ...]
 
@@ -117,7 +128,13 @@ def reconcile(request: ReconcileRequest) -> ReconcileStats:
           orthophoto lacks three colour bands.
     """
     cloud = load_cloud(request.cloud_path)
-    interpolator = build_interpolator(request.method, cloud)
+    coords = select_and_dedupe(
+        cloud.coords,
+        cloud.classification,
+        request.include_classes,
+        request.exclude_classes,
+    )
+    interpolator = build_interpolator(request.method, coords)
 
     with open_ortho(request.ortho_path) as ortho:
         grid = ortho.grid
@@ -150,6 +167,8 @@ def reconcile(request: ReconcileRequest) -> ReconcileStats:
     return ReconcileStats(
         width=width,
         height=height,
+        source_points=cloud.coords.shape[0],
+        cleaned_points=coords.shape[0],
         valid_points=valid_points,
         outputs=outputs,
     )

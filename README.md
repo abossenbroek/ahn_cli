@@ -1,27 +1,41 @@
 # AHN CLI
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Version: 0.2.1](https://img.shields.io/badge/Version-0.2.1-green.svg)](https://github.com/HideBa/ahn-cli/releases/tag/v0.2.1)
-[![CICD Status: Passing](https://img.shields.io/badge/CICD-Passing-brightgreen.svg)](https://github.com/HideBa/ahn-cli/actions)
+[![Version: 0.3.5](https://img.shields.io/badge/Version-0.3.5-green.svg)](https://github.com/abossenbroek/ahn_cli/releases)
+[![CI](https://github.com/abossenbroek/ahn_cli/actions/workflows/ci.yml/badge.svg)](https://github.com/abossenbroek/ahn_cli/actions/workflows/ci.yml)
 
 ## Description
 
-AHN CLI is a command-line interface tool designed for the effortless downloading of AHN (Actueel Hoogtebestand Nederland) point cloud data for specific cities and classification classes.
+AHN CLI acquires and prepares Dutch elevation data — AHN (Actueel Hoogtebestand Nederland) point clouds, plus matched DSM and orthophoto layers — for a site defined by a city name, a bounding box, or a GeoJSON polygon. It produces deterministic, ready-to-use deliverables: filtered/thinned point clouds, position maps, and — via `reconcile` — a single point cloud coloured from the orthophoto.
+
+The CLI is organized as a small pipeline of subcommands rather than one big command:
+
+```
+fetch ┬→ prep → reconcile
+      └→ export-positions
+```
+
+`fetch` downloads raw tiles into a **site directory**; every later step reads from and writes back into that same directory, plus a `provenance.json` sidecar recording what was done.
 
 ## Features
 
-- Download point cloud data for specific Dutch cities
-- Filter by classification classes (ground, buildings, water, etc.)
-- Clip to city boundaries, bounding boxes, or custom GeoJSON polygons
-- Decimate point clouds for faster processing
-- Preview point clouds in 3D viewer
-- **NEW**: GeoJSON polygon support for custom area selection
-- **NEW**: LAZ file verification with configurable tolerance
-- **NEW**: Optional PDAL integration for advanced validation
+- Acquire AHN point cloud tiles for a city, bounding box, or GeoJSON area, from PDOK (primary) or GeoTiles.nl (fallback), auto-selecting the newest AHN generation or pinning one explicitly
+- Optionally fetch the matching DSM raster and Beeldmateriaal orthophoto for the same area in the same `fetch` call
+- Import an externally-produced VIIRS GeoTIFF into a site
+- Filter AHN tiles by classification class, with automatic tile de-duplication
+- Graded point-cloud thinning — voxel-grid or Poisson-disk — with optional Apple Silicon (MLX) GPU acceleration
+- Export `pointcloud.ply` for TouchDesigner and `positions.exr` (a DSM-derived position map) for the same
+- Interpolate the AHN cloud onto the orthophoto's pixel grid (linear, IDW, or ordinary kriging) and write a coloured cloud as `laz`/`ply`/`pt`/`exr`
+- A deterministic `provenance.json` sidecar recorded at every step
+
+## Prerequisites
+
+Python 3.10–3.12. The core dependencies (`rasterio`, `geopandas`, `laspy`, `shapely`, `scipy`) ship as prebuilt wheels on common platforms (Linux x86_64, macOS, Windows), so a plain `pip install` does not require GDAL/GEOS/PROJ to already be on your system. Two optional extras pull in more:
+
+- `--extra pdal` enables PDAL-based LAZ verification and requires a working PDAL installation.
+- `--extra mlx` enables GPU-accelerated point-cloud thinning on Apple Silicon (arm64 macOS only); `prep`'s thinning falls back to a numpy CPU backend without it.
 
 ## Installation
-
-Install AHN CLI using pip:
 
 ```bash
 pip install ahn_cli
@@ -35,124 +49,201 @@ uv tool install ahn_cli
 
 ## Usage
 
-To utilize the AHN CLI, execute the following command with the appropriate options:
+`ahn_cli` is a command **group** — every invocation names one of the subcommands below. Running `ahn_cli` with no subcommand prints usage and exits with status 2; use `ahn_cli --help` or `ahn_cli <command> --help` for the full option reference at any time.
 
-```shell
+### `fetch` — acquire raw source tiles for a site
+
+```
 Options:
- -c, --city <city_name>        Download point cloud data for the specified city.
- -o, --output <file>           Designate the output file for the downloaded data.
- -i, --include-class <class>   Include specific point cloud classes in the download,
-                               specified in a comma-separated list. Available classes:
-                               0:Created, never classified; 1:Unclassified; 2:Ground;
-                               6:Building; 9:Water; 14:High tension; 26:Civil structure.
- -e, --exclude-class <class>   Exclude specific point cloud classes from the download,
-                               specified in a comma-separated list. Available classes as above.
- -d, --decimate <step>         Decimate the point cloud data by the specified step.
- -ncc, --no-clip-city          Avoid clipping the point cloud data to the city boundary.
- -cf, --clip-file <file>       Provide a file path for a clipping boundary file to clip
-                               the point cloud data to a specified area.
- -e, --epsg <epsg>             Set the EPSG code for user's clip file.
- -b, --bbox <bbox>             Specify a bounding box to clip the point cloud data. It should be comma-separated list with minx,miny,maxx,maxy
-                               centered on the city polygon.
- -g, --geojson <file>          Specify a GeoJSON file containing polygon(s) to clip the point cloud data.
- -p, --preview                 Preview the point cloud data in a 3D viewer.
- --no-verify                   Skip LAZ file verification after processing.
- --verify-pdal                 Use PDAL for additional LAZ file verification (requires PDAL).
- --bbox-tolerance <meters>     Maximum allowed difference in meters between LAZ bounds and input GeoJSON (default: 10.0).
- --strict-bbox-check           Fail if bounding box verification exceeds tolerance.
- -h, --help [category]         Show help information. Optionally specify a category for
-                               detailed help on a specific command.
- -v, --version                 Display the version number of the AHN CLI and exit.
+  -o, --out DIRECTORY   Site directory to populate, e.g. data/delft. [required]
+  -c, --city TEXT        Acquire the area of a named municipality.
+  -b, --bbox TEXT        Acquire an EPSG:28992 bounding box 'minx,miny,maxx,maxy'.
+  -g, --geojson TEXT      Acquire the area of the polygon(s) in a GeoJSON file.
+  --ahn [auto|ahn5|ahn4]         AHN generation to fetch; 'auto' picks the newest available. [default: auto]
+  --source [pdok|geotiles]      Distribution source; 'pdok' is primary, 'geotiles' the fallback. [default: pdok]
+  --dsm                          Also fetch the DSM raster, windowed-clipped to <out>/dsm.tif.
+  --ortho                        Also fetch the Beeldmateriaal orthophoto (CC-BY) for the AOI.
 ```
 
-### Usage Examples
+Exactly one of `-c/--city`, `-b/--bbox`, or `-g/--geojson` is required.
 
-**Download Point Cloud Data for Delft with All Classification Classes:**
+```bash
+# Download AHN point cloud tiles for Delft (auto-selects the newest generation)
+ahn_cli fetch --out data/delft -c delft
 
-```
-ahn_cli -c delft -o ./delft.laz
-```
+# Also fetch the DSM and orthophoto for the same area
+ahn_cli fetch --out data/delft -c delft --dsm --ortho
 
-**To Include or Exclude Specific Classes:**
+# Pin AHN4 explicitly and use the GeoTiles.nl fallback source
+ahn_cli fetch --out data/utrecht -b 194198.0,443461.0,194594.0,443694.0 --ahn ahn4 --source geotiles
 
-```
-ahn_cli -c delft -o ./delft.laz -i 1,2
-```
-
-**For Non-Clipped, Rectangular-Shaped Data:**
-
-```
-ahn_cli -c delft -o ./delft.laz -i 1,2 -ncc
+# Acquire a custom area from a GeoJSON file
+ahn_cli fetch --out data/area -g my_area.geojson
 ```
 
-**To Decimate City-Scale Point Cloud Data:**
+### `prep` — transform and export a fetched site
 
 ```
-ahn_cli -c delft -o ./delft.laz -i 1,2 -d 2
+Options:
+  -d, --data DIRECTORY    Site directory produced by a prior fetch. [required]
+  -i, --include-class TEXT   Keep only these classes (comma-separated integers).
+  -e, --exclude-class TEXT   Drop these classes (comma-separated integers).
+  -p, --points                Export the point cloud (pointcloud.ply).
+  --thin-method [voxel|poisson]  Graded thinning method.
+  --thin-grade INTEGER          Voxel thinning grade 0-9 (0 keeps all; higher is coarser).
+  --thin-radius FLOAT            Poisson-disk minimum spacing in metres.
+  --thin-seed INTEGER             Poisson-disk RNG seed (deterministic sampling). [default: 0]
 ```
 
-**Graded thinning (voxel-grid or Poisson-disk) with the `prep` verb:**
+`-i/--include-class` and `-e/--exclude-class` are mutually exclusive per class code. `--thin-grade` only applies with `--thin-method voxel`; `--thin-radius`/`--thin-seed` only apply with `--thin-method poisson`. `prep` always deduplicates overlapping tiles before filtering and thinning, and writes `<data>/pointcloud.laz` plus an updated `provenance.json`.
 
-In addition to the legacy nth-point `-d/--decimate` step (unchanged), the `prep`
-verb offers two spatially-aware thinning methods. Both run on a pure-numpy
-reference backend by default and transparently use the Apple-silicon MLX GPU
-accelerator when it is installed (`uv sync --extra mlx`, arm64 macOS only); the
-CPU and GPU backends produce identical voxel output.
+```bash
+# Keep only ground (2) and building (6) classes, and also export pointcloud.ply
+ahn_cli prep --data data/delft -i 2,6 --points
 
-```
-# Voxel-grid thinning, graded 0-9 (0 keeps all points; higher is coarser):
+# Graded voxel-grid thinning (0-9; higher is coarser)
 ahn_cli prep --data data/delft --thin-method voxel --thin-grade 3
 
-# Poisson-disk thinning with a 1.5 m minimum spacing (deterministic; the
-# --thin-seed default is 0):
+# Poisson-disk thinning with a 1.5 m minimum spacing (deterministic; seed defaults to 0)
 ahn_cli prep --data data/delft --thin-method poisson --thin-radius 1.5 --thin-seed 0
 ```
 
-`prep` reads the cached tiles a prior `fetch` wrote under `<data>/ahn/`,
-deduplicates them (crop-before-merge plus an exact XYZ+GPS-time sweep), applies
-the `-i/--include-class` / `-e/--exclude-class` filter and any graded thinning,
-and writes `<data>/pointcloud.laz` alongside a deterministic
-`<data>/provenance.json`. Pass `-p/--points` to additionally export
-`<data>/pointcloud.ply` for TouchDesigner. The DSM position map is produced
-separately by `export-positions` (it consumes the fetched `dsm.tif`):
+### `export-positions` — export the DSM to a position map
 
 ```
-ahn_cli prep --data data/delft -i 2,6 --points
-ahn_cli export-positions --data data/delft   # writes data/delft/positions.exr
+Options:
+  --data DIRECTORY   Site directory produced by a prior fetch (must contain dsm.tif). [required]
 ```
 
-**Specify a Bounding box for clipping:**
+Reads `<data>/dsm.tif` (from `fetch --dsm`) and writes a byte-deterministic 3-channel float32 OpenEXR position map (R=easting, G=northing, B=elevation) to `<data>/positions.exr`, for use in TouchDesigner.
 
-If you specify a `b`, it will clip the point cloud data with specified bounding box.
-```
-ahn_cli -o ./delft.laz -i 1,2 -b 194198.0,443461.0,194594.0,443694.0
-```
-
-**Download Point Cloud Data for Custom GeoJSON Polygon:**
-
-Use a GeoJSON file containing one or more polygons to define a custom area of interest:
-```
-ahn_cli -g my_area.geojson -o ./custom_area.laz
+```bash
+ahn_cli export-positions --data data/delft
 ```
 
-**Download with GeoJSON and Enable Verification:**
+### `import-viirs` — import an externally-produced VIIRS GeoTIFF
 
-Enable LAZ file verification with configurable tolerance for bounding box checks:
 ```
-ahn_cli -g my_area.geojson -o ./verified_area.laz --bbox-tolerance 15.0
-```
+Options:
+  --out DIRECTORY   Site directory to populate, e.g. data/delft. [required]
 
-**Download with Strict Verification:**
-
-Use strict verification that fails if the output bounding box doesn't match the input GeoJSON within tolerance:
-```
-ahn_cli -g my_area.geojson -o ./strict_area.laz --strict-bbox-check
+Arguments:
+  GEOTIFF   Path to the VIIRS GeoTIFF to import. [required, must exist]
 ```
 
+Copies the raster byte-for-byte into `<out>/viirs/` and records its CRS/extent/bands and a content checksum in a provenance sidecar. No reprojection or resampling is performed.
+
+```bash
+ahn_cli import-viirs --out data/delft path/to/viirs.tif
+```
+
+### `reconcile` — interpolate the AHN cloud onto the ortho grid
+
+```
+Options:
+  --ortho FILE     Orthophoto GeoTIFF defining the target (e.g. 8 cm) grid. [required]
+  --cloud FILE      AHN point-cloud LAZ whose elevation is interpolated onto the grid. [required]
+  --out DIRECTORY    Directory to write reconciled.<ext> output(s) into. [required]
+  --method [linear|idw|kriging]   Interpolation method for the elevation. [default: idw]
+  --idw TEXT          IDW parameters as 'power,k' (used when --method idw). [default: 2.0,12]
+  --kriging TEXT       Kriging parameters as 'model,nugget,sill,range,k' (used when --method kriging).
+                       [default: spherical,0.0,1.0,50.0,16]
+  --classes TEXT        Class filter 'keep:2,6' or 'drop:7,18' (LAS codes); default keeps all.
+  --format [laz|ply|pt|exr]   Output format(s); repeatable. Default: all four.
+```
+
+Estimates an elevation at every ortho pixel centre from the AHN cloud, colours each pixel from the ortho, and writes a coloured cloud as `reconciled.<ext>` for each requested format. Coincident-XY returns are always de-duplicated (highest Z kept) before interpolation; output is byte-deterministic.
+
+```bash
+# IDW interpolation (the default), all four output formats
+ahn_cli reconcile --ortho data/delft/ortho/ortho.tif --cloud data/delft/pointcloud.laz --out data/delft/reconciled
+
+# Ordinary kriging, keep ground+building classes only, write LAZ only
+ahn_cli reconcile --ortho data/delft/ortho/ortho.tif --cloud data/delft/pointcloud.laz --out data/delft/reconciled \
+  --method kriging --kriging "spherical,0.0,1.0,50.0,16" --classes keep:2,6 --format laz
+```
+
+## Exporting `reconcile` output to COPC
+
+`reconcile --format laz` writes an ordinary LAZ file, not a [COPC](https://copc.io/) (Cloud Optimized Point Cloud) — COPC adds a spatial octree index that lets viewers (Potree, CesiumJS, QGIS, etc.) stream and LOD large clouds instead of loading the whole file. Building a valid COPC from `reconcile`'s output takes an extra [PDAL](https://pdal.io/) pass, and a naive pipeline will silently produce a COPC file that *looks* fine but fails strict validation (checked here with [`copc-validator`](https://github.com/hobuinc/copc-validator), the reference validator). These are the gotchas we hit converting a real `reconcile` output, and the pipeline that verifiably passes all 24 validator checks with no warnings.
+
+**Known gaps in `reconcile`'s own writers** (as of this writing) that you have to compensate for in the PDAL pipeline:
+- **No CRS is embedded** in any `reconcile` output (`laz`/`ply`/`pt`/`exr`) — you must pass the CRS explicitly. `reconcile` operates in EPSG:28992 (see [Coordinate systems](#coordinate-systems) below), so use `a_srs: "EPSG:28992"`, not the default WGS84 you'd get from an unset/guessed SRS.
+- **`ReturnNumber`/`NumberOfReturns` are unset** (all zero, in both `laz` and `ply`) — a strict COPC validator flags this as a `pointCountByReturn` mismatch. Since `reconcile` output is a single-return synthetic cloud (not real lidar), set both to `1` for every point.
+- **`ply`'s RGB is 8-bit** (`uchar red/green/blue`, correct for plain PLY) but LAS/COPC's RGB fields are 16-bit — PDAL cannot widen a dimension's type once `readers.ply` has registered it from the file header, so 8-bit-range color survives straight through to the COPC and a strict validator warns about it. Fix this *before* PDAL sees the file (script below).
+
+**PDAL also needs help of its own**, independent of `reconcile`:
+- `writers.copc`'s coordinate scale defaults to 1 cm (`0.01`) regardless of the source file's precision. At 1 cm, points near the tightly auto-fit octree cube edge can round *outside* the cube and fail the validator's `xyz` (bounds) check. Set `scale_x`/`scale_y`/`scale_z` to `0.001` (1 mm) explicitly.
+
+We verified the pipeline below against a real `reconcile` output (1,048,576 points) with `copc-validator` — 24/24 checks pass, no warnings, reproducibly across repeated runs. It starts from `reconciled.ply` because that route is the one we could get to pass cleanly and repeatably; building directly from `reconciled.laz` still tripped the `xyz` check in our testing even with the scale/CRS/return-number fixes applied, so we don't recommend it until that's root-caused.
+
+First, widen `ply`'s 8-bit RGB to 16-bit (requires `pip install plyfile`, a one-off scripting dependency — not an `ahn_cli` requirement):
+
+```python
+import numpy as np
+from plyfile import PlyData, PlyElement
+
+ply = PlyData.read("reconciled.ply")
+v = ply["vertex"].data
+out = np.empty(len(v), dtype=[("x", "f8"), ("y", "f8"), ("z", "f8"),
+                               ("red", "u2"), ("green", "u2"), ("blue", "u2")])
+out["x"], out["y"], out["z"] = v["x"], v["y"], v["z"]
+out["red"] = v["red"].astype(np.uint16) * 256
+out["green"] = v["green"].astype(np.uint16) * 256
+out["blue"] = v["blue"].astype(np.uint16) * 256
+PlyData([PlyElement.describe(out, "vertex")], text=False, byte_order="<").write("reconciled_rgb16.ply")
+```
+
+Then run this PDAL pipeline (`reconciled_to_copc.json`):
+
+```json
+{
+  "pipeline": [
+    { "type": "readers.ply", "filename": "reconciled_rgb16.ply" },
+    { "type": "filters.assign", "value": ["ReturnNumber = 1", "NumberOfReturns = 1"] },
+    {
+      "type": "writers.copc",
+      "filename": "reconciled.copc.laz",
+      "a_srs": "EPSG:28992",
+      "scale_x": 0.001,
+      "scale_y": 0.001,
+      "scale_z": 0.001
+    }
+  ]
+}
+```
+
+```bash
+pdal pipeline reconciled_to_copc.json
+```
+
+Verify the result with `copc-validator` (no install needed, `npx` fetches it on demand):
+
+```bash
+npx copc-validator -d reconciled.copc.laz
+```
+
+## AHN classification classes
+
+Class codes used by `-i/--include-class`, `-e/--exclude-class`, and `--classes` are the standard AHN/LAS codes:
+
+| Code | Meaning |
+|---|---|
+| 0 | Created, never classified |
+| 1 | Unclassified |
+| 2 | Ground |
+| 6 | Building |
+| 9 | Water |
+| 14 | High tension |
+| 26 | Civil structure |
+
+## Coordinate systems
+
+Orthophotos, bounding boxes, and tile identity use EPSG:28992 (Dutch RD New / Amersfoort). AHN point cloud/DSM data is natively EPSG:7415 (EPSG:28992 horizontally, NAP height vertically) — `reconcile` relies on this to interpolate without reprojection, since the ortho and AHN grids already coincide in X/Y.
 
 ## Reporting Issues
 
-Encountering issues or bugs? We greatly appreciate your feedback. Please report any problems by opening an issue on our GitHub repository. Be as detailed as possible in your report, including steps to reproduce the issue, the expected outcome, and the actual result. This information will help us address and resolve the issue more efficiently.
+Encountering issues or bugs? We greatly appreciate your feedback. Please report any problems by [opening an issue](https://github.com/abossenbroek/ahn_cli/issues). Be as detailed as possible in your report, including steps to reproduce the issue, the expected outcome, and the actual result. This information will help us address and resolve the issue more efficiently.
 
 ## Contributing
 

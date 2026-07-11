@@ -381,7 +381,7 @@ def fetch_dsm(
 
     Failure modes:
         - :class:`~ahn_cli.fetch.acquisition.AcquisitionError` if the bbox is
-          malformed or the selector is not wired (``--city`` / ``--geojson``).
+          malformed or the ``--city`` selector is not wired.
         - :class:`DsmError` if the DSM feed is invalid, no or more than one sheet
           covers the AOI, the COG is not EPSG:28992, or the windowed read fails.
           Every expected failure funnels here so the CLI reports it cleanly.

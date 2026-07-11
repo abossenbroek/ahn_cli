@@ -32,6 +32,7 @@ from pathlib import Path
 from typing import cast
 
 import requests
+from shapely.errors import ShapelyError
 from shapely.geometry import shape
 from shapely.ops import unary_union
 
@@ -76,6 +77,18 @@ _SELECTION_ERRORS: tuple[type[Exception], ...] = (
     GenerationUnavailableError,
     UnknownGenerationError,
     *_FEED_ERRORS,
+)
+
+# Expected failures building a shapely geometry from an untrusted GeoJSON
+# geometry dict: a missing/wrongly-shaped ``coordinates`` array (KeyError /
+# TypeError / ValueError) or a ring GEOS itself refuses to build, e.g. from a
+# non-finite vertex (shapely.errors.ShapelyError). Funnelled to
+# MalformedGeojsonError so a malformed file never surfaces as a raw traceback.
+_GEOMETRY_ERRORS: tuple[type[Exception], ...] = (
+    KeyError,
+    TypeError,
+    ValueError,
+    ShapelyError,
 )
 
 Clock = Callable[[], datetime]
@@ -356,12 +369,14 @@ def _geojson_bbox(path: str) -> BBox:
 
     The GeoJSON is read as WGS84 (EPSG:4326) per RFC 7946: every Polygon and
     MultiPolygon geometry is unioned, and the union's WGS84 bounds are projected
-    to the Dutch national grid. Non-polygonal, null, and malformed members are
-    skipped so a mixed document still yields the polygonal AOI.
+    to the Dutch national grid. Non-polygonal and null members are skipped so a
+    mixed document still yields the polygonal AOI; a member typed as a Polygon
+    or MultiPolygon but with malformed coordinates is a failure, not a skip.
 
     Failure modes:
         - :class:`MalformedGeojsonError` if the file is missing/unreadable, is
-          not valid JSON, carries no Polygon/MultiPolygon geometry, or has a
+          not valid JSON, carries no Polygon/MultiPolygon geometry, carries one
+          whose coordinates shapely cannot build a geometry from, or has a
           degenerate (zero-area) extent.
     """
     try:
@@ -382,7 +397,11 @@ def _geojson_bbox(path: str) -> BBox:
     if not geometries:
         msg = f"--geojson has no polygon/multipolygon geometry: {path!r}."
         raise MalformedGeojsonError(msg)
-    bounds = unary_union([shape(geom) for geom in geometries]).bounds
+    try:
+        bounds = unary_union([shape(geom) for geom in geometries]).bounds
+    except _GEOMETRY_ERRORS as exc:
+        msg = f"--geojson has a malformed geometry: {path!r} ({exc})."
+        raise MalformedGeojsonError(msg) from exc
     wgs84: BBox = (bounds[0], bounds[1], bounds[2], bounds[3])
     try:
         return to_rd(wgs84)

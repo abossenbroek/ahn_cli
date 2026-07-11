@@ -485,6 +485,47 @@ def test_aoi_bbox_rejects_a_degenerate_geometry(tmp_path: Path) -> None:
         aoi_bbox(_geojson_request(tmp_path / "s", path))
 
 
+def test_aoi_bbox_rejects_a_geometry_missing_coordinates(
+    tmp_path: Path,
+) -> None:
+    """A Polygon with no ``coordinates`` key is a malformed-geojson error."""
+    path = _write_geojson(tmp_path, {"type": "Polygon"})
+    with pytest.raises(MalformedGeojsonError, match="malformed geometry"):
+        aoi_bbox(_geojson_request(tmp_path / "s", path))
+
+
+def test_aoi_bbox_rejects_a_malformed_coordinates_shape(
+    tmp_path: Path,
+) -> None:
+    """Coordinates nested with the wrong shape are a malformed-geojson error."""
+    path = _write_geojson(
+        tmp_path, {"type": "Polygon", "coordinates": [4.4, 52.0]}
+    )
+    with pytest.raises(MalformedGeojsonError, match="malformed geometry"):
+        aoi_bbox(_geojson_request(tmp_path / "s", path))
+
+
+def test_aoi_bbox_rejects_a_ring_geos_refuses_to_build(
+    tmp_path: Path,
+) -> None:
+    """A ring GEOS refuses to build (e.g. a non-finite vertex) is rejected."""
+    geometry = {
+        "type": "Polygon",
+        "coordinates": [
+            [
+                [float("nan"), 52.00],
+                [4.41, 52.00],
+                [4.41, 52.01],
+                [4.40, 52.01],
+                [float("nan"), 52.00],
+            ]
+        ],
+    }
+    path = _write_geojson(tmp_path, geometry)
+    with pytest.raises(MalformedGeojsonError, match="malformed geometry"):
+        aoi_bbox(_geojson_request(tmp_path / "s", path))
+
+
 def test_acquire_downloads_covering_tiles_from_a_geojson(
     tmp_path: Path,
 ) -> None:

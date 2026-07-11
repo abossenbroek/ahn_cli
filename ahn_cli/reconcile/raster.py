@@ -7,9 +7,11 @@ arbitrarily large area never materialises whole:
   through rasterio (GDAL), exposing its :class:`~ahn_cli.domain.grid.PixelGrid`
   (the target grid) and a windowed :meth:`OrthoReader.read_rows` so the RGB is
   read one row-block at a time.
-* :func:`load_cloud` reads the AHN point cloud LAZ into the ``(n, 3)`` world
-  coordinates the interpolation samples from (one tile's cloud fits in memory;
-  a continental run tiles the cloud spatially, out of this module's scope).
+* :func:`load_cloud` reads the AHN point cloud LAZ into a :class:`SourceCloud`
+  holding the ``(n, 3)`` world coordinates the interpolation samples from and
+  the matching ``(n,)`` per-point classification the cleanup step filters by
+  (one tile's cloud fits in memory; a continental run tiles the cloud
+  spatially, out of this module's scope).
 
 :func:`block_target_coordinates` expands one row-block of the grid to its
 per-pixel-centre world XY without touching the rest of the grid. Expected IO

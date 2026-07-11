@@ -11,9 +11,13 @@ both bound to ``-e``) is resolved by design: every short flag below is unique,
 and a regression test asserts no flag is reused across the group.
 """
 
+from __future__ import annotations
+
 from pathlib import Path
+from typing import NoReturn
 
 import click
+from tqdm import tqdm
 
 from ahn_cli.fetch.acquisition import (
     AcquisitionError,
@@ -56,6 +60,7 @@ from ahn_cli.reconcile.method import (
     VariogramModel,
 )
 from ahn_cli.reconcile.reconcile import (
+    ProgressCallback,
     ReconcileError,
     ReconcileRequest,
     reconcile,
@@ -627,12 +632,31 @@ def reconcile_command(
         include_classes=include,
         exclude_classes=exclude,
     )
-    try:
-        stats = reconcile(request)
-    except ReconcileError as exc:
-        raise click.ClickException(str(exc)) from exc
+    bar: tqdm[NoReturn] = tqdm(unit="row", desc="reconcile")
+    with bar:
+        try:
+            stats = reconcile(request, progress=_tqdm_progress(bar))
+        except ReconcileError as exc:
+            raise click.ClickException(str(exc)) from exc
     click.echo(
         f"Reconciled {stats.width}x{stats.height}: "
         f"{stats.source_points} pts -> {stats.cleaned_points} cleaned -> "
         f"{stats.valid_points} written; {len(stats.outputs)} file(s)."
     )
+
+
+def _tqdm_progress(bar: tqdm[NoReturn]) -> ProgressCallback:
+    """Return a reconcile progress callback that drives ``bar``.
+
+    Contract:
+        - Each call sets ``bar``'s total to the reported total-row count (fixed
+          across calls, but not known until the first block is streamed) and its
+          position to the reported rows-done count, then redraws.
+    """
+
+    def _report(done: int, total: int) -> None:
+        bar.total = total
+        bar.n = done
+        bar.refresh()
+
+    return _report

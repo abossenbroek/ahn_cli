@@ -4,8 +4,8 @@ The ``fetch`` bounded context turns a validated area of interest into raw,
 cached source tiles on disk plus a provenance sidecar per tile. WP6 wires the
 real actuation the seam previously deferred:
 
-1. Derive the EPSG:28992 AOI (the ``--bbox`` selector is wired; ``--city`` /
-   ``--geojson`` remain a typed deferral).
+1. Derive the EPSG:28992 AOI (the ``--bbox`` and ``--geojson`` selectors are
+   wired; ``--city`` remains a typed deferral).
 2. Pick the distribution source (``--source`` -> registry, no stringly switch)
    and, through the source's generation registry, the AHN generation covering
    the AOI (``--ahn``; ``auto`` probes newest-first).
@@ -22,14 +22,18 @@ fast test suite is deterministic and offline.
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from importlib.metadata import version
-from typing import TYPE_CHECKING
+from pathlib import Path
+from typing import cast
 
 import requests
+from shapely.geometry import shape
+from shapely.ops import unary_union
 
 from ahn_cli.cache import CacheKey, ContentAddressedCache
 from ahn_cli.domain import (
@@ -46,11 +50,8 @@ from ahn_cli.fetch.generation import (
 )
 from ahn_cli.fetch.geotiles_source import GeotilesCatalogError, GeotilesSource
 from ahn_cli.fetch.pdok import PdokFeedError, PdokSource
-from ahn_cli.fetch.source import FetchSource, HttpGet, SourceKind
+from ahn_cli.fetch.source import FetchSource, HttpGet, SourceKind, to_rd
 from ahn_cli.provenance import write_provenance
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 SITE_SUBDIRS: tuple[str, ...] = ("ahn", "ortho", "viirs")
 """Per-product subdirectories created under every site directory, in order."""
@@ -109,10 +110,19 @@ class MalformedBboxError(AcquisitionError):
     """
 
 
+class MalformedGeojsonError(AcquisitionError):
+    """Raised when a ``--geojson`` file yields no valid EPSG:28992 box.
+
+    Signals an unreadable/missing file, invalid JSON, a document carrying no
+    Polygon/MultiPolygon geometry, or a degenerate extent (a zero-area or
+    single-point geometry that fails :func:`~ahn_cli.domain.ensure_valid_bbox`).
+    """
+
+
 class SelectorNotWiredError(AcquisitionError):
     """Raised when AOI derivation for the chosen selector is not wired yet.
 
-    WP6 wires the ``--bbox`` selector; ``--city`` and ``--geojson`` AOI
+    WP6 wires the ``--bbox`` and ``--geojson`` selectors; ``--city`` AOI
     derivation (polygon-to-bbox over the bundled boundary data) is a typed
     deferral rather than a silent failure.
     """
@@ -303,14 +313,17 @@ def aoi_bbox(request: AcquisitionRequest) -> BBox:
 
     Failure modes:
         - :class:`MalformedBboxError` for a bad ``--bbox`` value.
-        - :class:`SelectorNotWiredError` for ``--city`` / ``--geojson`` (their
-          AOI derivation is deferred in WP6).
+        - :class:`MalformedGeojsonError` for a bad ``--geojson`` file.
+        - :class:`SelectorNotWiredError` for ``--city`` (its AOI derivation is
+          deferred in WP6).
     """
     if request.selector is AreaSelectorKind.BBOX:
         return _parse_bbox(request.area)
+    if request.selector is AreaSelectorKind.GEOJSON:
+        return _geojson_bbox(request.area)
     msg = (
         f"AOI derivation for --{request.selector.value} is not wired in WP6; "
-        "use --bbox, or wait for the city/geojson AOI derivation."
+        "use --bbox, or wait for the city AOI derivation."
     )
     raise SelectorNotWiredError(msg)
 
@@ -332,3 +345,85 @@ def _parse_bbox(area: str) -> BBox:
     except ValueError as exc:
         raise MalformedBboxError(str(exc)) from exc
     return bbox
+
+
+_POLYGON_TYPES = frozenset({"Polygon", "MultiPolygon"})
+"""GeoJSON geometry types whose extent defines an area of interest."""
+
+
+def _geojson_bbox(path: str) -> BBox:
+    """Derive an EPSG:28992 bbox from the polygon(s) in a GeoJSON file.
+
+    The GeoJSON is read as WGS84 (EPSG:4326) per RFC 7946: every Polygon and
+    MultiPolygon geometry is unioned, and the union's WGS84 bounds are projected
+    to the Dutch national grid. Non-polygonal, null, and malformed members are
+    skipped so a mixed document still yields the polygonal AOI.
+
+    Failure modes:
+        - :class:`MalformedGeojsonError` if the file is missing/unreadable, is
+          not valid JSON, carries no Polygon/MultiPolygon geometry, or has a
+          degenerate (zero-area) extent.
+    """
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError as exc:
+        msg = f"--geojson file could not be read: {path!r} ({exc})."
+        raise MalformedGeojsonError(msg) from exc
+    try:
+        doc = json.loads(text)
+    except json.JSONDecodeError as exc:
+        msg = f"--geojson is not valid JSON: {path!r} ({exc})."
+        raise MalformedGeojsonError(msg) from exc
+    geometries = [
+        polygon
+        for geom in _geometry_objects(doc)
+        if (polygon := _polygon_geometry(geom)) is not None
+    ]
+    if not geometries:
+        msg = f"--geojson has no polygon/multipolygon geometry: {path!r}."
+        raise MalformedGeojsonError(msg)
+    bounds = unary_union([shape(geom) for geom in geometries]).bounds
+    wgs84: BBox = (bounds[0], bounds[1], bounds[2], bounds[3])
+    try:
+        return to_rd(wgs84)
+    except ValueError as exc:
+        raise MalformedGeojsonError(str(exc)) from exc
+
+
+def _geometry_objects(doc: object) -> list[object]:
+    """Return each geometry object embedded in a parsed GeoJSON document.
+
+    Handles the three top-level shapes -- a bare geometry, a ``Feature``, and a
+    ``FeatureCollection`` -- returning the raw (possibly null or non-polygonal)
+    geometry members for the caller to filter.
+    """
+    if isinstance(doc, dict):
+        document = cast("dict[str, object]", doc)
+        kind = document.get("type")
+        if kind == "FeatureCollection":
+            features = document.get("features")
+            if isinstance(features, list):
+                feature_list = cast("list[object]", features)
+                return [
+                    cast("dict[str, object]", feature).get("geometry")
+                    for feature in feature_list
+                    if isinstance(feature, dict)
+                ]
+            return []
+        if kind == "Feature":
+            return [document.get("geometry")]
+    return [doc]
+
+
+def _polygon_geometry(geom: object) -> dict[str, object] | None:
+    """Return ``geom`` as a mapping if it is a (Multi)Polygon, else ``None``.
+
+    Skips null and non-polygonal members so a mixed document still yields only
+    its polygonal geometries.
+    """
+    if not isinstance(geom, dict):
+        return None
+    geometry = cast("dict[str, object]", geom)
+    if geometry.get("type") not in _POLYGON_TYPES:
+        return None
+    return geometry

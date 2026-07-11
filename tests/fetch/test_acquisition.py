@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import math
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -17,7 +19,9 @@ from ahn_cli.fetch.acquisition import (
     AcquisitionError,
     AcquisitionRequest,
     AreaSelectorKind,
+    MalformedGeojsonError,
     acquire,
+    aoi_bbox,
     create_site_layout,
     default_http_get,
     source_for,
@@ -85,6 +89,70 @@ def _bbox_request(
 def _fixed_now() -> datetime:
     """Return a constant timezone-aware timestamp for determinism."""
     return _FIXED_TIME
+
+
+# A WGS84 box over the same Delft-edge area the shared RD bbox covers, so a
+# GeoJSON polygon over it resolves to the same covering sheets.
+_COVERED_WGS84 = (4.40, 51.99, 4.44, 52.02)
+
+
+def _polygon(
+    minlon: float, minlat: float, maxlon: float, maxlat: float
+) -> dict[str, object]:
+    """Build a closed-ring GeoJSON Polygon geometry over a WGS84 box."""
+    return {
+        "type": "Polygon",
+        "coordinates": [
+            [
+                [minlon, minlat],
+                [maxlon, minlat],
+                [maxlon, maxlat],
+                [minlon, maxlat],
+                [minlon, minlat],
+            ]
+        ],
+    }
+
+
+def _write_geojson(
+    tmp_path: Path, doc: object, name: str = "area.geojson"
+) -> Path:
+    """Serialise ``doc`` to a GeoJSON file under ``tmp_path`` and return it."""
+    path = tmp_path / name
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    return path
+
+
+def _geojson_request(
+    site: Path,
+    path: Path,
+    *,
+    source: SourceKind = SourceKind.PDOK,
+    generation: Generation | None = None,
+) -> AcquisitionRequest:
+    """Build a geojson-selector acquisition request pointing at ``path``."""
+    return AcquisitionRequest(
+        site_dir=site,
+        selector=AreaSelectorKind.GEOJSON,
+        area=str(path),
+        source=source,
+        generation=generation,
+    )
+
+
+def _assert_rd_matches(
+    bbox: tuple[float, float, float, float],
+    minlon: float,
+    minlat: float,
+    maxlon: float,
+    maxlat: float,
+) -> None:
+    """Assert an EPSG:28992 bbox equals the RD projection of a WGS84 box."""
+    exp_minx, exp_miny = _TO_RD.transform(minlon, minlat)
+    exp_maxx, exp_maxy = _TO_RD.transform(maxlon, maxlat)
+    expected = (exp_minx, exp_miny, exp_maxx, exp_maxy)
+    for actual, want in zip(bbox, expected, strict=True):
+        assert math.isclose(actual, want, abs_tol=1e-6)
 
 
 def test_site_subdirs_are_the_three_canonical_products() -> None:
@@ -294,16 +362,145 @@ def test_acquire_defers_city_selector(tmp_path: Path) -> None:
     assert (site / "ahn").is_dir()  # layout still created before deferral
 
 
-def test_acquire_defers_geojson_selector(tmp_path: Path) -> None:
-    """The geojson selector's AOI derivation is likewise deferred."""
-    request = AcquisitionRequest(
-        site_dir=tmp_path / "s",
-        selector=AreaSelectorKind.GEOJSON,
-        area="area.geojson",
+def test_malformed_geojson_error_is_an_acquisition_error() -> None:
+    """The geojson failure type funnels through the acquisition base error."""
+    assert issubclass(MalformedGeojsonError, AcquisitionError)
+
+
+def test_aoi_bbox_from_a_bare_polygon_geometry(tmp_path: Path) -> None:
+    """A top-level Polygon geometry derives its RD extent as the AOI."""
+    path = _write_geojson(tmp_path, _polygon(*_COVERED_WGS84))
+
+    bbox = aoi_bbox(_geojson_request(tmp_path / "s", path))
+
+    _assert_rd_matches(bbox, *_COVERED_WGS84)
+
+
+def test_aoi_bbox_from_a_feature(tmp_path: Path) -> None:
+    """A Feature wrapping a Polygon derives the wrapped polygon's extent."""
+    feature = {"type": "Feature", "geometry": _polygon(*_COVERED_WGS84)}
+    path = _write_geojson(tmp_path, feature)
+
+    bbox = aoi_bbox(_geojson_request(tmp_path / "s", path))
+
+    _assert_rd_matches(bbox, *_COVERED_WGS84)
+
+
+def test_aoi_bbox_from_a_feature_collection_skips_non_polygons(
+    tmp_path: Path,
+) -> None:
+    """Only polygonal features count; Point/null/non-dict members are skipped."""
+    collection = {
+        "type": "FeatureCollection",
+        "features": [
+            {"type": "Feature", "geometry": _polygon(*_COVERED_WGS84)},
+            {
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [5.0, 52.5]},
+            },
+            {"type": "Feature", "geometry": None},
+            None,
+        ],
+    }
+    path = _write_geojson(tmp_path, collection)
+
+    bbox = aoi_bbox(_geojson_request(tmp_path / "s", path))
+
+    _assert_rd_matches(bbox, *_COVERED_WGS84)
+
+
+def test_aoi_bbox_from_a_multipolygon(tmp_path: Path) -> None:
+    """A MultiPolygon's AOI is the union extent of its member polygons."""
+    poly_a = _polygon(4.40, 51.99, 4.42, 52.01)["coordinates"]
+    poly_b = _polygon(4.43, 52.00, 4.44, 52.02)["coordinates"]
+    geometry = {
+        "type": "MultiPolygon",
+        "coordinates": [poly_a, poly_b],
+    }
+    path = _write_geojson(tmp_path, geometry)
+
+    bbox = aoi_bbox(_geojson_request(tmp_path / "s", path))
+
+    _assert_rd_matches(bbox, 4.40, 51.99, 4.44, 52.02)
+
+
+def test_aoi_bbox_rejects_a_missing_geojson_file(tmp_path: Path) -> None:
+    """A path to no file is a user-facing malformed-geojson error."""
+    request = _geojson_request(tmp_path / "s", tmp_path / "nope.geojson")
+    with pytest.raises(MalformedGeojsonError, match="could not be read"):
+        aoi_bbox(request)
+
+
+def test_aoi_bbox_rejects_invalid_json(tmp_path: Path) -> None:
+    """A file that is not valid JSON is a malformed-geojson error."""
+    path = tmp_path / "area.geojson"
+    path.write_text("{not json", encoding="utf-8")
+    with pytest.raises(MalformedGeojsonError, match="valid JSON"):
+        aoi_bbox(_geojson_request(tmp_path / "s", path))
+
+
+def test_aoi_bbox_rejects_a_document_with_no_polygon(tmp_path: Path) -> None:
+    """A doc whose only geometries are non-polygonal has no derivable AOI."""
+    collection = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": {"type": "Point", "coordinates": [5.0, 52.5]},
+            },
+            {"type": "Feature", "geometry": None},
+        ],
+    }
+    path = _write_geojson(tmp_path, collection)
+    with pytest.raises(MalformedGeojsonError, match="no polygon"):
+        aoi_bbox(_geojson_request(tmp_path / "s", path))
+
+
+def test_aoi_bbox_rejects_a_non_object_top_level(tmp_path: Path) -> None:
+    """Valid JSON that is not a GeoJSON object yields no polygon geometry."""
+    path = _write_geojson(tmp_path, [])
+    with pytest.raises(MalformedGeojsonError, match="no polygon"):
+        aoi_bbox(_geojson_request(tmp_path / "s", path))
+
+
+def test_aoi_bbox_rejects_a_feature_collection_without_features_list(
+    tmp_path: Path,
+) -> None:
+    """A FeatureCollection whose ``features`` is not a list has no geometry."""
+    path = _write_geojson(
+        tmp_path, {"type": "FeatureCollection", "features": {}}
+    )
+    with pytest.raises(MalformedGeojsonError, match="no polygon"):
+        aoi_bbox(_geojson_request(tmp_path / "s", path))
+
+
+def test_aoi_bbox_rejects_a_degenerate_geometry(tmp_path: Path) -> None:
+    """A zero-area polygon projects to a degenerate box and is rejected."""
+    geometry = {
+        "type": "Polygon",
+        "coordinates": [[[4.4, 52.0], [4.4, 52.0], [4.4, 52.0], [4.4, 52.0]]],
+    }
+    path = _write_geojson(tmp_path, geometry)
+    with pytest.raises(MalformedGeojsonError, match="bbox"):
+        aoi_bbox(_geojson_request(tmp_path / "s", path))
+
+
+def test_acquire_downloads_covering_tiles_from_a_geojson(
+    tmp_path: Path,
+) -> None:
+    """A geojson polygon feeds the full acquire flow and writes the sheets."""
+    site = tmp_path / "delft"
+    path = _write_geojson(tmp_path, _polygon(*_COVERED_WGS84))
+    http_get = _Recorder()
+
+    written = acquire(
+        _geojson_request(site, path),
+        http_get=http_get,
+        now=_fixed_now,
+        tool_version="v",
     )
 
-    with pytest.raises(AcquisitionError, match="not wired"):
-        acquire(request, http_get=_Recorder(), now=_fixed_now)
+    assert [p.name for p in written] == ["C_37EN1.LAZ", "C_37EN2.LAZ"]
 
 
 def test_acquire_reports_when_no_generation_covers_the_aoi(

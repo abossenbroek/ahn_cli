@@ -17,6 +17,7 @@ continental run the cloud is tiled spatially, outside this function's scope.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -42,11 +43,22 @@ if TYPE_CHECKING:
     from ahn_cli.reconcile.raster import OrthoReader
 
 __all__ = [
+    "ProgressCallback",
     "ReconcileError",
     "ReconcileRequest",
     "ReconcileStats",
     "reconcile",
 ]
+
+ProgressCallback = Callable[[int, int], None]
+"""An injected progress reporter: called ``(rows_done, total_rows)`` once per
+row-block, so a caller (e.g. the CLI) can drive a progress bar without this
+module owning any rendering concern."""
+
+
+def _no_op_progress(_done: int, _total: int) -> None:
+    """Report nothing; the default when the caller supplies no callback."""
+
 
 _RGB_CHANNELS = slice(3, 6)
 """The R, G, B channel slice of the assembled ``(rows, w, 6)`` grid block."""
@@ -109,13 +121,18 @@ class ReconcileStats:
     outputs: tuple[Path, ...]
 
 
-def reconcile(request: ReconcileRequest) -> ReconcileStats:
+def reconcile(
+    request: ReconcileRequest, *, progress: ProgressCallback | None = None
+) -> ReconcileStats:
     """Interpolate the cloud onto the ortho grid and stream every format.
 
     Contract:
         - Loads ``cloud_path`` (source XYZ) and streams ``ortho_path``'s grid in
           row-blocks, estimating ``Z`` at each pixel centre via ``method`` and
           writing ``<output_dir>/reconciled.<ext>`` for each requested format.
+        - Calls ``progress(rows_done, total_rows)`` once per row-block (after it
+          is written); defaults to a no-op so callers that don't care about
+          progress are unaffected.
         - Returns a :class:`ReconcileStats` with the grid dimensions, the valid
           (interpolated) pixel count, and the output paths.
 
@@ -127,6 +144,7 @@ def reconcile(request: ReconcileRequest) -> ReconcileStats:
         - :class:`ReconcileError` if an input is missing/unreadable or the
           orthophoto lacks three colour bands.
     """
+    report = progress if progress is not None else _no_op_progress
     cloud = load_cloud(request.cloud_path)
     coords = select_and_dedupe(
         cloud.coords,
@@ -160,6 +178,7 @@ def reconcile(request: ReconcileRequest) -> ReconcileStats:
             valid_points += int(mask_block.sum())
             for writer in writers:
                 writer.write_block(grid_block, mask_block)
+            report(row_start + rows, height)
 
         for writer in writers:
             writer.close()

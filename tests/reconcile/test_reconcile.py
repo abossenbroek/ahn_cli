@@ -105,6 +105,34 @@ def test_reconcile_blocked_equals_whole_grid(
             assert whole_path.read_bytes() == blocked_path.read_bytes()
 
 
+def test_reconcile_reports_progress_across_blocks(
+    ortho_path: Path,
+    cloud_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The progress callback fires once per block with (rows-done, total)."""
+    monkeypatch.setattr(
+        "ahn_cli.reconcile.reconcile._BLOCK_CELLS", 6
+    )  # width 6 -> one row per block -> six calls
+    calls: list[tuple[int, int]] = []
+
+    reconcile(
+        _request(ortho_path, cloud_path, tmp_path / "out"),
+        progress=lambda done, total: calls.append((done, total)),
+    )
+
+    assert calls == [(1, 6), (2, 6), (3, 6), (4, 6), (5, 6), (6, 6)]
+
+
+def test_reconcile_without_a_progress_callback_does_not_raise(
+    ortho_path: Path, cloud_path: Path, tmp_path: Path
+) -> None:
+    """Omitting ``progress`` (the default) runs exactly as before."""
+    stats = reconcile(_request(ortho_path, cloud_path, tmp_path / "out"))
+    assert stats.valid_points == 36
+
+
 def test_reconcile_missing_ortho_raises(
     cloud_path: Path, tmp_path: Path
 ) -> None:

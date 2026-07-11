@@ -9,10 +9,70 @@ import rasterio
 from click.testing import CliRunner, Result
 from rasterio.transform import from_bounds
 
+from ahn_cli.cli import app
 from ahn_cli.cli.app import cli
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    import pytest
+    from typing_extensions import Self
+
+
+class _SpyBar:
+    """A tqdm stand-in recording every (n, total) update, standing in for tqdm."""
+
+    def __init__(self) -> None:
+        self.n = 0
+        self.total: int | None = None
+        self.updates: list[tuple[int, int | None]] = []
+
+    def __call__(self, **_kwargs: object) -> Self:
+        return self
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_exc_info: object) -> None:
+        return None
+
+    def refresh(self) -> None:
+        self.updates.append((self.n, self.total))
+
+
+def test_reconcile_drives_the_progress_bar_across_blocks(
+    ortho_path: Path,
+    cloud_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each streamed block updates the tqdm bar's n/total, not just runs clean.
+
+    Replaces ``tqdm`` itself with a spy so the assertion is on the bar's actual
+    state after each block, not merely that the CLI exits 0 (which it would even
+    if the progress wiring silently no-opped).
+    """
+    spy = _SpyBar()
+    monkeypatch.setattr(app, "tqdm", spy)
+    monkeypatch.setattr("ahn_cli.reconcile.reconcile._BLOCK_CELLS", 6)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "reconcile",
+            "--ortho",
+            str(ortho_path),
+            "--cloud",
+            str(cloud_path),
+            "--out",
+            str(tmp_path / "out"),
+            "--format",
+            "pt",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert spy.updates == [(1, 6), (2, 6), (3, 6), (4, 6), (5, 6), (6, 6)]
 
 
 def test_reconcile_idw_default(

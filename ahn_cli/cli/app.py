@@ -649,9 +649,10 @@ def _tqdm_progress(bar: tqdm[NoReturn]) -> ProgressCallback:
     """Return a reconcile progress callback that drives ``bar``.
 
     Contract:
-        - Each call sets ``bar``'s total to the reported total-row count (fixed
-          across calls, but not known until the first block is streamed) and its
-          position to the reported rows-done count, then redraws.
+        - Each call sets ``bar``'s total to the reported total-row count (the
+          same value on every call -- ``reconcile()`` already knows the grid's
+          full height before streaming its first block) and its position to the
+          reported rows-done count, then redraws.
     """
 
     def _report(done: int, total: int) -> None:

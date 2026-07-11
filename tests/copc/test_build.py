@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
 
 import copclib
 import laspy
@@ -211,6 +211,58 @@ def test_failed_close_removes_the_partial_output(
     with pytest.raises(CopcError, match="failed to close"):
         build_copc(cloud, out)
     assert not out.exists()
+
+
+def _diagonal_coords(n: int = 40) -> list[tuple[float, float, float]]:
+    """Return a thin diagonal strip: the worst case for uniform bucketing."""
+    return [(i * 0.6, i * 0.6, 0.01 * i) for i in range(n)]
+
+
+def test_diagonal_strip_triggers_occupancy_rebalance(
+    write_laz: WriteLaz, tmp_path: Path
+) -> None:
+    """A thin diagonal AOI deepens the bucket level and still builds green."""
+    cloud = write_laz(_diagonal_coords(), rgb=[(300, 400, 500)] * 40)
+    out = tmp_path / "diag.copc.laz"
+    result = build_copc(cloud, out, target_bucket_points=4)
+    # The uniform estimate for 40 points at target 4 is level 2; the
+    # measured diagonal occupancy forces a deeper bucket level.
+    assert result.plan.bucket_level > 2
+    assert result.plan.max_depth >= result.plan.bucket_level
+    assert result.written_points == 40
+    with CopcReader.open(str(out)) as copc_reader:
+        assert copc_reader.header.point_count == 40
+
+
+def test_rebalanced_build_is_deterministic(
+    write_laz: WriteLaz, tmp_path: Path
+) -> None:
+    """Two pre-scanned builds of the same diagonal input are byte-identical."""
+    cloud = write_laz(
+        _diagonal_coords(), gps_time=[float(i) for i in range(40)]
+    )
+    one = tmp_path / "one.copc.laz"
+    two = tmp_path / "two.copc.laz"
+    build_copc(cloud, one, target_bucket_points=4)
+    build_copc(cloud, two, target_bucket_points=4)
+    assert one.read_bytes() == two.read_bytes()
+
+
+def test_unreadable_cloud_during_prescan_is_a_copc_error(
+    write_laz: WriteLaz, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cloud that turns unreadable after planning fails as a CopcError."""
+    cloud = write_laz(_diagonal_coords())
+
+    def exploding_chunks(self: laspy.LasReader, points: int) -> NoReturn:
+        del self, points
+        msg = "stream went away"
+        raise laspy.LaspyException(msg)
+
+    monkeypatch.setattr(laspy.LasReader, "chunk_iterator", exploding_chunks)
+    # target 4 -> multi-bucket plan -> the pre-scan reads first and fails.
+    with pytest.raises(CopcError, match="not readable"):
+        build_copc(cloud, tmp_path / "out.copc.laz", target_bucket_points=4)
 
 
 def test_build_is_deterministic(write_laz: WriteLaz, tmp_path: Path) -> None:

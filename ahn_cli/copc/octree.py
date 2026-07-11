@@ -25,7 +25,7 @@ in a single pass.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from math import ceil, floor
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -35,7 +35,7 @@ if TYPE_CHECKING:
     import numpy.typing as npt
 
 _ANCHOR_PAD_M = 1  # whole metres between the cube faces and the data
-_BUCKET_LEVEL_CAP = 8  # at most (2^8)^2 = 65536 scatter buckets
+BUCKET_LEVEL_CAP = 8  # at most (2^8)^2 = 65536 scatter buckets
 
 
 class CopcError(Exception):
@@ -50,6 +50,9 @@ class BuildPlan:
         - ``anchor_m`` is the cube's min corner in whole metres (exact
           doubles); ``side_m`` the cube side in whole metres, a multiple of
           ``2**bucket_level`` so bucket edges are whole metres too.
+          Multi-bucket plans align it to ``2**BUCKET_LEVEL_CAP``, so
+          ``bucket_level`` can be raised in place (occupancy rebalance)
+          without breaking that alignment.
         - ``bucket_level`` is the octree level whose XY footprints are the
           pass-1 scatter buckets; ``max_depth`` the deepest octree level.
         - ``units_per_m`` and ``voxel_units`` express the output quantization
@@ -102,10 +105,18 @@ def plan_build(
           ``[mins - 1 m, maxs + 1 m]``; ``bucket_level`` is the smallest level
           keeping ``count / 4**level`` at or under ``target_bucket_points``
           (capped); ``max_depth`` the shallowest level whose per-node sampling
-          grid resolves ``native_cell_m``, never above ``bucket_level``.
+          grid resolves ``native_cell_m``, never below ``bucket_level``.
 
     Invariants:
         - Pure arithmetic on the header: deterministic, no I/O.
+        - ``bucket_level`` assumes the cloud fills the cube's XY extent
+          uniformly; :func:`rebalance_bucket_level` raises it afterwards when
+          a measured occupancy histogram says the fill is concentrated.
+        - The per-leaf point budget is density-driven: leaves span
+          ``(sample_grid / 2, sample_grid] * native_cell_m`` of world per
+          side — (32, 64] m at the defaults — which is healthy at AHN's
+          10-20 pts/m² regime; extreme densities are a known tuning lever
+          (``sample_grid``/``native_cell_m``), deliberately not handled here.
     """
     if count <= 0:
         msg = "cannot plan a COPC build for an empty cloud"
@@ -120,12 +131,15 @@ def plan_build(
     bucket_level = 0
     while (
         count > target_bucket_points * 4**bucket_level
-        and bucket_level < _BUCKET_LEVEL_CAP
+        and bucket_level < BUCKET_LEVEL_CAP
     ):
         bucket_level += 1
 
-    bucket_multiple = 2**bucket_level
-    side_m = bucket_multiple * ceil(needed / bucket_multiple)
+    # Multi-bucket layouts may later be deepened by the occupancy-aware
+    # rebalance (up to the cap), so align the side to the cap's grid: every
+    # candidate level then keeps whole-metre, exactly nested bucket columns.
+    side_multiple = 2 ** (BUCKET_LEVEL_CAP if bucket_level > 0 else 0)
+    side_m = side_multiple * ceil(needed / side_multiple)
 
     max_depth = bucket_level
     while side_m / 2**max_depth > sample_grid * native_cell_m:
@@ -142,6 +156,66 @@ def plan_build(
         units_per_m=units_per_m,
         voxel_units=round(native_cell_m * units_per_m),
     )
+
+
+def rebalance_bucket_level(
+    plan: BuildPlan,
+    column_counts: npt.NDArray[np.int64],
+    target_bucket_points: int,
+) -> BuildPlan:
+    """Deepen a plan's bucket level to fit the *measured* XY occupancy.
+
+    :func:`plan_build` sizes ``bucket_level`` assuming uniform XY fill; an
+    irregular AOI (a thin diagonal polygon: canals, dikes, rail corridors)
+    concentrates the cloud in a few columns, so the busiest scatter bucket
+    can overshoot the per-bucket target severalfold and break the bounded
+    pass-2 working set. Given the cap-level column histogram from a cheap
+    streaming pre-scan, pick the smallest level at or above
+    ``plan.bucket_level`` whose busiest aggregated column holds at most
+    ``target_bucket_points`` points.
+
+    Contract:
+        - ``column_counts`` is the ``(2**BUCKET_LEVEL_CAP,) * 2`` int64
+          per-column histogram (axis 0 the X column, axis 1 the Y column),
+          measured with pass-1 scatter's exact quantization/column math;
+          ``plan.side_m`` must be a multiple of ``2**BUCKET_LEVEL_CAP``
+          (guaranteed by :func:`plan_build` whenever ``bucket_level > 0``)
+          so candidate-level columns nest exactly.
+        - Returns ``plan`` itself (the identical object) when its own peak
+          already fits; otherwise a copy with ``bucket_level`` raised to the
+          smallest fitting level and ``max_depth`` kept consistent
+          (``max(plan.max_depth, bucket_level)``); every other field is
+          preserved exactly.
+        - The cap bounds hierarchy growth: if even level
+          ``BUCKET_LEVEL_CAP`` overshoots the target, that level is used
+          and the overflow is accepted.
+
+    Invariants:
+        - Pure arithmetic on the histogram: deterministic, no I/O.
+    """
+    level = plan.bucket_level
+    while (
+        level < BUCKET_LEVEL_CAP
+        and _peak_column_points(column_counts, level) > target_bucket_points
+    ):
+        level += 1
+    if level == plan.bucket_level:
+        return plan
+    return replace(
+        plan, bucket_level=level, max_depth=max(plan.max_depth, level)
+    )
+
+
+def _peak_column_points(
+    column_counts: npt.NDArray[np.int64], level: int
+) -> int:
+    """Aggregate the cap-level histogram to ``level``, return its peak count."""
+    dim = 2**level
+    block = 2 ** (BUCKET_LEVEL_CAP - level)
+    aggregated = column_counts.reshape(dim, block, dim, block).sum(
+        axis=(1, 3)
+    )
+    return int(aggregated.max())
 
 
 class NodeKey(NamedTuple):

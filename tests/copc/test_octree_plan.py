@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
+import numpy as np
 import pytest
 
-from ahn_cli.copc.octree import BuildPlan, plan_build
+from ahn_cli.copc.octree import (
+    BUCKET_LEVEL_CAP,
+    BuildPlan,
+    plan_build,
+    rebalance_bucket_level,
+)
 
 # The Moerkapelle shape from the bug report: ~3.76 km x 3.08 km x 58.8 m.
 _MINS = (98874.936, 448127.496, -8.569)
 _MAXS = (102636.936, 451205.996, 50.266)
+_GRID = 2**BUCKET_LEVEL_CAP
 
 
 def _plan(count: int = 46_000_000) -> BuildPlan:
@@ -109,3 +118,47 @@ def test_empty_cloud_is_rejected() -> None:
     """Planning for zero points is a caller error."""
     with pytest.raises(ValueError, match="empty"):
         plan_build(_MINS, _MAXS, 0)
+
+
+def test_multi_bucket_side_aligns_to_the_cap_grid() -> None:
+    """Multi-bucket sides are cap-aligned so the bucket level can be raised."""
+    plan = _plan()
+    assert plan.bucket_level > 0
+    assert plan.side_m % 2**BUCKET_LEVEL_CAP == 0
+
+
+def test_rebalance_keeps_a_uniform_fill_unchanged() -> None:
+    """A uniformly filled cube already meets the target: same plan object."""
+    plan = _plan()
+    uniform = np.full((_GRID, _GRID), 46_000_000 // _GRID**2, dtype=np.int64)
+    assert rebalance_bucket_level(plan, uniform, 4_000_000) is plan
+
+
+def test_rebalance_raises_to_the_smallest_fitting_level() -> None:
+    """A diagonal concentration deepens buckets just enough to fit."""
+    plan = _plan()
+    per_cell = 46_000_000 // _GRID
+    counts = np.zeros((_GRID, _GRID), dtype=np.int64)
+    np.fill_diagonal(counts, per_cell)
+    got = rebalance_bucket_level(plan, counts, 4_000_000)
+    # A level-k column aggregates 2**(cap - k) diagonal cells: level 4 is
+    # the smallest whose peak fits the target, level 3 still overshoots.
+    assert 2 ** (BUCKET_LEVEL_CAP - 4) * per_cell <= 4_000_000
+    assert 2 ** (BUCKET_LEVEL_CAP - 3) * per_cell > 4_000_000
+    assert got == replace(plan, bucket_level=4)
+
+
+def test_rebalance_caps_at_the_bucket_level_cap() -> None:
+    """A single overloaded column even at the cap: cap wins, overflow stays."""
+    plan = _plan()
+    counts = np.zeros((_GRID, _GRID), dtype=np.int64)
+    counts[7, 11] = 10**9
+    got = rebalance_bucket_level(plan, counts, 4_000_000)
+    assert got.bucket_level == BUCKET_LEVEL_CAP
+    assert got.max_depth == BUCKET_LEVEL_CAP  # lifted with the bucket level
+    assert (got.scale, got.anchor_m, got.side_m, got.sample_grid) == (
+        plan.scale,
+        plan.anchor_m,
+        plan.side_m,
+        plan.sample_grid,
+    )

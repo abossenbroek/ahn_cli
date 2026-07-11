@@ -45,6 +45,50 @@ def test_uniform_image_accepts_a_saturated_band_beside_variation() -> None:
     assert not uniform_image(sample)
 
 
+def test_uniform_image_flags_an_all_nan_sample() -> None:
+    """No finite pixel anywhere means no imagery at all: uniform."""
+    assert uniform_image(np.full((1, 8, 8), np.nan, dtype=np.float32))
+
+
+def test_uniform_image_flags_a_nan_border_around_a_constant() -> None:
+    """A NaN-masked border never hides a constant-valued interior."""
+    sample = np.full((1, 8, 8), 3.5, dtype=np.float32)
+    sample[:, 0, :] = np.nan
+    sample[:, :, 0] = np.nan
+    assert uniform_image(sample)
+
+
+def test_uniform_image_accepts_a_nan_border_around_variation() -> None:
+    """Variation among the finite interior pixels clears the gate."""
+    sample = np.full((1, 8, 8), 3.5, dtype=np.float32)
+    sample[:, 0, :] = np.nan
+    sample[0, 4, 4] = 7.0
+    assert not uniform_image(sample)
+
+
+def test_uniform_image_flags_three_different_constant_bands() -> None:
+    """A solid colour with three distinct band constants is a placeholder."""
+    sample = np.stack(
+        [
+            np.full((8, 8), 10, dtype=np.uint8),
+            np.full((8, 8), 20, dtype=np.uint8),
+            np.full((8, 8), 30, dtype=np.uint8),
+        ]
+    )
+    assert uniform_image(sample)
+
+
+def test_uniform_image_flags_an_all_nan_band_beside_a_constant() -> None:
+    """A band with no finite values is not variation beside a constant."""
+    sample = np.stack(
+        [
+            np.full((8, 8), np.nan, dtype=np.float32),
+            np.full((8, 8), 3.5, dtype=np.float32),
+        ]
+    )
+    assert uniform_image(sample)
+
+
 def test_uniform_image_handles_a_single_band_plane() -> None:
     """A 2-D single-band raster is judged the same way."""
     assert uniform_image(np.full((8, 8), 5.0, dtype=np.float32))

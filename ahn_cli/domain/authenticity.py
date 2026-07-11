@@ -23,20 +23,32 @@ __all__ = ["degenerate_cloud", "flat_surface", "uniform_image"]
 
 
 def uniform_image(sample: npt.NDArray[np.generic]) -> bool:
-    """Report whether every sampled pixel carries one identical colour.
+    """Report whether the sample carries no per-band pixel variation at all.
 
     Contract:
         - ``sample`` is a ``(bands, rows, cols)`` (or ``(rows, cols)``) pixel
           array, typically a decimated read of the raster.
-        - Returns ``True`` when every pixel is identical in every band -- the
-          signature of a placeholder grid, since genuine imagery always
-          varies. An empty sample is uniform (there is no imagery at all).
+        - Only finite values count as imagery: non-finite pixels (NaN/inf in
+          float rasters) are masked voids, never variation. Integer samples
+          are all-finite by construction and judged exactly as before.
+        - Returns ``True`` when every band is constant among its finite
+          values (each band anchored to its *own* constant, so a solid
+          three-colour placeholder is uniform) or has no finite values --
+          the signature of a placeholder grid, since genuine imagery always
+          varies. An empty sample, or one with no finite value anywhere, is
+          uniform (there is no imagery at all).
         - A single constant band beside varying ones is *not* uniform: real
           photography can saturate one channel.
     """
     if sample.size == 0:
         return True
-    return bool(np.all(sample == sample[..., :1, :1]))
+    bands = sample.reshape(-1, sample.shape[-2] * sample.shape[-1])
+    finite = np.isfinite(bands)
+    for index in range(bands.shape[0]):
+        valid = bands[index][finite[index]]
+        if valid.size > 0 and bool(np.any(valid != valid[0])):
+            return False
+    return True
 
 
 def flat_surface(

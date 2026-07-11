@@ -130,11 +130,14 @@ def inspect_viirs(source: Path) -> ViirsRaster:
 
     Failure modes:
         - :class:`ViirsImportError` if ``source`` cannot be opened as a
-          raster, or if every sampled pixel carries one identical *non-zero*
-          value — a constant placeholder grid, not genuine VIIRS imagery. A
-          uniform all-zero sample is accepted: zero radiance over unlit
-          terrain is genuine night-lights data (the sensor's zero floor),
-          not a placeholder.
+          raster, if every sampled pixel carries one identical *non-zero*
+          value — a constant placeholder grid, not genuine VIIRS imagery —
+          or if the sample holds no finite pixel at all (an entirely
+          NaN-masked export carries no radiance data). A uniform sample
+          whose *finite* pixels are all exactly zero is accepted: zero
+          radiance over unlit terrain is genuine night-lights data (the
+          sensor's zero floor), not a placeholder, even beside a
+          NaN-masked border.
     """
     try:
         with rasterio.open(source) as dataset:
@@ -155,13 +158,16 @@ def inspect_viirs(source: Path) -> ViirsRaster:
     except RasterioIOError as exc:
         msg = f"{source} is not a readable raster: {exc}"
         raise ViirsImportError(msg) from exc
-    if uniform_image(sample) and not bool(np.all(sample == 0)):
+    finite = sample[np.isfinite(sample)]
+    genuinely_dark = finite.size > 0 and bool(np.all(finite == 0))
+    if uniform_image(sample) and not genuinely_dark:
         msg = (
-            f"{source} is a single uniform non-zero value across every "
-            "sampled pixel — that is a placeholder grid, not genuine VIIRS "
-            "night-lights imagery; refusing to import it. (A uniform "
-            "all-zero raster would be accepted: zero radiance over unlit "
-            "terrain is genuine.)"
+            f"{source} carries a single uniform non-zero value (or no "
+            "finite pixels at all) across every sampled pixel — that is a "
+            "placeholder grid or corrupt export, not genuine VIIRS "
+            "night-lights imagery; refusing to import it. (A raster whose "
+            "finite pixels are all exactly zero would be accepted: zero "
+            "radiance over unlit terrain is genuine.)"
         )
         raise ViirsImportError(msg)
     return ViirsRaster(

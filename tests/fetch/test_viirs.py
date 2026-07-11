@@ -140,12 +140,9 @@ def test_inspect_rejects_a_uniform_placeholder_grid(tmp_path: Path) -> None:
         inspect_viirs(source)
 
 
-def _write_all_zero_geotiff(path: Path) -> None:
-    """Write a raster whose every pixel is exactly zero (unlit terrain)."""
+def _write_pixel_geotiff(path: Path, pixels: npt.NDArray[np.float32]) -> None:
+    """Write ``pixels`` (one float32 band) as a valid GeoTIFF at ``path``."""
     transform = from_bounds(*_BOUNDS, _WIDTH, _HEIGHT)
-    pixels: npt.NDArray[np.float32] = np.zeros(
-        (1, _HEIGHT, _WIDTH), dtype=np.float32
-    )
     with rasterio.open(
         path,
         "w",
@@ -158,6 +155,13 @@ def _write_all_zero_geotiff(path: Path) -> None:
         transform=transform,
     ) as dst:
         dst.write(pixels)
+
+
+def _write_all_zero_geotiff(path: Path) -> None:
+    """Write a raster whose every pixel is exactly zero (unlit terrain)."""
+    _write_pixel_geotiff(
+        path, np.zeros((1, _HEIGHT, _WIDTH), dtype=np.float32)
+    )
 
 
 def test_inspect_accepts_a_uniform_all_zero_raster(tmp_path: Path) -> None:
@@ -181,6 +185,34 @@ def test_import_accepts_a_uniform_all_zero_raster(tmp_path: Path) -> None:
 
     assert result.dest_path == site / "viirs" / "dark.tif"
     assert result.dest_path.read_bytes() == source.read_bytes()
+
+
+def test_inspect_rejects_an_all_nan_raster(tmp_path: Path) -> None:
+    """A raster with no finite pixel at all carries no radiance data."""
+    source = tmp_path / "masked.tif"
+    _write_pixel_geotiff(
+        source, np.full((1, _HEIGHT, _WIDTH), np.nan, dtype=np.float32)
+    )
+
+    with pytest.raises(ViirsImportError, match="placeholder grid"):
+        inspect_viirs(source)
+
+
+def test_inspect_accepts_a_nan_border_around_zero_terrain(
+    tmp_path: Path,
+) -> None:
+    """A NaN-masked border around all-zero radiance is genuine dark data."""
+    source = tmp_path / "dark_masked.tif"
+    pixels: npt.NDArray[np.float32] = np.zeros(
+        (1, _HEIGHT, _WIDTH), dtype=np.float32
+    )
+    pixels[:, 0, :] = np.nan
+    _write_pixel_geotiff(source, pixels)
+
+    raster = inspect_viirs(source)
+
+    assert raster.band_count == 1
+    assert raster.checksum == hashlib.sha256(source.read_bytes()).hexdigest()
 
 
 def test_inspect_rejects_a_non_raster_file(tmp_path: Path) -> None:

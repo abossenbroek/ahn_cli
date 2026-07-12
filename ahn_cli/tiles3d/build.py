@@ -15,7 +15,12 @@ directory are safe in both directions: a previous build's artifacts
 held aside in a scratch directory while the new build is written and
 verified, dropped only once the new build is accepted, and moved back
 into place when the new build fails for any reason — a previously
-verified deliverable is never destroyed by a failed rebuild.
+verified deliverable is never destroyed by a failed rebuild. The swap
+is two-phase with an accept-marker file as its commit point, so even
+a hard kill (SIGKILL, power loss) at any moment leaves a state the
+next run recovers: marker present means the artifacts in place are
+verified; marker absent means whatever the backup holds is the last
+verified deliverable and is put back first.
 """
 
 from __future__ import annotations
@@ -43,6 +48,9 @@ __all__ = ["ProgressCallback", "Tiles3dBuildResult", "build_tiles3d"]
 
 BACKUP_SUBDIR = ".tiles3d-backup"
 """Tool-owned scratch holding the previous deliverable during a rebuild."""
+
+ACCEPT_MARKER = ".tiles3d-accepted"
+"""Commit point of the swap: present only between verify and drop."""
 
 
 @dataclass(frozen=True)
@@ -106,8 +114,10 @@ def build_tiles3d(
     tiles_dir = out / TILES_SUBDIR
     tileset_path = out / TILESET_NAME
     backup_dir = out / BACKUP_SUBDIR
+    marker = out / ACCEPT_MARKER
     accepted = False
     try:
+        _recover(tiles_dir, tileset_path, backup_dir, marker)
         _hold_stale(tiles_dir, tileset_path, backup_dir)
         tiles_dir.mkdir(parents=True, exist_ok=True)
         for uri, data in computed.glbs.items():
@@ -123,7 +133,14 @@ def build_tiles3d(
         raise Tiles3dError(msg) from exc
     finally:
         if accepted:
-            shutil.rmtree(backup_dir, ignore_errors=True)
+            try:
+                _drop_backup(backup_dir, marker)
+            except OSError as exc:
+                msg = (
+                    f"3D Tiles output at {out} could not drop the held "
+                    f"previous deliverable: {exc}"
+                )
+                raise Tiles3dError(msg) from exc
         else:
             _discard(written, tiles_dir)
             _restore_stale(out, backup_dir)
@@ -136,22 +153,59 @@ def build_tiles3d(
     )
 
 
+def _recover(
+    tiles_dir: Path, tileset_path: Path, backup_dir: Path, marker: Path
+) -> None:
+    """Reconcile the leftovers of a hard-killed earlier rebuild.
+
+    The accept marker is the commit point of the two-phase swap. With
+    it present, the artifacts in ``out`` are a verified build and the
+    held copy (if any survives) is disposable. Without it, whatever
+    the backup holds is the last verified deliverable and the matching
+    artifacts in ``out`` are the killed run's unverified partial
+    write: per artifact, the held copy wins.
+    """
+    if marker.exists():
+        if backup_dir.is_dir():
+            shutil.rmtree(backup_dir)
+        marker.unlink()
+        return
+    if not backup_dir.is_dir():
+        return
+    held_tiles = backup_dir / TILES_SUBDIR
+    if held_tiles.is_dir():
+        if tiles_dir.is_dir():
+            shutil.rmtree(tiles_dir)
+        held_tiles.rename(tiles_dir)
+    held_tileset = backup_dir / TILESET_NAME
+    if held_tileset.is_file():
+        tileset_path.unlink(missing_ok=True)
+        held_tileset.rename(tileset_path)
+    backup_dir.rmdir()
+
+
 def _hold_stale(
     tiles_dir: Path, tileset_path: Path, backup_dir: Path
 ) -> None:
-    """Move a previous build's artifacts aside instead of deleting them.
-
-    ``backup_dir`` is tool-owned scratch: leftovers from a crashed
-    earlier rebuild are stale by definition and removed first.
-    """
-    if backup_dir.exists():
-        shutil.rmtree(backup_dir)
+    """Move a previous build's artifacts aside instead of deleting them."""
     stale = [p for p in (tiles_dir, tileset_path) if p.exists()]
     if not stale:
         return
     backup_dir.mkdir(parents=True)
     for path in stale:
         path.rename(backup_dir / path.name)
+
+
+def _drop_backup(backup_dir: Path, marker: Path) -> None:
+    """Two-phase drop: mark the build accepted, drop the held copy.
+
+    A hard kill anywhere in here is recovered by :func:`_recover`: the
+    marker tells the next run the artifacts in ``out`` are verified.
+    """
+    marker.touch()
+    if backup_dir.is_dir():
+        shutil.rmtree(backup_dir)
+    marker.unlink()
 
 
 def _restore_stale(out: Path, backup_dir: Path) -> None:

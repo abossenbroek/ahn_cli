@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 import pytest
 
@@ -203,15 +203,151 @@ def test_failed_rebuild_restores_the_previous_deliverable(
     assert after == before
 
 
-def test_leftover_backup_scratch_is_cleared(tmp_path: Path) -> None:
-    """Scratch from a crashed earlier rebuild never leaks into a build."""
+def _build_then_simulate_hard_kill_after_hold(
+    tmp_path: Path,
+) -> tuple[Path, Path, Path, dict[Path, bytes]]:
+    """Build once, then fake a SIGKILL between hold and restore.
+
+    Returns (ortho, heights, out, good) where ``good`` snapshots the
+    verified deliverable now stranded in the backup directory while
+    ``out`` proper holds the killed run's unverified partial write.
+    """
     ortho, heights = _make_inputs(tmp_path, 6, 6)
     out = tmp_path / "out"
-    leftover = out / build_module.BACKUP_SUBDIR
-    leftover.mkdir(parents=True)
-    (leftover / "0-0-0.glb").write_bytes(b"stale")
     build_tiles3d(ortho, heights, out)
+    good = {
+        p.relative_to(out): p.read_bytes()
+        for p in out.rglob("*")
+        if p.is_file()
+    }
+    backup = out / build_module.BACKUP_SUBDIR
+    backup.mkdir()
+    (out / "tiles").rename(backup / "tiles")
+    (out / "tileset.json").rename(backup / "tileset.json")
+    (out / "tiles").mkdir()
+    (out / "tiles" / "junk.glb").write_bytes(b"partial")
+    (out / "tileset.json").write_text("{}")
+    return ortho, heights, out, good
+
+
+def test_hard_killed_rebuild_recovers_and_rebuilds(tmp_path: Path) -> None:
+    """The deliverable a hard kill stranded in backup is put back first."""
+    ortho, heights, out, good = _build_then_simulate_hard_kill_after_hold(
+        tmp_path
+    )
+    result = build_tiles3d(ortho, heights, out)
+    assert result.tile_count == 1
+    after = {
+        p.relative_to(out): p.read_bytes()
+        for p in out.rglob("*")
+        if p.is_file()
+    }
+    assert after == good
+
+
+def test_hard_kill_then_failed_rebuild_still_restores(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Even a rebuild that fails after a hard kill restores the old build."""
+    ortho, heights, out, good = _build_then_simulate_hard_kill_after_hold(
+        tmp_path
+    )
+
+    def compact_write(document: dict[str, object], path: Path) -> None:
+        path.write_text(json.dumps(document, sort_keys=True))
+
+    monkeypatch.setattr(build_module, "write_tileset", compact_write)
+    with pytest.raises(Tiles3dError, match="byte-equal"):
+        build_tiles3d(ortho, heights, out)
+    after = {
+        p.relative_to(out): p.read_bytes()
+        for p in out.rglob("*")
+        if p.is_file()
+    }
+    assert after == good
+
+
+def test_mid_hold_kill_state_recovers(tmp_path: Path) -> None:
+    """A kill between the two hold renames leaves a recoverable union."""
+    ortho, heights = _make_inputs(tmp_path, 6, 6)
+    out = tmp_path / "out"
+    build_tiles3d(ortho, heights, out)
+    backup = out / build_module.BACKUP_SUBDIR
+    backup.mkdir()
+    (out / "tiles").rename(backup / "tiles")
+    result = build_tiles3d(ortho, heights, out)
+    assert result.tile_count == 1
+    assert sorted(p.name for p in out.iterdir()) == [
+        "tiles",
+        "tileset.json",
+    ]
+
+
+def test_kill_right_after_backup_mkdir_recovers(tmp_path: Path) -> None:
+    """An empty backup directory from a kill after mkdir is dissolved."""
+    ortho, heights = _make_inputs(tmp_path, 6, 6)
+    out = tmp_path / "out"
+    build_tiles3d(ortho, heights, out)
+    (out / build_module.BACKUP_SUBDIR).mkdir()
+    result = build_tiles3d(ortho, heights, out)
+    assert result.tile_count == 1
+    assert sorted(p.name for p in out.iterdir()) == [
+        "tiles",
+        "tileset.json",
+    ]
+
+
+def test_kill_during_drop_completes_on_the_next_run(tmp_path: Path) -> None:
+    """Marker present: the in-place build is verified, backup is dropped."""
+    ortho, heights = _make_inputs(tmp_path, 6, 6)
+    out = tmp_path / "out"
+    build_tiles3d(ortho, heights, out)
+    (out / build_module.ACCEPT_MARKER).touch()
+    leftover = out / build_module.BACKUP_SUBDIR
+    (leftover / "tiles").mkdir(parents=True)
+    (leftover / "tiles" / "0-0-0.glb").write_bytes(b"stale")
+    result = build_tiles3d(ortho, heights, out)
+    assert result.tile_count == 1
     assert not leftover.exists()
+    assert sorted(p.name for p in out.iterdir()) == [
+        "tiles",
+        "tileset.json",
+    ]
+
+
+def test_orphan_accept_marker_is_cleared(tmp_path: Path) -> None:
+    """A marker with no backup (kill between rmtree and unlink) is removed."""
+    ortho, heights = _make_inputs(tmp_path, 6, 6)
+    out = tmp_path / "out"
+    build_tiles3d(ortho, heights, out)
+    (out / build_module.ACCEPT_MARKER).touch()
+    build_tiles3d(ortho, heights, out)
+    assert sorted(p.name for p in out.iterdir()) == [
+        "tiles",
+        "tileset.json",
+    ]
+
+
+def test_failed_backup_drop_is_typed_and_recoverable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A drop that fails leaves the marker; the next run completes it."""
+    ortho, heights = _make_inputs(tmp_path, 6, 6)
+    out = tmp_path / "out"
+    build_tiles3d(ortho, heights, out)
+
+    def refuse(*_args: object, **_kwargs: object) -> NoReturn:
+        msg = "locked"
+        raise OSError(msg)
+
+    monkeypatch.setattr(build_module.shutil, "rmtree", refuse)
+    with pytest.raises(Tiles3dError, match="could not drop"):
+        build_tiles3d(ortho, heights, out)
+    assert (out / build_module.ACCEPT_MARKER).is_file()
+    assert (out / build_module.BACKUP_SUBDIR).is_dir()
+    monkeypatch.undo()
+    result = build_tiles3d(ortho, heights, out)
+    assert result.tile_count == 1
     assert sorted(p.name for p in out.iterdir()) == [
         "tiles",
         "tileset.json",

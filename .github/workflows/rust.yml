@@ -77,15 +77,20 @@ jobs:
       # use Path.write_text (text mode), so on Windows they emit CRLF and the
       # build's own byte-identity verifier rejects it — the current tiles3d
       # build cannot run on Windows. Documented in the spike results doc; the
-      # Phase-3 fix is newline="\n"/write_bytes. Non-blocking on Windows ONLY so
-      # the finding is surfaced (visible failed-but-allowed step) without hiding
-      # a genuine NEW determinism regression on Unix.
-      - name: regenerate loose fixtures (producer determinism)
-        continue-on-error: ${{ matrix.os == 'windows-latest' }}
-        run: uv run python -m tests.tiles3d.regen_rust_fixtures
-      - name: assert loose fixtures byte-identical to committed (per-OS)
-        continue-on-error: ${{ matrix.os == 'windows-latest' }}
-        run: git diff --exit-code tests/tiles3d/fixtures/rust-consumer
+      # Phase-3 fix is newline="\n"/write_bytes. Surfaced as a ::warning::
+      # annotation on Windows (visible in the checks summary) but a HARD failure
+      # on any NEW determinism regression on Unix.
+      - name: production tiles3d determinism (RED-2 known-broken on Windows)
+        run: |
+          if uv run python -m tests.tiles3d.regen_rust_fixtures \
+             && git diff --exit-code tests/tiles3d/fixtures/rust-consumer; then
+            echo "production regen deterministic on ${{ matrix.os }}"
+          elif [ "${{ matrix.os }}" = "windows-latest" ]; then
+            echo "::warning title=RED-2::production tiles3d producer is non-deterministic on Windows (CRLF from Path.write_text); see docs/superpowers/specs/2026-07-12-hf-v2-spike-results.md"
+          else
+            echo "::error title=determinism-regression::production regen non-deterministic on ${{ matrix.os }}"
+            exit 1
+          fi
       - name: Rust decodes every fixture + pack + golden vector
         working-directory: rust/spike-poc
         run: cargo test --all-features

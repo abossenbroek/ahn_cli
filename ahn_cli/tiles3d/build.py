@@ -142,8 +142,15 @@ def build_tiles3d(
                 )
                 raise Tiles3dError(msg) from exc
         else:
-            _discard(written, tiles_dir)
-            _restore_stale(out, backup_dir)
+            try:
+                _discard(written, tiles_dir)
+                _restore_stale(tiles_dir, tileset_path, backup_dir)
+            except OSError as exc:
+                msg = (
+                    f"3D Tiles output at {out} could not restore the "
+                    f"held previous deliverable: {exc}"
+                )
+                raise Tiles3dError(msg) from exc
     return Tiles3dBuildResult(
         tileset_path=tileset_path,
         tile_count=tree.tile_count,
@@ -170,18 +177,7 @@ def _recover(
             shutil.rmtree(backup_dir)
         marker.unlink()
         return
-    if not backup_dir.is_dir():
-        return
-    held_tiles = backup_dir / TILES_SUBDIR
-    if held_tiles.is_dir():
-        if tiles_dir.is_dir():
-            shutil.rmtree(tiles_dir)
-        held_tiles.rename(tiles_dir)
-    held_tileset = backup_dir / TILESET_NAME
-    if held_tileset.is_file():
-        tileset_path.unlink(missing_ok=True)
-        held_tileset.rename(tileset_path)
-    backup_dir.rmdir()
+    _restore_stale(tiles_dir, tileset_path, backup_dir)
 
 
 def _hold_stale(
@@ -208,18 +204,40 @@ def _drop_backup(backup_dir: Path, marker: Path) -> None:
     marker.unlink()
 
 
-def _restore_stale(out: Path, backup_dir: Path) -> None:
-    """Move a held-aside previous deliverable back into place."""
+def _restore_stale(
+    tiles_dir: Path, tileset_path: Path, backup_dir: Path
+) -> None:
+    """Move a held-aside previous deliverable back into place.
+
+    Per artifact, the held copy wins: any ``tiles/`` or
+    ``tileset.json`` still in ``out`` is an unverified leftover of the
+    failed or killed run holding the backup, and is removed before the
+    verified copy is renamed back. An artifact absent from the backup
+    keeps the copy in ``out`` (a kill between the two hold renames
+    leaves the not-yet-held, still-verified artifact in place).
+    """
     if not backup_dir.is_dir():
         return
-    for held in backup_dir.iterdir():
-        held.rename(out / held.name)
+    held_tiles = backup_dir / TILES_SUBDIR
+    if held_tiles.is_dir():
+        if tiles_dir.is_dir():
+            shutil.rmtree(tiles_dir)
+        held_tiles.rename(tiles_dir)
+    held_tileset = backup_dir / TILESET_NAME
+    if held_tileset.is_file():
+        tileset_path.unlink(missing_ok=True)
+        held_tileset.rename(tileset_path)
     backup_dir.rmdir()
 
 
 def _discard(written: list[Path], tiles_dir: Path) -> None:
-    """Remove everything a rejected build wrote (never leave stale)."""
+    """Remove everything a rejected build wrote (never leave stale).
+
+    ``tiles_dir`` is removed wholesale: when this runs, it holds only
+    the rejected run's output — including any partial file a failed
+    write created without ever being tracked in ``written``.
+    """
     for path in written:
         path.unlink(missing_ok=True)
-    if tiles_dir.is_dir() and not any(tiles_dir.iterdir()):
-        tiles_dir.rmdir()
+    if tiles_dir.is_dir():
+        shutil.rmtree(tiles_dir)

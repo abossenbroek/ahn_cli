@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any, NoReturn, cast
+from pathlib import Path
+from typing import Any, NoReturn, cast
 
 import pytest
 
@@ -17,9 +18,6 @@ from tests.tiles3d.conftest import (
     synth_rgb,
     write_exr,
 )
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 def _make_inputs(
@@ -326,6 +324,77 @@ def test_orphan_accept_marker_is_cleared(tmp_path: Path) -> None:
         "tiles",
         "tileset.json",
     ]
+
+
+def _snapshot(out: Path) -> dict[Path, bytes]:
+    return {
+        p.relative_to(out): p.read_bytes()
+        for p in out.rglob("*")
+        if p.is_file()
+    }
+
+
+def _flaky_write(monkeypatch: pytest.MonkeyPatch, failing_call: int) -> None:
+    """Patch Path.write_bytes to die on call N, leaving a stray file."""
+    calls = {"count": 0}
+    real_write = Path.write_bytes
+
+    def flaky(self: Path, data: bytes) -> int:
+        calls["count"] += 1
+        if calls["count"] == failing_call:
+            self.touch()
+            msg = "disk full"
+            raise OSError(msg)
+        return real_write(self, data)
+
+    monkeypatch.setattr(Path, "write_bytes", flaky)
+
+
+def test_partial_write_failure_restores_the_deliverable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A write dying mid-loop restores the old build, typed and whole."""
+    ortho, heights = _make_inputs(tmp_path, 20, 14)
+    out = tmp_path / "out"
+    build_tiles3d(ortho, heights, out, tile_pixels=8)
+    good = _snapshot(out)
+    _flaky_write(monkeypatch, failing_call=3)
+    with pytest.raises(Tiles3dError, match="not writable"):
+        build_tiles3d(ortho, heights, out, tile_pixels=8)
+    assert _snapshot(out) == good
+
+
+def test_first_build_partial_write_leaves_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stray file from a failed write is removed with the tiles dir."""
+    ortho, heights = _make_inputs(tmp_path, 20, 14)
+    out = tmp_path / "out"
+    _flaky_write(monkeypatch, failing_call=3)
+    with pytest.raises(Tiles3dError, match="not writable"):
+        build_tiles3d(ortho, heights, out, tile_pixels=8)
+    assert list(out.iterdir()) == []
+
+
+def test_failed_restore_is_a_typed_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Even a cleanup failure surfaces as the context's typed error."""
+    ortho, heights = _make_inputs(tmp_path, 6, 6)
+    out = tmp_path / "out"
+    build_tiles3d(ortho, heights, out)
+
+    def compact_write(document: dict[str, object], path: Path) -> None:
+        path.write_text(json.dumps(document, sort_keys=True))
+
+    def refuse(*_args: object, **_kwargs: object) -> NoReturn:
+        msg = "locked"
+        raise OSError(msg)
+
+    monkeypatch.setattr(build_module, "write_tileset", compact_write)
+    monkeypatch.setattr(build_module.shutil, "rmtree", refuse)
+    with pytest.raises(Tiles3dError, match="could not restore"):
+        build_tiles3d(ortho, heights, out)
 
 
 def test_failed_backup_drop_is_typed_and_recoverable(

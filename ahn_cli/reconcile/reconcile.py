@@ -17,6 +17,7 @@ continental run the cloud is tiled spatially, outside this function's scope.
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -41,6 +42,7 @@ if TYPE_CHECKING:
     from ahn_cli.reconcile.interpolate import Interpolator
     from ahn_cli.reconcile.method import InterpMethod
     from ahn_cli.reconcile.raster import OrthoReader
+    from ahn_cli.reconcile.writers import ReconciledWriter
 
 __all__ = [
     "ProgressCallback",
@@ -154,6 +156,10 @@ def reconcile(
           position, or not covering every pixel centre of the orthophoto
           grid. Interpolating any of those would fabricate ("infill")
           elevations, which reconcile never does.
+        - :class:`ReconcileError` if any pixel ends up without a genuine
+          elevation estimate (e.g. outside linear's convex hull): missing
+          data is a hard error, and every partial output is removed
+          before raising.
     """
     report = progress if progress is not None else _no_op_progress
     with open_ortho(request.ortho_path) as ortho:
@@ -182,18 +188,23 @@ def reconcile(
 
         block_rows = max(1, _BLOCK_CELLS // width)
         valid_points = 0
-        for row_start in range(0, height, block_rows):
-            rows = min(block_rows, height - row_start)
-            grid_block, mask_block = _assemble_block(
-                ortho, grid, interpolator, row_start, rows
-            )
-            valid_points += int(mask_block.sum())
-            for writer in writers:
-                writer.write_block(grid_block, mask_block)
-            report(row_start + rows, height)
+        try:
+            for row_start in range(0, height, block_rows):
+                rows = min(block_rows, height - row_start)
+                grid_block, mask_block = _assemble_block(
+                    ortho, grid, interpolator, row_start, rows
+                )
+                _verify_block_complete(mask_block, row_start, request)
+                valid_points += int(mask_block.sum())
+                for writer in writers:
+                    writer.write_block(grid_block, mask_block)
+                report(row_start + rows, height)
 
-        for writer in writers:
-            writer.close()
+            for writer in writers:
+                writer.close()
+        except ReconcileError:
+            _discard_outputs(writers, outputs)
+            raise
 
     return ReconcileStats(
         width=width,
@@ -275,6 +286,53 @@ def _verify_cloud_covers_grid(
             "cover the same site."
         )
         raise ReconcileError(msg)
+
+
+def _verify_block_complete(
+    mask_block: npt.NDArray[np.bool_],
+    row_start: int,
+    request: ReconcileRequest,
+) -> None:
+    """Hard-verify every pixel of this block has a genuine estimate.
+
+    A void cell means the method could not derive an elevation from the
+    source cloud (e.g. a pixel centre outside linear's convex hull).
+    Writing it would either fabricate a value or leave a silent hole, so
+    missing data is a hard error instead.
+
+    Failure modes:
+        - :class:`ReconcileError` if any cell of ``mask_block`` is False,
+          naming the void count and the affected row range.
+    """
+    if bool(mask_block.all()):
+        return
+    voids = int(mask_block.size - int(mask_block.sum()))
+    last_row = row_start + mask_block.shape[0] - 1
+    msg = (
+        f"{voids} pixel(s) in rows {row_start}..{last_row} have "
+        f"no genuine elevation estimate from the cloud at "
+        f"{request.cloud_path}; missing data is an error — reconcile "
+        'never fabricates ("infills") elevations. Use a method that '
+        "covers every pixel (e.g. idw) or fix the inputs."
+    )
+    raise ReconcileError(msg)
+
+
+def _discard_outputs(
+    writers: list[ReconciledWriter], outputs: tuple[Path, ...]
+) -> None:
+    """Remove every partial output of a rejected run.
+
+    A refused reconcile must leave nothing behind: writers are closed
+    best-effort (a half-written stream may legitimately fail to close),
+    then each output file and any PLY payload temp is unlinked.
+    """
+    for writer in writers:
+        with contextlib.suppress(Exception):
+            writer.close()
+    for path in outputs:
+        path.unlink(missing_ok=True)
+        path.with_name(path.name + ".payload").unlink(missing_ok=True)
 
 
 def _grid_corner(grid: PixelGrid) -> tuple[float, float]:

@@ -9,7 +9,7 @@ import laspy
 import numpy as np
 import pytest
 
-from ahn_cli.reconcile.method import IdwInterp
+from ahn_cli.reconcile.method import IdwInterp, LinearInterp
 from ahn_cli.reconcile.reconcile import (
     ReconcileError,
     ReconcileRequest,
@@ -264,6 +264,35 @@ def test_reconcile_rejects_a_cloud_covering_only_half_the_grid(
 
     with pytest.raises(ReconcileError, match="east"):
         reconcile(_request(ortho_path, cloud, tmp_path / "out"))
+
+
+def test_reconcile_refuses_void_estimates_and_leaves_no_outputs(
+    ortho_path: Path, tmp_path: Path
+) -> None:
+    """Any pixel without a genuine estimate aborts and removes outputs.
+
+    A diagonal-line cloud covers the pixel-centre bbox on every side (so
+    the coverage gate passes) but its convex hull is a segment, so the
+    linear method cannot estimate any pixel. That is missing data — a
+    hard error — and no partial file (nor a PLY payload temp) may
+    survive.
+    """
+    diag = np.linspace(100.25, 102.75, 7)
+    cloud = _write_cloud(
+        tmp_path / "diag.laz", np.c_[diag, diag, np.ones_like(diag)]
+    )
+    request = ReconcileRequest(
+        ortho_path=ortho_path,
+        cloud_path=cloud,
+        output_dir=tmp_path / "out",
+        method=LinearInterp(),
+        formats=(OutputFormat.LAZ, OutputFormat.PLY),
+    )
+
+    with pytest.raises(ReconcileError, match="no genuine elevation estimate"):
+        reconcile(request)
+
+    assert list((tmp_path / "out").iterdir()) == []
 
 
 def test_reconcile_accepts_a_cloud_covering_exactly_the_pixel_centres(

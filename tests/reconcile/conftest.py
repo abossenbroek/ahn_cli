@@ -51,9 +51,17 @@ def ortho_path(tmp_path: Path) -> Path:
 
 @pytest.fixture
 def cloud_path(tmp_path: Path) -> Path:
-    """Write an AHN LAZ of 200 points covering the ortho extent (planar Z)."""
+    """Write an AHN LAZ of 204 points covering the ortho extent (planar Z).
+
+    The four extent corners are included so the convex hull contains
+    every pixel centre: hull-based methods (linear) must cover the whole
+    grid now that reconcile refuses void estimates.
+    """
     rng = np.random.default_rng(1)
-    xy = rng.uniform(MINX, MAXX, (200, 2))
+    corners = np.array(
+        [[MINX, MINY], [MAXX, MINY], [MINX, MAXY], [MAXX, MAXY]]
+    )
+    xy = np.vstack([rng.uniform(MINX, MAXX, (200, 2)), corners])
     z = 0.1 * xy[:, 0] + 0.2 * xy[:, 1]
     header = laspy.LasHeader(point_format=2)
     header.offsets = [MINX, MINY, 0.0]

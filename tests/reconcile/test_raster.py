@@ -70,9 +70,9 @@ def test_load_cloud_returns_coords_and_classification(
 ) -> None:
     """A valid LAZ yields its (n, 3) coordinates and (n,) classification."""
     cloud = load_cloud(cloud_path)
-    assert cloud.coords.shape == (200, 3)
+    assert cloud.coords.shape == (204, 3)
     assert cloud.coords.dtype == np.float64
-    assert cloud.classification.shape == (200,)
+    assert cloud.classification.shape == (204,)
     assert cloud.classification.dtype == np.uint8
 
 

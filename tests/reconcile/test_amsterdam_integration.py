@@ -16,6 +16,7 @@ from pathlib import Path
 
 import numpy as np
 import numpy.typing as npt
+import pytest
 
 from ahn_cli.reconcile.method import (
     IdwInterp,
@@ -25,7 +26,11 @@ from ahn_cli.reconcile.method import (
     Variogram,
     VariogramModel,
 )
-from ahn_cli.reconcile.reconcile import ReconcileRequest, reconcile
+from ahn_cli.reconcile.reconcile import (
+    ReconcileError,
+    ReconcileRequest,
+    reconcile,
+)
 from ahn_cli.reconcile.writers import OutputFormat
 
 _FIXTURES = Path(__file__).parent / "fixtures"
@@ -83,12 +88,19 @@ def test_amsterdam_idw_all_formats(tmp_path: Path) -> None:
     )  # ortho colour carried through
 
 
-def test_amsterdam_linear_has_hull_voids(tmp_path: Path) -> None:
-    """Linear leaves the out-of-hull border cells void (fewer than all pixels)."""
-    stats = reconcile(
-        _request(tmp_path / "out", LinearInterp(), (OutputFormat.PT,))
-    )
-    assert 0 < stats.valid_points < _PIXELS
+def test_amsterdam_linear_hull_voids_are_refused(tmp_path: Path) -> None:
+    """Linear's out-of-hull border cells are missing data: a hard error.
+
+    The real window's border pixel centres fall outside the cloud's
+    convex hull, so linear interpolation cannot produce a genuine
+    estimate there. Reconcile refuses instead of writing a partial
+    grid, and leaves no output files behind.
+    """
+    with pytest.raises(ReconcileError, match="no genuine elevation estimate"):
+        reconcile(
+            _request(tmp_path / "out", LinearInterp(), (OutputFormat.PT,))
+        )
+    assert list((tmp_path / "out").iterdir()) == []
 
 
 def test_amsterdam_kriging_handles_coincident_returns(tmp_path: Path) -> None:

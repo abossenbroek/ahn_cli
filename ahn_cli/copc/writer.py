@@ -206,6 +206,7 @@ class CopcNodeWriter:
         packed["returns"] = records["return_number"] | (
             records["number_of_returns"] << 4
         )
+        packed["flags"] = records["flags"]
         packed["classification"] = records["classification"]
         packed["user_data"] = records["user_data"]
         packed["scan_angle"] = records["scan_angle"]

@@ -125,6 +125,59 @@ def test_number_of_returns_never_below_return_number(
     assert records["number_of_returns"].tolist() == [3]
 
 
+def test_bit_field_attributes_pack_into_the_flags_byte(
+    write_laz: WriteLaz, tmp_path: Path
+) -> None:
+    """PDRF-6 bit fields land in their LAS 1.4 flag-byte positions."""
+    coords = [
+        (0.0, 0.0, 0.0),
+        (0.1, 0.1, 0.0),
+        (0.2, 0.2, 0.0),
+        (0.3, 0.3, 0.0),
+    ]
+    cloud = write_laz(
+        coords,
+        point_format=6,
+        bit_fields={
+            "synthetic": [1, 0, 0, 0],
+            "key_point": [0, 1, 0, 0],
+            "withheld": [0, 0, 1, 0],
+            "overlap": [0, 0, 0, 1],
+            "scanner_channel": [0, 3, 0, 2],
+            "scan_direction_flag": [1, 0, 0, 0],
+            "edge_of_flight_line": [0, 0, 0, 1],
+        },
+    )
+    result = scatter_cloud(cloud, _plan(bucket_level=0), tmp_path / "work")
+    records = np.fromfile(result.bucket_paths[(0, 0)], dtype=RECORD_DTYPE)
+    assert records["flags"].tolist() == [
+        0b0100_0001,  # synthetic + scan direction
+        0b0011_0010,  # key point + scanner channel 3
+        0b0000_0100,  # withheld
+        0b1010_1000,  # overlap + scanner channel 2 + edge of flight line
+    ]
+
+
+def test_legacy_bit_fields_pack_without_modern_dims(
+    write_laz: WriteLaz, tmp_path: Path
+) -> None:
+    """PDRF-2 lacks overlap/scanner_channel; its other bits carry over."""
+    cloud = write_laz(
+        [(0.0, 0.0, 0.0), (0.1, 0.1, 0.0)],
+        point_format=2,
+        bit_fields={
+            "synthetic": [1, 0],
+            "key_point": [0, 1],
+            "withheld": [1, 0],
+            "scan_direction_flag": [0, 1],
+            "edge_of_flight_line": [1, 0],
+        },
+    )
+    result = scatter_cloud(cloud, _plan(bucket_level=0), tmp_path / "work")
+    records = np.fromfile(result.bucket_paths[(0, 0)], dtype=RECORD_DTYPE)
+    assert records["flags"].tolist() == [0b1000_0101, 0b0100_0010]
+
+
 def test_scatter_starts_from_an_empty_bucket_directory(
     write_laz: WriteLaz, tmp_path: Path
 ) -> None:

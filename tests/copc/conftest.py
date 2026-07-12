@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 class WriteLaz(Protocol):
     """Factory fixture protocol: write a LAZ, return its path."""
 
-    def __call__(
+    def __call__(  # noqa: PLR0913 -- one keyword per optional LAZ dim
         self,
         coords: list[tuple[float, float, float]],
         *,
@@ -32,6 +32,7 @@ class WriteLaz(Protocol):
         classification: list[int] | None = None,
         returns: tuple[list[int], list[int]] | None = None,
         scan_angle_rank: list[int] | None = None,
+        bit_fields: dict[str, list[int]] | None = None,
         name: str = "cloud.laz",
     ) -> Path:
         """Write the LAZ and return its path."""
@@ -42,7 +43,7 @@ class WriteLaz(Protocol):
 def write_laz(tmp_path: Path) -> WriteLaz:
     """Return a factory writing a small deterministic LAZ from arrays."""
 
-    def _write(
+    def _write(  # noqa: PLR0913 -- one keyword per optional LAZ dim
         coords: list[tuple[float, float, float]],
         *,
         point_format: int = 7,
@@ -51,6 +52,7 @@ def write_laz(tmp_path: Path) -> WriteLaz:
         classification: list[int] | None = None,
         returns: tuple[list[int], list[int]] | None = None,
         scan_angle_rank: list[int] | None = None,
+        bit_fields: dict[str, list[int]] | None = None,
         name: str = "cloud.laz",
     ) -> Path:
         arr: npt.NDArray[np.float64] = np.asarray(coords, dtype=np.float64)
@@ -76,6 +78,9 @@ def write_laz(tmp_path: Path) -> WriteLaz:
             las.number_of_returns = np.asarray(returns[1], dtype=np.uint8)
         if scan_angle_rank is not None:
             las.scan_angle_rank = np.asarray(scan_angle_rank, dtype=np.int8)
+        if bit_fields is not None:
+            for dim, values in bit_fields.items():
+                setattr(las, dim, np.asarray(values, dtype=np.uint8))
         path = tmp_path / name
         las.write(str(path))
         return path

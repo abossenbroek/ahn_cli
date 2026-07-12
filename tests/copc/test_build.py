@@ -52,6 +52,35 @@ def test_end_to_end_build_readable_and_exact(
         assert copc_reader.header.point_count == 36
 
 
+def test_bit_field_attributes_survive_the_build(
+    write_laz: WriteLaz, tmp_path: Path
+) -> None:
+    """withheld/overlap/scanner_channel/direction/edge reach the output."""
+    coords = [(0.0, 0.0, 0.0), (1.0, 1.0, 0.0), (2.0, 2.0, 0.0)]
+    cloud = write_laz(
+        coords,
+        point_format=6,
+        bit_fields={
+            "withheld": [1, 0, 0],
+            "overlap": [0, 1, 0],
+            "scanner_channel": [0, 0, 3],
+            "scan_direction_flag": [0, 1, 0],
+            "edge_of_flight_line": [1, 0, 0],
+        },
+    )
+    out = tmp_path / "flags.copc.laz"
+    result = build_copc(cloud, out)
+    assert result.written_points == 3
+    with laspy.open(str(out)) as reader:
+        las = reader.read()
+    order = np.argsort(np.asarray(las.x))
+    assert np.asarray(las.withheld)[order].tolist() == [1, 0, 0]
+    assert np.asarray(las.overlap)[order].tolist() == [0, 1, 0]
+    assert np.asarray(las.scanner_channel)[order].tolist() == [0, 0, 3]
+    assert np.asarray(las.scan_direction_flag)[order].tolist() == [0, 1, 0]
+    assert np.asarray(las.edge_of_flight_line)[order].tolist() == [1, 0, 0]
+
+
 def test_duplicates_collapse_to_native_coarseness(
     write_laz: WriteLaz, tmp_path: Path
 ) -> None:

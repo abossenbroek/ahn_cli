@@ -9,8 +9,12 @@ and one bucket there — never the input size.
 
 Attribute handling normalizes the input zoo to what the PDRF 6/7 output
 needs: legacy ``scan_angle_rank`` degrees become 0.006-degree ``scan_angle``
-units, and return numbers are lifted into the LAS-valid ``1..15`` range
-(interpolated clouds legitimately carry zeros there).
+units, return numbers are lifted into the LAS-valid ``1..15`` range
+(interpolated clouds legitimately carry zeros there), and the LAS bit-field
+attributes (``synthetic``/``key_point``/``withheld``/``overlap``,
+``scanner_channel``, ``scan_direction_flag``, ``edge_of_flight_line``) are
+packed into the PDRF 6 flags byte — dims the source format lacks (legacy
+formats have no ``overlap``/``scanner_channel``) stay zero.
 
 Determinism: chunks are processed in file order and appends are sequential,
 so identical input yields byte-identical bucket files. The bucket directory
@@ -49,6 +53,7 @@ RECORD_DTYPE = np.dtype(
         ("intensity", "<u2"),
         ("return_number", "u1"),
         ("number_of_returns", "u1"),
+        ("flags", "u1"),
         ("classification", "u1"),
         ("scan_angle", "<i2"),
         ("user_data", "u1"),
@@ -63,6 +68,18 @@ RECORD_DTYPE = np.dtype(
 
 _MAX_RETURN = 15  # PDRF 6+ return fields are 4 bits wide
 _SCAN_ANGLE_DEGREES_PER_UNIT = 0.006  # LAS 1.4 scan_angle unit
+
+_FLAG_BITS = (
+    ("synthetic", 0),
+    ("key_point", 1),
+    ("withheld", 2),
+    ("overlap", 3),
+    ("scan_direction_flag", 6),
+    ("edge_of_flight_line", 7),
+)
+"""Single-bit dims and their positions in the PDRF 6 flags byte."""
+
+_SCANNER_CHANNEL_SHIFT = 4  # 2-bit scanner channel, bits 4-5
 
 
 @dataclass(frozen=True, eq=False)
@@ -191,6 +208,7 @@ def _pack_records(
     )
     records["return_number"] = return_number
     records["number_of_returns"] = number_of_returns
+    records["flags"] = _pack_flags(chunk, names, n)
     if "scan_angle" in names:
         records["scan_angle"] = np.asarray(chunk.scan_angle, dtype=np.int16)
     else:
@@ -205,6 +223,23 @@ def _pack_records(
     if "gps_time" in names:
         records["gps_time"] = np.asarray(chunk.gps_time, dtype=np.float64)
     return records, quantized
+
+
+def _pack_flags(
+    chunk: laspy.ScaleAwarePointRecord,
+    names: set[str],
+    n: int,
+) -> npt.NDArray[np.uint8]:
+    """Pack the PDRF 6 bit-field byte from whatever dims the input has."""
+    flags = np.zeros(n, dtype=np.uint8)
+    for name, shift in _FLAG_BITS:
+        if name in names:
+            bit = np.asarray(chunk[name], dtype=np.uint8)
+            flags |= ((bit & 1) << shift).astype(np.uint8)
+    if "scanner_channel" in names:
+        channel = np.asarray(chunk.scanner_channel, dtype=np.uint8)
+        flags |= ((channel & 0b11) << _SCANNER_CHANNEL_SHIFT).astype(np.uint8)
+    return flags
 
 
 def _append_by_bucket(

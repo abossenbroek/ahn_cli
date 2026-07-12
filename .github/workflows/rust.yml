@@ -1,0 +1,79 @@
+# hf-v2 Task 1b interop spike CI. Runs the throwaway `rust/spike-poc` crate on
+# three OSes and the Python<->Rust cross-language round-trip. `paths:` is left
+# unrestricted for the spike; Phase 4 replaces this with the filtered matrix
+# from the plan.
+name: rust-spike
+
+on:
+  push:
+    branches: [hf-v2]
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # fmt + clippy, cheap, ubuntu only.
+  spike-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: cargo fmt --check
+        working-directory: rust/spike-poc
+        run: cargo fmt --all --check
+      - name: cargo clippy -D warnings
+        working-directory: rust/spike-poc
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+  # cargo test on all three OSes, stable. MSVC build of zstd-sys with no extra
+  # system deps is itself one of the doubts — this job is where it is proven.
+  spike-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        # avoid autocrlf mangling the committed text fixtures/data on Windows
+      - name: disable autocrlf
+        run: git config --global core.autocrlf false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: build (records MSVC zstd-sys build on windows)
+        working-directory: rust/spike-poc
+        run: cargo build --all-features --tests
+      - name: test (verbose, shows [bench] numbers)
+        working-directory: rust/spike-poc
+        run: cargo test --all-features -- --nocapture
+
+  # Python producer byte-determinism per OS + Rust decodes the fixtures.
+  cross-language:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: disable autocrlf
+        run: git config --global core.autocrlf false
+      - uses: dtolnay/rust-toolchain@stable
+      - name: install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: uv sync
+        run: uv sync
+      - name: regenerate loose fixtures (producer determinism)
+        run: uv run python -m tests.tiles3d.regen_rust_fixtures
+      - name: regenerate spike golden vectors + packs
+        run: uv run python rust/spike-poc/tools/gen_vectors.py
+      - name: assert fixtures byte-identical to committed (per-OS determinism)
+        run: git diff --exit-code tests/tiles3d/fixtures/rust-consumer rust/spike-poc/tests/data
+      - name: Rust decodes every fixture + pack + golden vector
+        working-directory: rust/spike-poc
+        run: cargo test --all-features

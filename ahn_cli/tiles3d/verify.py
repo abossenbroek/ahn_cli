@@ -54,6 +54,7 @@ from ahn_cli.tiles3d.provenance import PROVENANCE_NAME, render_game_provenance
 from ahn_cli.tiles3d.quadtree import plan_quadtree, sample_indices
 from ahn_cli.tiles3d.sources import load_terrain
 from ahn_cli.tiles3d.tileset import render_tileset
+from ahn_cli.tiles3d.verify_game import verify_game_tile
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -99,9 +100,11 @@ def verify_tiles3d(
         - ``profile`` selects the encoder for the independent rebuild so
           the byte-identity backstop reproduces the same on-disk bytes;
           under the game profile that backstop also covers
-          ``provenance.json``. The per-tile glTF/texture/containment
-          checks are strict-profile-specific (they assume float32 + PNG);
-          the game profile relies on the byte-identity rebuild.
+          ``provenance.json``. Each profile runs its own per-tile checks
+          before the backstop: the strict profile's float32/PNG
+          glTF/texture/containment checks, or the game profile's four
+          quantized/meshopt/JPEG families plus dequantized-vertex
+          containment (:func:`~ahn_cli.tiles3d.verify_game.verify_game_tile`).
 
     Failure modes:
         - :class:`Tiles3dError` naming the first failed check.
@@ -113,17 +116,20 @@ def verify_tiles3d(
     flat = _verify_document(document)
     tiles_by_uri = {tile_uri(t): t for t in _walk(tree.root)}
     _verify_links(out_dir, flat, tiles_by_uri)
-    if profile is Profile.STRICT:
-        geodesy = Geodesy()
-        for entry, enclosing_regions in flat:
-            uri = _entry_uri(entry)
-            tile = tiles_by_uri[uri]
-            data = (out_dir / uri).read_bytes()
-            gltf, binary = _parse_glb(data, uri)
+    geodesy = Geodesy()
+    for entry, enclosing_regions in flat:
+        uri = _entry_uri(entry)
+        tile = tiles_by_uri[uri]
+        gltf, binary = _parse_glb((out_dir / uri).read_bytes(), uri)
+        if profile is Profile.STRICT:
             _verify_gltf(gltf, binary, uri)
             _verify_texture(gltf, binary, terrain, tile, uri)
             _verify_containment(
                 terrain, tile, enclosing_regions, geodesy, uri
+            )
+        else:
+            verify_game_tile(
+                gltf, binary, terrain, tile, enclosing_regions, geodesy, uri
             )
     computed = compute_build(terrain, tree, encoder=profile.encoder())
     _verify_byte_identity(out_dir, computed, profile)

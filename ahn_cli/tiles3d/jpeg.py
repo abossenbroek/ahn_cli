@@ -48,6 +48,7 @@ __all__ = [
     "JPEG_SUBSAMPLING",
     "decode_jpeg",
     "encode_jpeg",
+    "is_baseline_jpeg",
     "jpeg_fidelity_ok",
     "pillow_version",
 ]
@@ -77,6 +78,50 @@ garbage image — the floor guards "the encoder produced this image", not
 """
 
 _CHANNELS = 3
+
+_SOI = b"\xff\xd8"
+_MARKER = 0xFF
+_SOF0 = 0xC0  # baseline sequential frame
+_SOF2 = 0xC2  # progressive frame
+_SOS = 0xDA  # start of scan
+_SEGMENT_HEADER = 4  # marker byte pair + big-endian length
+
+
+def is_baseline_jpeg(data: bytes) -> bool:
+    """Return whether ``data`` is a baseline sequential JPEG.
+
+    Contract:
+        - ``True`` iff the stream starts with SOI and its header segments
+          declare a baseline frame (SOF0) and no progressive frame
+          (SOF2). Pillow reports ``format == "JPEG"`` for progressive
+          streams too, so a progressive regression needs this marker-level
+          check; the verifier uses it to pin the game profile's pinned
+          baseline framing.
+        - The header markers are walked by their big-endian segment
+          lengths up to (not into) the entropy-coded scan (SOS); only the
+          Pillow-shaped streams this codec produces or a test splices in
+          reach it, so a non-marker byte or a length overrunning the
+          buffer simply ends the walk.
+    """
+    if data[:2] != _SOI:
+        return False
+    markers = _header_markers(data)
+    return _SOF0 in markers and _SOF2 not in markers
+
+
+def _header_markers(data: bytes) -> list[int]:
+    """Collect each header segment's marker byte, up to the scan (SOS)."""
+    markers: list[int] = []
+    pos = 2  # past SOI
+    while pos + _SEGMENT_HEADER <= len(data):
+        if data[pos] != _MARKER:  # not sitting on a marker: stop the walk
+            break
+        marker = data[pos + 1]
+        if marker == _SOS:  # the entropy-coded scan follows -- stop
+            break
+        markers.append(marker)
+        pos += 2 + ((data[pos + 2] << 8) | data[pos + 3])
+    return markers
 
 
 def encode_jpeg(rgb: npt.NDArray[np.uint8]) -> bytes:

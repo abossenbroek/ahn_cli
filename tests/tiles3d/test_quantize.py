@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 import pytest
+
+if TYPE_CHECKING:
+    import numpy.typing as npt
 
 from ahn_cli.tiles3d.errors import Tiles3dError
 from ahn_cli.tiles3d.quantize import (
@@ -19,7 +24,7 @@ from ahn_cli.tiles3d.quantize import (
 )
 
 
-def _grid(width: int, height: int, seed: int) -> np.ndarray:
+def _grid(width: int, height: int, seed: int) -> npt.NDArray[np.float32]:
     """Build a deterministic ``(n, 3)`` float32 RTC-like vertex block."""
     rng = np.random.default_rng(seed)
     x = np.linspace(-20.0, 20.0, width, dtype=np.float64)

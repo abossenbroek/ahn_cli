@@ -22,7 +22,7 @@ platform doubts are GREEN on all three OSes.
 - CI: `.github/workflows/rust.yml` — `spike-lint` (ubuntu) + `spike-test`
   (3 OS × stable) + `cross-language` (3 OS: uv sync → regen → `git diff
   --exit-code` → `cargo test`). Run link:
-  https://github.com/abossenbroek/ahn_cli/actions/runs/29202785397
+  https://github.com/abossenbroek/ahn_cli/actions/runs/29203051096
 
 Task 1a (lz4-vs-zstd codec bake-off) owns the codec-winner rows; this spike
 validated zstd interop only. If 1a pins lz4, every zstd row below must be
@@ -129,8 +129,8 @@ v2 `.hf` chunk header **120 B**: v1 112-B header + `header_crc32 u32` (CRC over
 | P9 truncation matrix (header/dir/index/hash/blob/last-byte) | chop at 6 points, both readers | all 6 rejected in Python **and** Rust | GREEN |
 | P9 header/index bit-flip | flip 1 byte | `HeaderCrc` / `IndexCrc` (both languages) | GREEN |
 | P9 hash-section corruption | flip 1 byte in hash section | `DatasetId` reject | GREEN |
-| P10 per-frame scan sub-100 µs class | 2000-entry linear AABB scan | **7.8 µs/scan** (mac) — sub-100 µs confirmed | GREEN |
-| P11 mmap vs positioned reads (Windows/Defender) | timed index reads, 3 OS | mac: pread 461 ns/rep, mmap-copy 82 ns/rep; **linux/windows from CI** | GREEN (mac) / see note |
+| P10 per-frame scan sub-100 µs class | 2000-entry linear AABB scan, 3 OS | **~8–12 µs/scan** (mac 8.2, ubuntu 11.8, windows 11.8) — sub-100 µs on every OS | GREEN |
+| P11 mmap vs positioned reads (Windows/Defender) | timed index reads, 3 OS | pread/rep: mac 572 ns, linux 956 ns, **windows 1.49 µs**; mmap-copy/rep ~95–108 ns everywhere. No Defender pathology at fixture scale — real-hardware / large-index validation deferred (non-blocking). | GREEN |
 | content_kind both fixtured | heightfield (`.hf`+`.jpg`) & game (`.glb`, texture slot 0) | both packs open + validate | GREEN |
 | MSVC build of `zstd-sys`, no extra system deps | windows `cargo build`/`cargo test` in CI | `spike-test (windows-latest)` **success** — no extra deps | GREEN |
 | Spike producer byte-determinism per OS | `gen_vectors.py` + `git diff --exit-code rust/spike-poc/tests/data` on 3 OS | ubuntu/macos/windows byte-identical | GREEN |

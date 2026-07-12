@@ -527,6 +527,14 @@ def _verify_containment(
     lon, lat, height = geodesy.to_geodetic_from_ecef(ecef_x, ecef_y, ecef_z)
     bound = position_error_bound(quantized.scale)
     metric = float(np.sqrt(sum(component**2 for component in bound)))
+    # A rigorous east-west angular bound would be metric / (R * cos(lat)),
+    # not metric / R. The cos(lat) factor is deliberately omitted and still
+    # covered: `metric` is the full 3D bound magnitude (>= the single
+    # east-axis component by >= sqrt(3) when the axes are comparable), which
+    # exceeds 1 / cos(53deg) ~= 1.66 at Dutch latitudes, so the slack we
+    # grow the region by already dominates the missing factor. Any residual
+    # shortfall can only shrink the accepted band, i.e. reject a valid tile
+    # (a safe false-reject) — it can never admit an out-of-region vertex.
     angular = metric / _MIN_EARTH_RADIUS
     for region in enclosing_regions:
         _require(

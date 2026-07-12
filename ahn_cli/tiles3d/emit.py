@@ -161,8 +161,6 @@ class _Emitter:
             stride=tile.stride,
             geometric_error=error,
             mesh=mesh,
-            x=self._terrain.x[grid],
-            y=self._terrain.y[grid],
             z=self._terrain.z[grid],
             rgb=self._terrain.rgb[grid],
         )

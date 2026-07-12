@@ -329,7 +329,7 @@ def test_cli_heightfield_end_to_end(tmp_path: Path) -> None:
     out = tmp_path / "hf"
     result = _run_cli(out, ortho, heights, "heightfield")
     assert result.exit_code == 0, result.output
-    assert "verified" in result.output
+    assert "verified. profile=heightfield." in result.output
     assert _file_set(out) == {
         "tileset.json",
         "tiles/0-0-0.hf",

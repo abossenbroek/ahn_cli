@@ -1,17 +1,20 @@
-"""The game-profile provenance sidecar: a deterministic settings record.
+"""The lossy-profile provenance sidecar: a deterministic settings record.
 
 The strict profile is lossless and byte-frozen, so it writes no sidecar.
-The game profile is lossy and version-pinned, so it records exactly *how*
-a tile was packed next to the tileset: the quantization scheme, the JPEG
-settings, and the encoder library versions that fix the bytes. A consumer
-(or a future audit) reads ``provenance.json`` to know the deliverable was
-produced under the game profile at these pinned settings.
+The two lossy profiles — game and heightfield — are version-pinned, so
+each records exactly *how* a tile was packed next to the tileset: the
+quantization scheme, the JPEG settings, and the encoder library versions
+that fix the bytes. A consumer (or a future audit) reads
+``provenance.json`` to know which lossy profile produced the deliverable
+and at what pinned settings.
 
 Every field is sourced from the encoder-layer modules that own it — the
 quantization bit depth from :mod:`ahn_cli.tiles3d.quantize`, the JPEG
 constants and Pillow version from :mod:`ahn_cli.tiles3d.jpeg`, the
-meshopt version from :mod:`ahn_cli.tiles3d.meshopt` — never re-derived
-here, so the record cannot drift from the code that produced the bytes.
+meshopt version from :mod:`ahn_cli.tiles3d.meshopt`, the ``.hf`` magic /
+version / zstd settings from :mod:`ahn_cli.tiles3d.heightfield` — never
+re-derived here, so the record cannot drift from the code that produced
+the bytes.
 
 The rendering is a pure function of the profile and the pinned library
 versions: sorted keys, two-space indent, a trailing newline, no

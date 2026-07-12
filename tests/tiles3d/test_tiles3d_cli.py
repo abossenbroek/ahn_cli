@@ -216,7 +216,7 @@ def test_tiles3d_heightfield_profile_builds_and_writes_provenance(
     out = tmp_path / "heightfield"
     result = _run(out, ortho, heights, "--profile", "heightfield")
     assert result.exit_code == 0, result.output
-    assert "verified" in result.output
+    assert "verified. profile=heightfield." in result.output
     assert (out / "tileset.json").is_file()
     assert (out / "tiles" / "0-0-0.hf").is_file()
     assert (out / "tiles" / "0-0-0.jpg").is_file()

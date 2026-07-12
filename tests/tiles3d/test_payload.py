@@ -23,8 +23,6 @@ def _payload() -> TilePayload:
         stride=tile.stride,
         geometric_error=geometric_error(tile.stride, 0.5),
         mesh=mesh,
-        x=terrain.x[grid],
-        y=terrain.y[grid],
         z=terrain.z[grid],
         rgb=terrain.rgb[grid],
     )
@@ -39,8 +37,6 @@ def test_payload_carries_the_sampled_planes_and_placement() -> None:
     assert payload.stride == 1
     assert payload.geometric_error == 0.0
     assert payload.rgb.shape == (5, 6, 3)
-    assert payload.x.shape == (5, 6)
-    assert payload.y.shape == (5, 6)
     assert payload.z.shape == (5, 6)
     assert payload.mesh.positions.shape[0] == 30
 

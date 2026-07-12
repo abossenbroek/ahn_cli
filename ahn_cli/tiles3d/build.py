@@ -221,9 +221,10 @@ def _hold_stale(
     """Move a previous build's artifacts aside instead of deleting them.
 
     The held set spans every profile: ``tiles/``, ``tileset.json`` and
-    the game profile's ``provenance.json`` (absent under strict, so it is
-    simply skipped) — so a cross-profile rebuild neither strands nor
-    misdescribes the previous deliverable.
+    the lossy profiles' ``provenance.json`` (written by game and
+    heightfield, absent under strict, so it is simply skipped) — so a
+    cross-profile rebuild neither strands nor misdescribes the previous
+    deliverable.
     """
     stale = [
         p for p in (tiles_dir, tileset_path, provenance_path) if p.exists()

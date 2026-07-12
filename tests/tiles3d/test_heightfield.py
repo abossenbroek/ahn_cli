@@ -58,8 +58,6 @@ def _payload(width: int = 6, height: int = 5, seed: int = 4) -> TilePayload:
         stride=tile.stride,
         geometric_error=geometric_error(tile.stride, 0.5),
         mesh=mesh,
-        x=terrain.x[grid],
-        y=terrain.y[grid],
         z=terrain.z[grid],
         rgb=terrain.rgb[grid],
     )
@@ -122,8 +120,6 @@ def test_flat_tile_stores_all_zero_levels() -> None:
         stride=payload.stride,
         geometric_error=payload.geometric_error,
         mesh=payload.mesh,
-        x=payload.x,
-        y=payload.y,
         z=np.full_like(payload.z, 3.0),
         rgb=payload.rgb,
     )

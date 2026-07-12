@@ -1,3 +1,18 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:a5d7935a469043a743b79d9a301a8ff7febf0c4b31f988df6633e5d5c6237c13
-size 487
+{
+  "encoders": {
+    "meshoptimizer": "0.2.30a0"
+  },
+  "jpeg": {
+    "optimize": false,
+    "pillow": "12.3.0",
+    "progressive": false,
+    "quality": 85,
+    "subsampling": 2
+  },
+  "profile": "game",
+  "quantization": {
+    "position_bits": 16,
+    "scheme": "per-tile per-axis affine over the tile's actual data extents; round-half-even; KHR_mesh_quantization node scale/translation dequantization; a zero-extent axis uses the epsilon scale.",
+    "uv": "normalized-uint16"
+  }
+}

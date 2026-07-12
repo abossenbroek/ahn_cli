@@ -11,7 +11,9 @@ a nationwide mosaic.
 A failed build leaves nothing behind: every path written so far is
 removed before the error propagates. Re-runs into the same output
 directory are safe in both directions: a previous build's artifacts
-(``tileset.json`` and the ``tiles/`` subtree, both tool-owned) are
+(``tileset.json``, the ``tiles/`` subtree and -- under the game profile
+-- ``provenance.json``, all tool-owned) are cleaned by a strict rebuild
+and restored by a failed game rebuild; they are
 held aside in a scratch directory while the new build is written and
 verified, dropped only once the new build is accepted, and moved back
 into place when the new build fails for any reason — a previously
@@ -36,6 +38,8 @@ from ahn_cli.tiles3d.emit import (
     compute_build,
 )
 from ahn_cli.tiles3d.errors import Tiles3dError
+from ahn_cli.tiles3d.profile import Profile
+from ahn_cli.tiles3d.provenance import PROVENANCE_NAME, render_game_provenance
 from ahn_cli.tiles3d.quadtree import plan_quadtree
 from ahn_cli.tiles3d.sources import load_terrain
 from ahn_cli.tiles3d.tileset import write_tileset
@@ -79,15 +83,19 @@ def build_tiles3d(
     out: Path,
     *,
     tile_pixels: int = 256,
+    profile: Profile = Profile.STRICT,
     progress: ProgressCallback | None = None,
 ) -> Tiles3dBuildResult:
     """Convert the ortho map + reconciled heights into 3D Tiles 1.1.
 
     Contract:
         - Writes ``<out>/tileset.json`` and one
-          ``<out>/tiles/<level>-<tx>-<ty>.glb`` per quadtree tile, then
-          hard-verifies everything written (strict re-read +
-          independent recomputation) before returning.
+          ``<out>/tiles/<level>-<tx>-<ty>.glb`` per quadtree tile, each
+          packed by ``profile``'s encoder, then hard-verifies everything
+          written (strict re-read + independent recomputation) before
+          returning. The game profile additionally writes a deterministic
+          ``<out>/provenance.json``; the strict profile writes none (its
+          output is byte-frozen).
         - Calls ``progress(tiles_done, tile_total)`` per computed tile.
         - Returns a :class:`Tiles3dBuildResult`.
 
@@ -95,12 +103,12 @@ def build_tiles3d(
         - Deterministic per machine (see geodesy caveat); a failed or
           verification-rejected build removes every written output
           before raising.
-        - A previous build's artifacts in ``out`` (the tool-owned
-          ``tileset.json`` and ``tiles/`` subtree) are replaced only
-          once the new build has passed verification: they are held
-          aside during the rebuild and moved back into place if the
-          rebuild fails for any reason. An input-gate failure never
-          touches them at all.
+        - A previous build's tool-owned artifacts in ``out``
+          (``tileset.json``, the ``tiles/`` subtree, and — under the game
+          profile — ``provenance.json``) are replaced only once the new
+          build has passed verification: they are held aside during the
+          rebuild and moved back into place if the rebuild fails for any
+          reason. An input-gate failure never touches them at all.
 
     Failure modes:
         - :class:`Tiles3dError` for every input gate
@@ -109,22 +117,31 @@ def build_tiles3d(
     """
     terrain = load_terrain(ortho, heights)
     tree = plan_quadtree(terrain.width, terrain.height, tile_pixels)
-    computed = compute_build(terrain, tree, progress=progress)
+    computed = compute_build(
+        terrain, tree, encoder=profile.encoder(), progress=progress
+    )
     tiles_dir = out / TILES_SUBDIR
     tileset_path = out / TILESET_NAME
+    provenance_path = out / PROVENANCE_NAME
     backup_dir = out / BACKUP_SUBDIR
     marker = out / ACCEPT_MARKER
     accepted = False
     held = False
     try:
-        _recover(tiles_dir, tileset_path, backup_dir, marker)
-        _hold_stale(tiles_dir, tileset_path, backup_dir)
+        _recover(tiles_dir, tileset_path, provenance_path, backup_dir, marker)
+        _hold_stale(tiles_dir, tileset_path, provenance_path, backup_dir)
         held = True
         tiles_dir.mkdir(parents=True, exist_ok=True)
         for uri, data in computed.glbs.items():
             (out / uri).write_bytes(data)
         write_tileset(computed.document, tileset_path)
-        verify_tiles3d(out, ortho, heights, tile_pixels=tile_pixels)
+        if profile is Profile.GAME:
+            provenance_path.write_text(
+                render_game_provenance(), encoding="utf-8"
+            )
+        verify_tiles3d(
+            out, ortho, heights, tile_pixels=tile_pixels, profile=profile
+        )
         accepted = True
     except OSError as exc:
         msg = f"3D Tiles output at {out} is not writable: {exc}"
@@ -142,8 +159,14 @@ def build_tiles3d(
         else:
             try:
                 if held:
-                    _discard(tiles_dir, tileset_path)
-                _restore_stale(tiles_dir, tileset_path, backup_dir, marker)
+                    _discard(tiles_dir, tileset_path, provenance_path)
+                _restore_stale(
+                    tiles_dir,
+                    tileset_path,
+                    provenance_path,
+                    backup_dir,
+                    marker,
+                )
             except OSError as exc:
                 msg = (
                     f"3D Tiles output at {out} could not restore the "
@@ -160,7 +183,11 @@ def build_tiles3d(
 
 
 def _recover(
-    tiles_dir: Path, tileset_path: Path, backup_dir: Path, marker: Path
+    tiles_dir: Path,
+    tileset_path: Path,
+    provenance_path: Path,
+    backup_dir: Path,
+    marker: Path,
 ) -> None:
     """Reconcile the leftovers of a hard-killed earlier rebuild.
 
@@ -176,14 +203,27 @@ def _recover(
             shutil.rmtree(backup_dir)
         marker.unlink()
         return
-    _restore_stale(tiles_dir, tileset_path, backup_dir, marker)
+    _restore_stale(
+        tiles_dir, tileset_path, provenance_path, backup_dir, marker
+    )
 
 
 def _hold_stale(
-    tiles_dir: Path, tileset_path: Path, backup_dir: Path
+    tiles_dir: Path,
+    tileset_path: Path,
+    provenance_path: Path,
+    backup_dir: Path,
 ) -> None:
-    """Move a previous build's artifacts aside instead of deleting them."""
-    stale = [p for p in (tiles_dir, tileset_path) if p.exists()]
+    """Move a previous build's artifacts aside instead of deleting them.
+
+    The held set spans every profile: ``tiles/``, ``tileset.json`` and
+    the game profile's ``provenance.json`` (absent under strict, so it is
+    simply skipped) — so a cross-profile rebuild neither strands nor
+    misdescribes the previous deliverable.
+    """
+    stale = [
+        p for p in (tiles_dir, tileset_path, provenance_path) if p.exists()
+    ]
     if not stale:
         return
     backup_dir.mkdir(parents=True)
@@ -204,16 +244,21 @@ def _drop_backup(backup_dir: Path, marker: Path) -> None:
 
 
 def _restore_stale(
-    tiles_dir: Path, tileset_path: Path, backup_dir: Path, marker: Path
+    tiles_dir: Path,
+    tileset_path: Path,
+    provenance_path: Path,
+    backup_dir: Path,
+    marker: Path,
 ) -> None:
     """Move a held-aside previous deliverable back into place.
 
-    Per artifact, the held copy wins: any ``tiles/`` or
-    ``tileset.json`` still in ``out`` is an unverified leftover of the
-    failed or killed run holding the backup, and is removed before the
-    verified copy is renamed back. An artifact absent from the backup
-    keeps the copy in ``out`` (a kill between the two hold renames
-    leaves the not-yet-held, still-verified artifact in place).
+    Per artifact, the held copy wins: any ``tiles/``, ``tileset.json``
+    or ``provenance.json`` still in ``out`` is an unverified leftover of
+    the failed or killed run holding the backup, and is removed before
+    the verified copy is renamed back. An artifact absent from the backup
+    keeps the copy in ``out`` (a kill between the hold renames leaves the
+    not-yet-held, still-verified artifact in place) — and a former strict
+    build simply has no held ``provenance.json`` to restore.
 
     A surviving accept marker means the opposite: the artifacts in
     place are a verified build and the backup is disposable (a failed
@@ -226,24 +271,28 @@ def _restore_stale(
         if tiles_dir.is_dir():
             shutil.rmtree(tiles_dir)
         held_tiles.rename(tiles_dir)
-    held_tileset = backup_dir / TILESET_NAME
-    if held_tileset.is_file():
-        tileset_path.unlink(missing_ok=True)
-        held_tileset.rename(tileset_path)
+    for path in (tileset_path, provenance_path):
+        held = backup_dir / path.name
+        if held.is_file():
+            path.unlink(missing_ok=True)
+            held.rename(path)
     backup_dir.rmdir()
 
 
-def _discard(tiles_dir: Path, tileset_path: Path) -> None:
+def _discard(
+    tiles_dir: Path, tileset_path: Path, provenance_path: Path
+) -> None:
     """Remove everything a rejected build wrote (never leave stale).
 
     Runs only once the hold step has completed: from then on, anything
-    at these two tool-owned paths is the rejected run's output —
-    including partial files a failed write created — and is removed
-    wholesale. Before the hold completes, artifacts still in place are
-    the untouched previous deliverable, and the caller must not call
-    this at all.
+    at these tool-owned paths is the rejected run's output — including
+    partial files a failed write created, and a game rebuild's fresh
+    ``provenance.json`` — and is removed wholesale. Before the hold
+    completes, artifacts still in place are the untouched previous
+    deliverable, and the caller must not call this at all.
     """
-    if tileset_path.is_file():
-        tileset_path.unlink()
+    for path in (tileset_path, provenance_path):
+        if path.is_file():
+            path.unlink()
     if tiles_dir.is_dir():
         shutil.rmtree(tiles_dir)

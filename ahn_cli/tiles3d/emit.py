@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from ahn_cli.tiles3d.encoders import StrictEncoder
 from ahn_cli.tiles3d.geodesy import Geodesy
 from ahn_cli.tiles3d.mesh import build_tile_mesh
 from ahn_cli.tiles3d.payload import TilePayload
@@ -73,10 +72,15 @@ def compute_build(
     terrain: TerrainGrid,
     tree: TreePlan,
     *,
+    encoder: TileEncoder,
     progress: ProgressCallback | None = None,
 ) -> ComputedBuild:
-    """Derive every glb and the tileset document, children first."""
-    emitter = _Emitter(terrain, tree, progress)
+    """Derive every glb and the tileset document, children first.
+
+    ``encoder`` is the profile's :class:`TileEncoder`; emission stays
+    agnostic to the on-disk representation and only drives the protocol.
+    """
+    emitter = _Emitter(terrain, tree, encoder, progress)
     root_entry, _, root_error = emitter.emit(tree.root)
     tileset_error = (
         2.0 * root_error
@@ -98,13 +102,14 @@ class _Emitter:
         self,
         terrain: TerrainGrid,
         tree: TreePlan,
+        encoder: TileEncoder,
         progress: ProgressCallback | None,
     ) -> None:
         self._terrain = terrain
         self._tree = tree
         self._progress = progress
         self._geodesy = Geodesy()
-        self._encoder: TileEncoder = StrictEncoder()
+        self._encoder = encoder
         self._done = 0
         self.glbs: dict[str, bytes] = {}
         self.vertices = 0

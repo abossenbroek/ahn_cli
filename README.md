@@ -184,6 +184,23 @@ Verify the result with `copc-validator` (no install needed, `npx` fetches it on 
 npx copc-validator -d reconciled.copc.laz
 ```
 
+## Exporting to 3D Tiles
+
+`ahn_cli tiles3d` drapes the orthophoto over `reconcile`'s EXR heights and writes an [OGC 3D Tiles 1.1](https://www.ogc.org/standard/3dtiles/) tileset — a quadtree of binary glTF terrain tiles that Cesium, deck.gl and other viewers stream and LOD. The ortho and EXR must match perfectly (bit-exact pixel grid and colours; every height finite), and every written artifact is re-verified from disk against an independent rebuild before the tileset is accepted:
+
+```bash
+ahn_cli tiles3d --ortho data/delft/ortho/ortho.tif --heights data/delft/reconciled/reconciled.exr --out data/delft/tiles3d
+```
+
+`--profile` selects the on-disk representation:
+
+- `strict` (default) — lossless float32 glTF with embedded PNG textures; writes no sidecar.
+- `game` — the compact runtime profile: quantized (`KHR_mesh_quantization`) geometry, `EXT_meshopt_compression` streams and baseline JPEG textures, plus a deterministic `provenance.json` recording the pinned quantization/JPEG/encoder settings.
+
+```bash
+ahn_cli tiles3d --ortho data/delft/ortho/ortho.tif --heights data/delft/reconciled/reconciled.exr --out data/delft/tiles3d --profile game
+```
+
 ## AHN classification classes
 
 Class codes used by `-i/--include-class`, `-e/--exclude-class`, and `--classes` are the standard AHN/LAS codes:

@@ -12,6 +12,7 @@ import ahn_cli.tiles3d.build as build_module
 import ahn_cli.tiles3d.encoders as encoders_module
 from ahn_cli.tiles3d.build import build_tiles3d
 from ahn_cli.tiles3d.errors import Tiles3dError
+from ahn_cli.tiles3d.profile import Profile
 from tests.tiles3d.conftest import (
     grid_for_ortho,
     make_ortho,
@@ -559,6 +560,68 @@ def test_gate_failure_preserves_the_previous_build(tmp_path: Path) -> None:
         if p.is_file()
     }
     assert after == before
+
+
+def _compact_write(document: dict[str, object], path: Path) -> None:
+    """Write a compact tileset the byte-identity verifier refuses."""
+    path.write_text(json.dumps(document, sort_keys=True))
+
+
+def test_game_build_writes_and_verifies_provenance(tmp_path: Path) -> None:
+    """A game build lands a provenance.json beside the verified tileset."""
+    ortho, heights = _make_inputs(tmp_path, 6, 6)
+    out = tmp_path / "out"
+    result = build_tiles3d(ortho, heights, out, profile=Profile.GAME)
+    assert result.tile_count == 1
+    assert (out / "provenance.json").is_file()
+    assert sorted(p.name for p in out.iterdir()) == [
+        "provenance.json",
+        "tiles",
+        "tileset.json",
+    ]
+
+
+def test_strict_rebuild_over_game_drops_stale_provenance(
+    tmp_path: Path,
+) -> None:
+    """A strict rebuild over a game build removes the stale provenance."""
+    ortho, heights = _make_inputs(tmp_path, 6, 6)
+    out = tmp_path / "out"
+    build_tiles3d(ortho, heights, out, profile=Profile.GAME)
+    assert (out / "provenance.json").is_file()
+    build_tiles3d(ortho, heights, out, profile=Profile.STRICT)
+    assert not (out / "provenance.json").exists()
+    assert sorted(p.name for p in out.iterdir()) == [
+        "tiles",
+        "tileset.json",
+    ]
+
+
+def test_failed_game_rebuild_restores_the_previous_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rejected game rebuild puts the old game deliverable back whole."""
+    ortho, heights = _make_inputs(tmp_path, 6, 6)
+    out = tmp_path / "out"
+    build_tiles3d(ortho, heights, out, profile=Profile.GAME)
+    good = _snapshot(out)
+    monkeypatch.setattr(build_module, "write_tileset", _compact_write)
+    with pytest.raises(Tiles3dError, match="byte-equal"):
+        build_tiles3d(ortho, heights, out, profile=Profile.GAME)
+    assert _snapshot(out) == good
+    assert (out / "provenance.json").is_file()
+
+
+def test_failed_game_build_removes_the_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A first game build the verifier rejects leaves nothing behind."""
+    ortho, heights = _make_inputs(tmp_path, 6, 6)
+    out = tmp_path / "out"
+    monkeypatch.setattr(build_module, "write_tileset", _compact_write)
+    with pytest.raises(Tiles3dError, match="byte-equal"):
+        build_tiles3d(ortho, heights, out, profile=Profile.GAME)
+    assert list(out.iterdir()) == []
 
 
 def test_unwritable_output_is_a_typed_error(tmp_path: Path) -> None:

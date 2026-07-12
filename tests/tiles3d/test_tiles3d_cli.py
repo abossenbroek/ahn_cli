@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 
-from click.testing import CliRunner
+from click.testing import CliRunner, Result
 
 import ahn_cli.cli.app as app_module
 from ahn_cli.cli import cli
+from ahn_cli.tiles3d import jpeg, meshopt, quantize
 from tests.tiles3d.conftest import (
     grid_for_ortho,
     make_ortho,
@@ -110,6 +112,77 @@ def test_tiles3d_missing_ortho_is_a_usage_error(tmp_path: Path) -> None:
         ],
     )
     assert result.exit_code == 2
+
+
+def _run(out: Path, ortho: Path, heights: Path, *profile: str) -> Result:
+    args = [
+        "tiles3d",
+        "--ortho",
+        str(ortho),
+        "--heights",
+        str(heights),
+        "--out",
+        str(out),
+        *profile,
+    ]
+    return CliRunner().invoke(cli, args)
+
+
+def test_tiles3d_game_profile_writes_provenance(tmp_path: Path) -> None:
+    """`--profile game` builds, echoes the profile, writes provenance.json."""
+    ortho, heights = _inputs(tmp_path)
+    out = tmp_path / "game"
+    result = _run(out, ortho, heights, "--profile", "game")
+    assert result.exit_code == 0, result.output
+    assert "verified. profile=game." in result.output
+    assert (out / "tileset.json").is_file()
+    assert (out / "tiles" / "0-0-0.glb").is_file()
+    document = json.loads((out / "provenance.json").read_text())
+    assert document == {
+        "profile": "game",
+        "quantization": {
+            "position_bits": 16,
+            "uv": "normalized-uint16",
+            "scheme": document["quantization"]["scheme"],
+        },
+        "jpeg": {
+            "quality": jpeg.JPEG_QUALITY,
+            "subsampling": jpeg.JPEG_SUBSAMPLING,
+            "progressive": jpeg.JPEG_PROGRESSIVE,
+            "optimize": jpeg.JPEG_OPTIMIZE,
+            "pillow": jpeg.pillow_version(),
+        },
+        "encoders": {"meshoptimizer": meshopt.meshoptimizer_version()},
+    }
+    assert quantize.UINT16_MAX.bit_length() == 16
+
+
+def test_tiles3d_strict_profile_writes_no_provenance(tmp_path: Path) -> None:
+    """The default strict profile emits no provenance.json sidecar."""
+    ortho, heights = _inputs(tmp_path)
+    out = tmp_path / "strict"
+    result = _run(out, ortho, heights, "--profile", "strict")
+    assert result.exit_code == 0, result.output
+    assert "profile=game" not in result.output
+    assert not (out / "provenance.json").exists()
+    assert sorted(p.name for p in out.iterdir()) == ["tiles", "tileset.json"]
+
+
+def test_tiles3d_default_profile_writes_no_provenance(tmp_path: Path) -> None:
+    """Omitting --profile is strict: no provenance.json, plain summary."""
+    ortho, heights = _inputs(tmp_path)
+    out = tmp_path / "default"
+    result = _run(out, ortho, heights)
+    assert result.exit_code == 0, result.output
+    assert not (out / "provenance.json").exists()
+
+
+def test_tiles3d_unknown_profile_is_rejected(tmp_path: Path) -> None:
+    """An unknown --profile is the typed error translated to exit 1."""
+    ortho, heights = _inputs(tmp_path)
+    result = _run(tmp_path / "out", ortho, heights, "--profile", "bogus")
+    assert result.exit_code == 1
+    assert "unknown tiles3d profile 'bogus'" in result.output
 
 
 def test_tiles3d_drives_the_progress_bar(

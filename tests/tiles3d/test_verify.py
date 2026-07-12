@@ -17,6 +17,7 @@ import ahn_cli.tiles3d.verify as verify_module
 from ahn_cli.tiles3d.build import build_tiles3d
 from ahn_cli.tiles3d.errors import Tiles3dError
 from ahn_cli.tiles3d.png import encode_png
+from ahn_cli.tiles3d.profile import Profile
 from ahn_cli.tiles3d.quadtree import TreePlan, plan_quadtree
 from ahn_cli.tiles3d.verify import verify_tiles3d
 from tests.tiles3d.conftest import (
@@ -513,3 +514,36 @@ def test_uncovered_pixel_is_refused(
     monkeypatch.setattr(verify_module, "plan_quadtree", pruned_plan)
     with pytest.raises(Tiles3dError, match="do not cover"):
         _verify(site)
+
+
+@pytest.fixture
+def game_site(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """Build a valid two-level game tileset; return (out, ortho, heights)."""
+    rgb = synth_rgb(20, 14, seed=13)
+    ortho = make_ortho(tmp_path / "ortho.tif", rgb)
+    heights = write_exr(tmp_path / "r.exr", grid_for_ortho(rgb))
+    out = tmp_path / "out"
+    build_tiles3d(ortho, heights, out, tile_pixels=8, profile=Profile.GAME)
+    return out, ortho, heights
+
+
+def test_game_build_passes_the_game_verifier(
+    game_site: tuple[Path, Path, Path],
+) -> None:
+    """A pristine game build re-verifies under the game profile."""
+    out, ortho, heights = game_site
+    verify_tiles3d(out, ortho, heights, tile_pixels=8, profile=Profile.GAME)
+
+
+def test_game_provenance_corruption_is_refused(
+    game_site: tuple[Path, Path, Path],
+) -> None:
+    """A tampered provenance.json fails the game byte-identity backstop."""
+    out, ortho, heights = game_site
+    (out / "provenance.json").write_text("{}\n")
+    with pytest.raises(
+        Tiles3dError, match="provenance.json does not byte-equal"
+    ):
+        verify_tiles3d(
+            out, ortho, heights, tile_pixels=8, profile=Profile.GAME
+        )

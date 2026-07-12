@@ -49,6 +49,8 @@ from ahn_cli.tiles3d.emit import (
 from ahn_cli.tiles3d.errors import Tiles3dError
 from ahn_cli.tiles3d.geodesy import Geodesy
 from ahn_cli.tiles3d.png import decode_png
+from ahn_cli.tiles3d.profile import Profile
+from ahn_cli.tiles3d.provenance import PROVENANCE_NAME, render_game_provenance
 from ahn_cli.tiles3d.quadtree import plan_quadtree, sample_indices
 from ahn_cli.tiles3d.sources import load_terrain
 from ahn_cli.tiles3d.tileset import render_tileset
@@ -87,12 +89,19 @@ def verify_tiles3d(
     heights: Path,
     *,
     tile_pixels: int = 256,
+    profile: Profile = Profile.STRICT,
 ) -> None:
     """Hard-verify a written 3D Tiles build against its sources.
 
     Contract:
         - Returns only when every check in the module docstring holds,
           all from fresh disk reads.
+        - ``profile`` selects the encoder for the independent rebuild so
+          the byte-identity backstop reproduces the same on-disk bytes;
+          under the game profile that backstop also covers
+          ``provenance.json``. The per-tile glTF/texture/containment
+          checks are strict-profile-specific (they assume float32 + PNG);
+          the game profile relies on the byte-identity rebuild.
 
     Failure modes:
         - :class:`Tiles3dError` naming the first failed check.
@@ -104,17 +113,20 @@ def verify_tiles3d(
     flat = _verify_document(document)
     tiles_by_uri = {tile_uri(t): t for t in _walk(tree.root)}
     _verify_links(out_dir, flat, tiles_by_uri)
-    geodesy = Geodesy()
-    for entry, enclosing_regions in flat:
-        uri = _entry_uri(entry)
-        tile = tiles_by_uri[uri]
-        data = (out_dir / uri).read_bytes()
-        gltf, binary = _parse_glb(data, uri)
-        _verify_gltf(gltf, binary, uri)
-        _verify_texture(gltf, binary, terrain, tile, uri)
-        _verify_containment(terrain, tile, enclosing_regions, geodesy, uri)
-    computed = compute_build(terrain, tree)
-    _verify_byte_identity(out_dir, computed)
+    if profile is Profile.STRICT:
+        geodesy = Geodesy()
+        for entry, enclosing_regions in flat:
+            uri = _entry_uri(entry)
+            tile = tiles_by_uri[uri]
+            data = (out_dir / uri).read_bytes()
+            gltf, binary = _parse_glb(data, uri)
+            _verify_gltf(gltf, binary, uri)
+            _verify_texture(gltf, binary, terrain, tile, uri)
+            _verify_containment(
+                terrain, tile, enclosing_regions, geodesy, uri
+            )
+    computed = compute_build(terrain, tree, encoder=profile.encoder())
+    _verify_byte_identity(out_dir, computed, profile)
 
 
 def _walk(tile: TilePlan) -> list[TilePlan]:
@@ -532,8 +544,14 @@ def _points_within(
     )
 
 
-def _verify_byte_identity(out_dir: Path, computed: ComputedBuild) -> None:
-    """Verify every artifact byte-equals its independent rebuild."""
+def _verify_byte_identity(
+    out_dir: Path, computed: ComputedBuild, profile: Profile
+) -> None:
+    """Verify every artifact byte-equals its independent rebuild.
+
+    Under the game profile this backstop also covers ``provenance.json``,
+    recomputed in-process from the pinned encoder settings.
+    """
     for uri, expected in computed.glbs.items():
         _require(
             (out_dir / uri).read_bytes() == expected,
@@ -544,3 +562,9 @@ def _verify_byte_identity(out_dir: Path, computed: ComputedBuild) -> None:
         == render_tileset(computed.document).encode("utf-8"),
         "tileset.json does not byte-equal its independent rebuild.",
     )
+    if profile is Profile.GAME:
+        _require(
+            (out_dir / PROVENANCE_NAME).read_bytes()
+            == render_game_provenance().encode("utf-8"),
+            "provenance.json does not byte-equal its independent rebuild.",
+        )

@@ -116,9 +116,11 @@ def build_tiles3d(
     backup_dir = out / BACKUP_SUBDIR
     marker = out / ACCEPT_MARKER
     accepted = False
+    held = False
     try:
         _recover(tiles_dir, tileset_path, backup_dir, marker)
         _hold_stale(tiles_dir, tileset_path, backup_dir)
+        held = True
         tiles_dir.mkdir(parents=True, exist_ok=True)
         for uri, data in computed.glbs.items():
             path = out / uri
@@ -143,7 +145,7 @@ def build_tiles3d(
                 raise Tiles3dError(msg) from exc
         else:
             try:
-                _discard(written, tiles_dir)
+                _discard(written, tiles_dir, wipe_tiles=held)
                 _restore_stale(tiles_dir, tileset_path, backup_dir)
             except OSError as exc:
                 msg = (
@@ -230,14 +232,19 @@ def _restore_stale(
     backup_dir.rmdir()
 
 
-def _discard(written: list[Path], tiles_dir: Path) -> None:
+def _discard(
+    written: list[Path], tiles_dir: Path, *, wipe_tiles: bool
+) -> None:
     """Remove everything a rejected build wrote (never leave stale).
 
-    ``tiles_dir`` is removed wholesale: when this runs, it holds only
-    the rejected run's output — including any partial file a failed
-    write created without ever being tracked in ``written``.
+    ``wipe_tiles`` is True once the hold step completed: from then on
+    ``tiles_dir`` holds only the rejected run's output — including any
+    partial file a failed write created without ever being tracked in
+    ``written`` — and is removed wholesale. Before the hold completes,
+    a ``tiles_dir`` still in place is the untouched previous
+    deliverable and must not be removed.
     """
     for path in written:
         path.unlink(missing_ok=True)
-    if tiles_dir.is_dir():
+    if wipe_tiles and tiles_dir.is_dir():
         shutil.rmtree(tiles_dir)

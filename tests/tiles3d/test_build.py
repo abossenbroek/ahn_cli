@@ -376,6 +376,51 @@ def test_first_build_partial_write_leaves_nothing(
     assert list(out.iterdir()) == []
 
 
+def _flaky_rename(monkeypatch: pytest.MonkeyPatch, failing_call: int) -> None:
+    """Patch Path.rename to die on call N of the hold step."""
+    calls = {"count": 0}
+    real_rename = Path.rename
+
+    def flaky(self: Path, target: Path) -> Path:
+        calls["count"] += 1
+        if calls["count"] == failing_call:
+            msg = "permission denied"
+            raise OSError(msg)
+        return real_rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", flaky)
+
+
+def test_failed_hold_preserves_the_previous_deliverable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hold step dying before any move leaves the old build in place."""
+    ortho, heights = _make_inputs(tmp_path, 20, 14)
+    out = tmp_path / "out"
+    build_tiles3d(ortho, heights, out, tile_pixels=8)
+    good = _snapshot(out)
+    _flaky_rename(monkeypatch, failing_call=1)
+    with pytest.raises(Tiles3dError, match="not writable"):
+        build_tiles3d(ortho, heights, out, tile_pixels=8)
+    assert _snapshot(out) == good
+    assert not (out / build_module.BACKUP_SUBDIR).exists()
+
+
+def test_hold_failing_midway_restores_the_moved_half(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A hold step dying between its two moves is fully rolled back."""
+    ortho, heights = _make_inputs(tmp_path, 20, 14)
+    out = tmp_path / "out"
+    build_tiles3d(ortho, heights, out, tile_pixels=8)
+    good = _snapshot(out)
+    _flaky_rename(monkeypatch, failing_call=2)
+    with pytest.raises(Tiles3dError, match="not writable"):
+        build_tiles3d(ortho, heights, out, tile_pixels=8)
+    assert _snapshot(out) == good
+    assert not (out / build_module.BACKUP_SUBDIR).exists()
+
+
 def test_failed_restore_is_a_typed_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

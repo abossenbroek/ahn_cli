@@ -50,6 +50,7 @@ from ahn_cli.domain import (
     Vintage,
     ensure_valid_bbox,
 )
+from ahn_cli.domain.authenticity import uniform_image
 from ahn_cli.fetch.acquisition import (
     AcquisitionError,
     AcquisitionRequest,
@@ -441,6 +442,9 @@ def mosaic_and_clip(
 
     Failure modes:
         - Propagates :class:`rasterio.errors.RasterioError` from a bad sheet.
+        - :class:`AcquisitionError` (the CLI-caught base) if the clipped
+          mosaic is one uniform colour across every pixel — placeholder
+          imagery, not genuine Beeldmateriaal photography.
     """
     ordered = sorted(tile_paths, key=lambda path: path.name)
     with rasterio.open(ordered[0]) as first:
@@ -450,6 +454,14 @@ def mosaic_and_clip(
         [str(path) for path in ordered], bounds=aoi, res=resolution_m
     )
     pixels: npt.NDArray[np.uint8] = mosaic
+    if uniform_image(pixels):
+        msg = (
+            "orthophoto mosaic is a single uniform colour across every "
+            "pixel — that is placeholder imagery, not genuine "
+            "Beeldmateriaal photography; refusing to write "
+            f"{out_path.name}."
+        )
+        raise AcquisitionError(msg)
     count = pixels.shape[0]
     height = pixels.shape[1]
     width = pixels.shape[2]
@@ -540,7 +552,10 @@ def acquire_ortho(
         - :class:`AcquisitionError` if the bbox is malformed / selector unwired
           (via :func:`aoi_bbox`), no zone covers the AOI, a feed is invalid,
           or a sheet download fails -- every expected failure funnels here so the
-          CLI reports it cleanly.
+          CLI reports it cleanly. Sheets behind a mosaic the authenticity
+          gate rejects are evicted from the cache before the error is
+          raised, so a retry re-downloads them instead of replaying the
+          poisoned bytes.
     """
     ortho_dir = request.site_dir / _ORTHO_SUBDIR
     ortho_dir.mkdir(parents=True, exist_ok=True)
@@ -572,12 +587,14 @@ def acquire_ortho(
     started = now()
     tile_paths: list[Path] = []
     tile_checksums: dict[str, str] = {}
+    sheet_keys: list[CacheKey] = []
     for tile in resolved.tiles:
         key = CacheKey(
             product=Product.ORTHO,
             tile_id=tile.tile_id,
             vintage=dataset.vintage,
         )
+        sheet_keys.append(key)
         try:
             content = cache.get_or_fetch(
                 key, _downloader(http_get, tile.download_url)
@@ -593,9 +610,18 @@ def acquire_ortho(
         ).hexdigest()
 
     mosaic_path = ortho_dir / _MOSAIC_NAME
-    mosaic = mosaic_and_clip(
-        tuple(tile_paths), aoi, dataset.resolution_m, mosaic_path
-    )
+    try:
+        mosaic = mosaic_and_clip(
+            tuple(tile_paths), aoi, dataset.resolution_m, mosaic_path
+        )
+    except AcquisitionError:
+        # A uniform (placeholder) mosaic means the sheets it was built from
+        # are bad; they must never stay cached, or every retry would replay
+        # the same poisoned bytes. Evict every sheet the failed mosaic used
+        # so the next run re-downloads them.
+        for sheet_key in sheet_keys:
+            cache.discard(sheet_key)
+        raise
     finished = now()
 
     provenance = Provenance(

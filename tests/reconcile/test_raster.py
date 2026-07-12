@@ -106,3 +106,55 @@ def test_block_target_coordinates_partial_block() -> None:
     assert northings.shape == (1, 3)
     # Row index 2 centre: northing 20 - 2*(2.5) = 20 - 5 = 15.
     assert math.isclose(northings[0, 0], 15.0)
+
+
+def test_open_ortho_uniform_placeholder_raises(tmp_path: Path) -> None:
+    """A uniform-colour 'ortho' (a placeholder grid) is refused outright.
+
+    Regression for the Moerkapelle gray-cloud incident: reconcile colours its
+    output from the ortho, so a synthetic constant-colour stand-in (built
+    during a Beeldmateriaal outage) must fail fast — never paint the whole
+    cloud a single gray.
+    """
+    path = tmp_path / "placeholder.tif"
+    transform = from_bounds(0.0, 0.0, 4.0, 4.0, 8, 8)
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        height=8,
+        width=8,
+        count=3,
+        dtype="uint8",
+        crs="EPSG:28992",
+        transform=transform,
+    ) as dst:
+        dst.write(np.full((3, 8, 8), 128, dtype=np.uint8))
+    with pytest.raises(ReconcileError, match="uniform colour"):
+        open_ortho(path)
+
+
+def test_open_ortho_accepts_partially_constant_imagery(
+    tmp_path: Path,
+) -> None:
+    """One constant band is fine while the imagery varies overall."""
+    path = tmp_path / "dusk.tif"
+    transform = from_bounds(0.0, 0.0, 4.0, 4.0, 8, 8)
+    bands = np.zeros((3, 8, 8), dtype=np.uint8)
+    bands[0] = 10  # constant red channel
+    bands[1] = np.arange(64, dtype=np.uint8).reshape(8, 8)  # varying green
+    bands[2] = 200
+    with rasterio.open(
+        path,
+        "w",
+        driver="GTiff",
+        height=8,
+        width=8,
+        count=3,
+        dtype="uint8",
+        crs="EPSG:28992",
+        transform=transform,
+    ) as dst:
+        dst.write(bands)
+    with open_ortho(path) as reader:
+        assert reader.grid.width == 8

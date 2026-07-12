@@ -18,8 +18,11 @@ make update
 
 ### Testing
 ```bash
-# Run all tests
+# Run all tests (network-free; 100% branch coverage required on non-legacy code)
 make test
+
+# Run the nightly suite (hits real PDOK/Beeldmateriaal endpoints; not run by default)
+make test-nightly
 
 # Run a specific test file
 uv run pytest tests/path/to/test_file.py
@@ -39,6 +42,9 @@ make lint
 # Check for typos in Python files
 make typos
 
+# Type-check (pyright, strict mode)
+make typecheck
+
 # Format code (ruff format)
 make format
 
@@ -48,85 +54,116 @@ make format-check
 # Fix linting issues automatically
 make fix
 
-# Run all checks (lint, typos, test, format-check)
+# Run all checks (lint, typos, typecheck, test, format-check) — exactly what CI runs
 make check
 ```
 
 ### Running the CLI
+`ahn_cli` is a Click **group**; every invocation names a subcommand (`fetch`, `prep`, `reconcile`, `copc`, `import-viirs`, `export-positions`). Running it with no subcommand prints usage to stderr and exits with code 2 — that is expected `click.Group` behavior, not a bug.
+
 ```bash
-# Run the CLI with arguments
-make run ARGS="-c delft -o ./delft.laz"
+# Run the CLI with arguments (ARGS must start with a subcommand)
+make run ARGS="fetch --out data/delft -c delft"
 
 # Or directly with uv
-uv run ahn_cli -c delft -o ./delft.laz
+uv run ahn_cli fetch --out data/delft -c delft
 
-# Example commands:
-# Download all classes for a city
-uv run ahn_cli -c amsterdam -o amsterdam.laz
+# Acquire raw AHN + DSM + orthophoto tiles for a city, latest generation auto-selected
+uv run ahn_cli fetch --out data/delft -c delft --dsm --ortho
 
-# Download only ground and building classes
-uv run ahn_cli -c utrecht -o utrecht.laz -i 2,6
+# Acquire with a bounding box instead of a city, pinned to AHN4, via GeoTiles fallback
+uv run ahn_cli fetch --out data/utrecht -b 194198.0,443461.0,194594.0,443694.0 --ahn AHN4 --source geotiles
 
-# Download with bounding box instead of city
-uv run ahn_cli -o output.laz -b 194198.0,443461.0,194594.0,443694.0
+# Acquire with a GeoJSON polygon
+uv run ahn_cli fetch --out data/area -g my_area.geojson
 
-# Download with GeoJSON polygon(s)
-uv run ahn_cli -g my_area.geojson -o output.laz
+# Transform a fetched site: filter classes, dedup, export pointcloud.laz (+ .ply)
+uv run ahn_cli prep --data data/delft -i 2,6 --points
 
-# Download with GeoJSON and filter classes
-uv run ahn_cli -g my_area.geojson -o output.laz -i 2,6
+# Transform with graded voxel/Poisson-disk thinning instead of raw class filtering only
+uv run ahn_cli prep --data data/delft --thin-method voxel --thin-grade 3
+uv run ahn_cli prep --data data/delft --thin-method poisson --thin-radius 1.5 --thin-seed 0
 
-# Download with GeoJSON and enable bbox verification
-uv run ahn_cli -g my_area.geojson -o output.laz --bbox-tolerance 15.0
+# Export the fetched DSM to a deterministic position map for TouchDesigner
+uv run ahn_cli export-positions --data data/delft
 
-# Download with strict bbox verification (fails if bbox mismatch)
-uv run ahn_cli -g my_area.geojson -o output.laz --strict-bbox-check
+# Import an externally-produced VIIRS GeoTIFF into the site directory
+uv run ahn_cli import-viirs --out data/delft path/to/viirs.tif
 
-# Skip verification entirely
-uv run ahn_cli -g my_area.geojson -o output.laz --no-verify
+# Interpolate the AHN cloud onto the ortho's pixel grid (IDW, power=2, k=12), emit a coloured cloud
+uv run ahn_cli reconcile --ortho data/delft/ortho.tif --cloud data/delft/pointcloud.laz --out data/delft/reconciled --method idw --idw "2,12"
 
-# Enable PDAL verification (requires PDAL installed)
-uv run ahn_cli -g my_area.geojson -o output.laz --verify-pdal
-
-# Preview point cloud in 3D viewer
-uv run ahn_cli -c delft -o delft.laz -p
+# Convert a pipeline LAZ into a validator-green Cloud-Optimized Point Cloud (streaming, 0.5m dedup)
+uv run ahn_cli copc --cloud data/delft/reconciled/reconciled.laz --out data/delft/reconciled/reconciled.copc.laz
 ```
+
+A typical end-to-end run is `fetch` → `prep` → (`export-positions` and/or `reconcile`) → optionally `copc`: each step reads the previous step's output from the site directory on disk and writes its own outputs plus an updated `provenance.json`; there is no in-memory handoff between subcommands.
 
 ## Architecture
 
-AHN CLI is a command-line tool for downloading Dutch elevation point cloud data (AHN - Actueel Hoogtebestand Nederland). The codebase follows a modular architecture:
+AHN CLI acquires and transforms Dutch elevation data (AHN — Actueel Hoogtebestand Nederland), plus matched DSM/orthophoto/VIIRS layers, for a given site (city, bbox, or GeoJSON area of interest). The codebase is organized as a set of **bounded contexts** behind a thin CLI adapter, each owning one stage of the pipeline; the `ahn_cli/cli/__init__.py` docstring states this explicitly, and `tests/test_bounded_contexts.py` enforces the boundary as a contract test.
 
 ### Core Components
 
-1. **Entry Point** (`main.py`): Click-based CLI interface that validates arguments and invokes the processing pipeline.
+1. **CLI adapter** (`ahn_cli/cli/app.py`): the `ahn_cli` Click group and its five subcommands (`fetch`, `prep`, `import-viirs`, `export-positions`, `reconcile`). Registered via `pyproject.toml`'s `[project.scripts] ahn_cli = "ahn_cli.cli:cli"`. This layer owns argument parsing/validation and translates each context's typed errors (`AcquisitionError`, `PrepError`, `ViirsImportError`, `PositionsExportError`, `ReconcileError`) into `click.ClickException`; it holds no acquisition or transform logic of its own. `fetch`, `prep`, and `reconcile` map one-to-one onto their own context directories below; `import-viirs` and `export-positions` don't have their own directories — they're implemented inside `fetch/viirs.py` and `prep/positions.py` respectively, since they belong to the acquisition and transform contexts respectively.
 
-2. **Fetcher Module** (`fetcher/`):
-   - `geotiles.py`: Determines which AHN tiles cover the requested area
-   - `municipality.py`: Handles city polygon data and municipality boundaries
-   - `request.py`: Downloads LAZ files from the AHN service
+2. **`domain/`**: pure value objects shared by every context, with no I/O — `Tile`/`BBox` (identity, EPSG:28992), `PixelGrid`/`GeoTransform` (pixel ↔ world coords), `Generation` (AHN3/4/5…), `Product` (ahn/dsm/ortho/viirs), `Vintage` (acquisition year), `Provenance` (in-memory acquisition record), and `authenticity.py`'s pure data-authenticity predicates (`uniform_image` / `flat_surface` / `degenerate_cloud`) shared by every verb's output-step gate.
 
-3. **Manipulator Module** (`manipulator/`):
-   - `ptc_handler.py`: Core point cloud processing - filtering by classification, clipping to boundaries, decimation
-   - `transformer.py`: Coordinate transformations between different EPSG systems
-   - `preview.py`: 3D visualization using polyscope
-   - `rasterizer.py`: Converting point cloud data to raster format
+3. **`fetch/`** (acquisition bounded context): turns an area of interest into raw, cached source tiles. Never transforms or exports pixel/point data.
+   - `acquisition.py` — orchestrates resolve-AOI → download-through-cache → record-provenance for AHN point cloud tiles.
+   - `pdok.py` — primary distribution source (PDOK INSPIRE ATOM feeds).
+   - `geotiles_source.py` — fallback distribution source (GeoTiles.nl).
+   - `generation.py` — the AHN generation registry backing `--ahn` (including `auto` probing).
+   - `dsm.py` — windowed COG fetch + clip to `dsm.tif`.
+   - `ortho.py` — Beeldmateriaal orthophoto fetch (mosaic + clip + CC-BY provenance).
+   - `viirs.py` — imports an externally-produced VIIRS GeoTIFF into `<site>/viirs/`.
+   - `source.py` — shared `FetchSource` value objects and EPSG:28992 ↔ 4326 helpers.
 
-4. **Processing Pipeline** (`process.py`): Orchestrates the entire workflow:
-   - Fetches required tiles based on city/bbox
-   - Processes each tile (filter classes, clip, decimate)
-   - Merges results into single output file
-   - Handles coordinate offsets for large areas
+4. **`prep/`** (transform/export bounded context): turns cached raw source tiles into finished deliverables. Never reaches out to a distribution portal itself.
+   - `transform.py` — `prepare()` orchestrates dedup → class filter → thin → provenance → export.
+   - `dedup.py` — tile de-duplication (crop-before-merge, then an exact XYZ + GPS-time sweep); reuses `harmonize_headers` from the legacy `process.py` module (still a live dependency — see Legacy modules below).
+   - `decimate.py` — graded thinning: voxel-grid and Poisson-disk methods, pure-numpy reference backend with an optional Apple-silicon MLX GPU accelerator (`uv sync --extra mlx`, arm64 macOS only); CPU and GPU backends are required to produce identical voxel output.
+   - `ply.py` — exports `pointcloud.ply` for TouchDesigner (`-p/--points`).
+   - `positions.py` — exports `dsm.tif` to a deterministic `positions.exr` (3-channel float32 OpenEXR).
+
+5. **`reconcile/`** (interpolation bounded context, added after the fetch/prep epic closed): interpolates the AHN point cloud onto the orthophoto's pixel grid and emits a single coloured cloud. The ortho is EPSG:28992; the AHN DSM/LAZ is EPSG:7415 (EPSG:28992 horizontally + NAP height vertically) — the two grids coincide exactly in X/Y, so no reprojection is needed and only Z (NAP height) is semantically distinct.
+   - `reconcile.py` — orchestrates block-streamed interpolation and writes output.
+   - `clean.py` — class filter + XY de-duplication of the source cloud before interpolation.
+   - `method.py` — `LinearInterp` / `IdwInterp` / `KrigingInterp` / `Variogram` value objects.
+   - `neighbors.py` — deterministic kNN via `scipy.spatial.cKDTree` (an MLX/Metal GPU spike was built and benchmarked but removed in favor of this CPU reference — see `docs/superpowers/specs/2026-07-10-reconcile-design.md`).
+   - `raster.py` — raster/point-cloud IO (rasterio + laspy).
+   - `writers.py` — deterministic `laz`/`ply`/`pt`/`exr` output writers.
+
+6. **`copc/`** (COPC export bounded context, added to resolve `docs/bugs/2026-07-11-pdal-copc-xyz-bounds-flat-terrain.md`): turns a pipeline LAZ (`prep`'s or `reconcile`'s output) into a `.copc.laz` whose LAS-header bounds and COPC octree cube are consistent **by construction** — PDAL's `writers.copc` computes them through two float64 paths that disagree by an epsilon on flat, horizontally-huge Dutch terrain (every point pinned to the cube's Z-min face), failing `copc-validator`'s `xyz` check. Fully streaming (chunked reads → on-disk XY bucket spill → one bucket in memory at a time), so nationwide-scale inputs work. Design doc: `docs/superpowers/specs/2026-07-11-copc-design.md`.
+   - `octree.py` — `CopcError`, `plan_build()` (whole-metre cube anchored ≥1 m outside the data, below-NAP Z included), copc.js-exact node bounds (`min + (max - min) / 2` midpoint halving, matching `Bounds.stepTo` bit for bit) and the `LodSampler` top-down grid-occupancy sampler that assigns each point to exactly one node via those same midpoints.
+   - `dedup.py` — 0.5 m-voxel de-duplication preserving AHN's native coarseness: only voxels holding >1 point collapse, survivor picked by outlier reasoning (median/MAD on Z, nearest-to-median, index tie-break); points are never moved or synthesised.
+   - `scatter.py` — pass-1 streaming scatter into per-column bucket record files; normalizes attributes (scan_angle_rank→scan_angle, return numbers lifted to 1..15).
+   - `writer.py` — typed façade over `copclib` (vendored stub in `typings/copclib/`): nodes handed over as raw pre-packed int32 PDRF 6/7 bytes (no second quantization path), header min/max set from the written quantized extremes, per-node GPS sort, WKT1 SRS (the validator's proj4js can't parse WKT2), and a post-Close binary patch of the COPC info VLR's `gpstime_minimum/maximum` (the copclib binding never fills them).
+   - `build.py` — `build_copc()` orchestrator: plan → scatter → per-bucket dedup/LOD-sample/write, ancestors above the bucket level held back and written last; RGB policy (no/black RGB → PDRF 6, 8-bit-looking RGB widened ×257, real 16-bit passthrough).
+   - Verified: the real 46.3M-point Moerkapelle site passes `npx copc-validator -d` 24/24 green; `_typos.toml` carries the `lod`/`LinearNDInterpolator`/legacy-geojson spell-check exceptions this work surfaced.
+
+7. **`provenance/`**: `sidecar.py` — deterministic `provenance.json` codec shared by every fetcher/transform step.
+
+8. **`cache/`**: `store.py`'s `ContentAddressedCache` + `key.py`'s `CacheKey` — a checksum-verified, idempotent cache keyed by (product, generation/vintage, tile id), making `fetch` safe to re-run.
+
+### Legacy / deprecated modules
+
+`ahn_cli/main.py`, `process.py`, `config.py`, `kwargs.py`, `validator.py`, `fetcher/`, and `manipulator/` predate the bounded-context refactor and are **not** part of the live CLI surface — `main.py`'s single-command Click interface (the old `-c/-o/-i/-e/-d/-b/-g/-p` flags) is dead code, unreferenced by `pyproject.toml`'s entry point or any other module. Each carries a `DEPRECATED` banner and a module-level `DeprecationWarning`, and each is explicitly grandfathered out of `make lint`/`make typecheck`/coverage (kept in sync across `[tool.ruff.lint.per-file-ignores]`, `[tool.coverage.run] omit`, and `[tool.pyright] exclude` in `pyproject.toml`) — a module may only be de-grandfathered by removing it from all three lists and bringing it to 100% coverage and strict typecheck.
+
+**Exception**: `process.py` is not fully dead — `prep/dedup.py` imports `harmonize_headers` from it (with the deprecation warning explicitly suppressed) and reuses it inside the new `prep` context. Don't delete `process.py` when cleaning up the rest of the legacy modules.
 
 ### Key Design Patterns
 
-- Uses laspy for LAZ file handling with streaming to handle large files
-- Processes tiles incrementally to manage memory usage
-- Applies transformations in a specific order: filter classes → clip → decimate
-- Maintains global header information when merging multiple tiles
+- Each bounded context (`fetch`, `prep`, `reconcile`, `copc`) owns one pipeline stage and communicates through `domain/` value objects and the `provenance/` sidecar — no context reaches into another's internals.
+- `fetch` is idempotent via the content-addressed `cache/`; `prep`, `reconcile`, and `copc` are pure transforms over already-cached/fetched inputs with no network access.
+- Point cloud processing streams/block-processes rather than loading whole tiles where practical (DSM windowed COG reads, `reconcile`'s block-streamed interpolation) to manage memory on large areas.
+- Deterministic outputs are a first-class requirement: `provenance.json`, the `reconcile` writers, and Poisson-disk thinning (via `--thin-seed`) are all designed to be reproducible given the same inputs.
+- Every verb's output step hard-verifies data authenticity (via the `domain/authenticity.py` predicates) before emitting: only a genuine AHN cloud / genuine imagery passes — placeholders, degenerate clouds, flat surfaces, and non-overlapping `reconcile` inputs are refused with the verb's typed error. Data is never infilled to satisfy a step.
+- The `cli/` layer is a thin adapter: argument parsing, validation, and error translation only. All business logic lives in the bounded-context packages, never in `cli/app.py`.
 
 ### Important Constants
 
-- **AHN Classes** (defined in `validator.py`):
+- **AHN classification classes**: currently only defined in the deprecated `ahn_cli/validator.py` (`AHN_CLASSES = [0, 1, 2, 6, 9, 14, 26]`) and were not migrated into any new bounded-context module:
   - 0: Created, never classified
   - 1: Unclassified
   - 2: Ground
@@ -135,145 +172,36 @@ AHN CLI is a command-line tool for downloading Dutch elevation point cloud data 
   - 14: High tension
   - 26: Civil structure
 
-- **Data Sources** (defined in `config.py`):
-  - Base URL: `https://geotiles.citg.tudelft.nl/AHN4_T/`
-  - Municipality data: `ahn_cli/fetcher/data/municipality_simple.geojson`
+  `prep`'s `-i/--include-class`/`-e/--exclude-class` and `reconcile`'s `--classes` options parse raw comma-separated integers with no canonical validation against this list — if you're touching class filtering, be aware there is no first-class enum for it yet in the new code.
+
+- **Data source URLs**: no longer centralized; each `fetch/` module defines its own and deliberately does not import the deprecated `config.py`:
+  - `fetch/pdok.py` — PDOK INSPIRE ATOM base (`https://service.pdok.nl/rws/ahn/atom/`) with per-generation feed URLs.
+  - `fetch/geotiles_source.py` — GeoTiles.nl AHN4/AHN5 bases (`https://geotiles.citg.tudelft.nl/AHN{4,5}_T/`), the fallback source.
+  - `fetch/generation.py` — a GeoTiles.nl AHN4 endpoint used by generation auto-probing.
 
 ### Coordinate Systems
 
-The tool works primarily with the Dutch national grid (EPSG:28992) but supports coordinate transformations through the `-e/--epsg` option when using custom clip files.
-
-### Data Download Flow
-
-The tool downloads pre-tiled AHN LAZ files based on your area of interest:
-
-1. **Input Methods** (choose one):
-   - **City name**: `-c amsterdam` (uses pre-stored municipality boundaries)
-   - **Bounding box**: `-b minx,miny,maxx,maxy` (coordinates in EPSG:28992)
-   - **GeoJSON file**: `-g my_area.geojson` (arbitrary polygon(s) for custom areas)
-
-2. **Tile Discovery**:
-   - The Netherlands is divided into a grid of AHN tiles (stored in `ahn_cli/fetcher/data/ahn_subunit.geojson`)
-   - Each tile has an identifier (e.g., "37FN2", "37FZ1")
-   - System finds which tiles intersect with your area
-
-3. **Download Process**:
-   - Tile IDs are converted to URLs: `https://geotiles.citg.tudelft.nl/AHN4_T/{tile_id}.LAZ`
-   - Multiple tiles downloaded concurrently (up to 8 threads)
-   - Files temporarily stored during processing
-
-4. **Processing Pipeline** (per tile):
-   - Filter by classification classes (if `-i` or `-e` specified)
-   - Clip to exact boundary (city polygon or bbox)
-   - Decimate points (if `-d` specified)
-   - Merge all tiles into single output file
-
-**Important**: AHN data is pre-tiled - the tool downloads complete tiles that overlap your area, then clips to your exact boundary. This means it may download more data than ultimately needed.
-
-### GeoJSON Polygon Flow
-
-When using GeoJSON files for custom area selection:
-
-1. **CLI Entry** (`main.py`):
-   - Accepts GeoJSON file path with `-g/--geojson` option
-   - File must have `.geojson` or `.json` extension
-
-2. **Validation** (`validator.py`):
-   - Checks file exists and has correct extension
-   - Enforces mutual exclusivity with city and bbox options
-   - Exactly one of `--city`, `--bbox`, or `--geojson` must be specified
-
-3. **Tile Selection** (`fetcher/geotiles.py:ahn_subunit_indices_of_geojson`):
-   - Reads GeoJSON file using GeoPandas
-   - Automatically transforms to EPSG:28992 if in different CRS
-   - Uses efficient spatial join (`gpd.sjoin`) to find intersecting tiles
-   - Performance warning if >50 tiles selected
-
-4. **Point Cloud Clipping** (`manipulator/ptc_handler.py:clip_by_arbitrary_polygon`):
-   - Handles multiple polygons by creating a union (`unary_union`)
-   - Supports MultiPolygon geometries
-   - Respects CRS information in GeoJSON
-   - Applies same rasterization-based clipping as other methods
-
-**Features**:
-- Supports any valid GeoJSON with Polygon or MultiPolygon geometries
-- Multiple features are automatically combined into a single area
-- CRS transformations handled automatically
-- Compatible with all other CLI options (class filtering, decimation, etc.)
-
-### Bounding Box (bbox) Flow
-
-When using bbox instead of city name:
-
-1. **CLI Entry** (`main.py`): 
-   - Accepts bbox as comma-separated string: "minx,miny,maxx,maxy"
-   - Parsed into list of floats: `[minx, miny, maxx, maxy]`
-
-2. **Validation** (`validator.py`):
-   - Must have exactly 4 coordinates
-   - minx < maxx and miny < maxy
-   - Cannot be used together with city parameter (mutually exclusive)
-
-3. **Tile Selection** (`fetcher/geotiles.py:ahn_subunit_indices_of_bbox`):
-   - Bbox coordinates are in EPSG:28992 (Dutch national grid)
-   - Transformed to EPSG:4326 for spatial indexing
-   - Uses GeoPandas spatial index (`cx[minx:maxx, miny:maxy]`) to find intersecting tiles
-
-4. **Point Cloud Clipping** (`manipulator/ptc_handler.py:clip_by_bbox`):
-   - After downloading tiles, points are filtered to bbox extent
-   - Simple coordinate comparison: keeps points where `minx <= x <= maxx` and `miny <= y <= maxy`
-   - Applied before other processing steps
+The tool works primarily in the Dutch national grid, EPSG:28992 (RD New / Amersfoort), for orthophotos, bboxes, and tile identity. The AHN DSM/LAZ data is natively EPSG:7415 (EPSG:28992 horizontally, NAP height vertically) — `reconcile` relies on this to interpolate without reprojection, since only the Z axis differs semantically between the ortho grid and the AHN cloud. `fetch/source.py` provides the EPSG:28992 ↔ 4326 conversion helpers used when reading city/GeoJSON boundaries.
 
 ### Testing Structure
 
-Tests are organized by module:
-- `tests/fetcher/` - Tests for data fetching components
-- `tests/manipulator/` - Tests for point cloud processing
-- `tests/test_pipeline.py` - Integration tests for the full pipeline
-- `tests/testdata/` - Test fixtures and sample data
+Tests are organized to mirror the source layout:
+- `tests/domain/`, `tests/fetch/`, `tests/prep/`, `tests/reconcile/`, `tests/copc/`, `tests/provenance/`, `tests/cache/`, `tests/cli/` — one directory per bounded context / adapter, matching `ahn_cli/`.
+- `tests/nightly/` — live checks against the real PDOK/Beeldmateriaal endpoints; marked `nightly`, excluded from `make test` by default (`addopts = "-m 'not nightly'"`), run explicitly via `make test-nightly`.
+- `tests/test_bounded_contexts.py` — contract test asserting the `fetch`/`prep` docstrings and `domain.__all__` match the bounded-context framing described above.
+- `tests/test_integration_vertical_slice.py` — end-to-end acceptance test for the full fetch → prep pipeline.
+- `tests/fetcher/`, `tests/manipulator/`, and a handful of loose `tests/test_*.py` files (`test_pipeline.py`, `test_rasterize.py`, `test_validator.py`, `test_geojson_integration.py`, `test_extra_bytes_harmonization.py`) — grandfathered tests for the legacy modules listed above.
 
 ### Dependencies
 
 The project uses modern Python tooling:
 - `uv` for dependency management (pyproject.toml)
-- `ruff` for linting and formatting (configured in pyproject.toml)
-- `pytest` for testing
-- Python 3.10-3.12 supported
-- Key libraries: laspy (point clouds), geopandas/shapely (geometry), rasterio (rasters), polyscope (3D visualization)
+- `ruff` for linting and formatting (`select = ["ALL"]` minus formatter-conflicting rules; legacy modules exempted per-file)
+- `pyright` (strict mode) for type checking
+- `pytest` for testing (`--cov=ahn_cli --cov-branch`, `fail_under = 100` on non-legacy code)
+- Python 3.10–3.12 supported
+- Key libraries: laspy (point clouds), copclib (COPC container writing), geopandas/shapely (geometry), rasterio (rasters/COGs), scipy (kNN), pdal (optional), mlx (optional, Apple-silicon GPU decimation)
 
-### Bounding Box Verification (GeoJSON)
+### CI
 
-When using GeoJSON input, the tool can verify that the output LAZ file's bounding box matches the input polygon:
-
-1. **Verification Process** (`manipulator/verifier.py`):
-   - Reads GeoJSON and extracts unified polygon geometry
-   - Transforms polygon to EPSG:28992 if needed (handles any CRS)
-   - Calculates expected bounding box from transformed polygon
-   - Compares with actual LAZ file bounding box
-   - Reports coverage percentage and coordinate differences
-
-2. **CLI Options**:
-   - `--bbox-tolerance`: Maximum allowed difference in meters (default: 10.0)
-   - `--strict-bbox-check`: Fail if bbox mismatch exceeds tolerance
-   - `--no-verify`: Disable verification entirely
-   - `--verify-pdal`: Enable PDAL validation (requires PDAL installed)
-
-3. **CRS Handling**:
-   - Automatically detects CRS from GeoJSON file
-   - Falls back to `--epsg` parameter if no CRS in file (default: 4326)
-   - All comparisons done in EPSG:28992 (Dutch national grid)
-
-4. **Verification Output**:
-   ```
-   Verifying output bounding box against GeoJSON input...
-   GeoJSON bbox: [194198.30, 443461.34, 194594.11, 443694.84]
-   LAZ bbox:     [194201.45, 443463.12, 194591.23, 443692.56]
-   Bbox difference: max 3.15m (within 10.0m tolerance) ✓
-   Coverage: 98.7% of input area covered ✓
-   ```
-
-5. **Use Cases**:
-   - Quality assurance for data processing
-   - Detecting CRS transformation issues
-   - Ensuring complete area coverage
-   - Validating clipping accuracy
+`.github/workflows/ci.yml` runs `make lint`, `make typos`, `make format-check`, `make typecheck`, `make test` on push/PR across Python 3.10/3.11/3.12, plus a separately scheduled nightly job running `make test-nightly`.

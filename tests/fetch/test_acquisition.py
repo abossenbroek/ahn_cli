@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
+import io
 import json
 import math
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
+import laspy
+import numpy as np
 import pytest
 import requests
 from pyproj import Transformer
@@ -31,6 +36,9 @@ from ahn_cli.fetch.pdok import PdokSource
 from ahn_cli.fetch.source import FetchSource, SourceKind
 from ahn_cli.provenance import read_provenance
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
 _FIXTURES = Path(__file__).parent / "fixtures"
 _ATOM_BYTES = (_FIXTURES / "pdok_ahn_atom.xml").read_bytes()
 _SAMPLE_CATALOG = _FIXTURES / "ahn_subunit_sample.geojson"
@@ -51,6 +59,35 @@ _SHARED_EDGE_BBOX = _rd_bbox(4.40, 51.99, 4.44, 52.02)
 _UNCOVERED_BBOX = _rd_bbox(6.40, 52.40, 6.50, 52.50)
 
 
+def _laz_bytes(points: list[tuple[float, float, float, float]]) -> bytes:
+    """Encode ``(x, y, z, gps_time)`` rows as compressed format-6 LAZ bytes."""
+    header = laspy.LasHeader(point_format=6, version="1.4")
+    header.offsets = np.array([194000.0, 443000.0, 0.0], dtype=float)
+    header.scales = np.array([0.01, 0.01, 0.01], dtype=float)
+    las = laspy.LasData(header)
+    if points:
+        arr = np.array(points, dtype=float)
+        las.x = arr[:, 0]
+        las.y = arr[:, 1]
+        las.z = arr[:, 2]
+        las.gps_time = arr[:, 3]
+    buffer = io.BytesIO()
+    las.write(buffer, do_compress=True)
+    return buffer.getvalue()
+
+
+@functools.cache
+def _genuine_laz_bytes() -> bytes:
+    """Return one small genuine AHN-like LAZ tile, built once and cached."""
+    return _laz_bytes(
+        [
+            (194008.0, 443008.0, 1.0, 1.0),
+            (194010.0, 443010.0, 2.0, 2.0),
+            (194012.0, 443012.0, 3.0, 3.0),
+        ]
+    )
+
+
 class _Recorder:
     """An injected HttpGet that serves fixtures and records requested URLs."""
 
@@ -58,15 +95,43 @@ class _Recorder:
         self.urls: list[str] = []
 
     def __call__(self, url: str) -> bytes:
-        """Return the ATOM feed for feed URLs, fake bytes for .LAZ URLs."""
+        """Return the ATOM feed for feed URLs, canned LAZ bytes for .LAZ URLs."""
         self.urls.append(url)
         if url.endswith(".LAZ"):
-            return b"LAZ-BYTES:" + url.rsplit("/", 1)[-1].encode()
+            return _genuine_laz_bytes()
         return _ATOM_BYTES
 
     def laz_urls(self) -> list[str]:
         """Return only the tile-download URLs seen so far."""
         return [url for url in self.urls if url.endswith(".LAZ")]
+
+
+class _SwitchablePayload:
+    """An injected HttpGet whose LAZ payload can change between runs.
+
+    Serves the ATOM feed for feed URLs and ``payload`` for .LAZ URLs,
+    counting the tile downloads so a test can prove a re-download happened.
+    """
+
+    def __init__(self, payload: bytes) -> None:
+        self.payload = payload
+        self.laz_calls = 0
+
+    def __call__(self, url: str) -> bytes:
+        """Return the feed or the current payload, counting LAZ downloads."""
+        if url.endswith(".LAZ"):
+            self.laz_calls += 1
+            return self.payload
+        return _ATOM_BYTES
+
+
+def _payload_recorder(payload: bytes) -> Callable[[str], bytes]:
+    """Return an http_get serving the ATOM feed and ``payload`` per .LAZ URL."""
+
+    def http_get(url: str) -> bytes:
+        return payload if url.endswith(".LAZ") else _ATOM_BYTES
+
+    return http_get
 
 
 def _bbox_request(
@@ -217,7 +282,7 @@ def test_acquire_downloads_covering_tiles_with_provenance(
         "C_37EN2.LAZ",
     ]
     for path in written:
-        assert path.read_bytes().startswith(b"LAZ-BYTES:")
+        assert path.read_bytes() == _genuine_laz_bytes()
     ahn_dir = site / "ahn"
     provenance = read_provenance(ahn_dir / "C_37EN1.provenance.json")
     expected_checksum = hashlib.sha256(
@@ -583,6 +648,81 @@ def test_acquire_funnels_a_download_failure(tmp_path: Path) -> None:
     request = _bbox_request(tmp_path / "delft")
     with pytest.raises(AcquisitionError, match="download failed"):
         acquire(request, http_get=failing_download, now=_fixed_now)
+
+
+def test_acquire_rejects_an_unparsable_tile(tmp_path: Path) -> None:
+    """Downloaded bytes that do not parse as LAZ are refused as AHN data."""
+    request = _bbox_request(tmp_path / "delft")
+
+    with pytest.raises(AcquisitionError, match="not a readable LAZ"):
+        acquire(
+            request,
+            http_get=_payload_recorder(b"not a point cloud at all"),
+            now=_fixed_now,
+        )
+
+
+def test_acquire_rejects_a_tile_stacked_at_one_position(
+    tmp_path: Path,
+) -> None:
+    """A tile whose points all share one identical XYZ is refused."""
+    payload = _laz_bytes(
+        [
+            (194008.0, 443008.0, 1.0, 1.0),
+            (194008.0, 443008.0, 1.0, 2.0),
+        ]
+    )
+    request = _bbox_request(tmp_path / "delft")
+
+    with pytest.raises(AcquisitionError, match="identical position"):
+        acquire(request, http_get=_payload_recorder(payload), now=_fixed_now)
+
+
+def test_acquire_rejects_an_empty_tile(tmp_path: Path) -> None:
+    """A zero-point tile is refused: it contains no points."""
+    request = _bbox_request(tmp_path / "delft")
+
+    with pytest.raises(AcquisitionError, match="contains no points"):
+        acquire(
+            request,
+            http_get=_payload_recorder(_laz_bytes([])),
+            now=_fixed_now,
+        )
+
+
+def test_acquire_recovers_after_a_rejected_tile_poisoned_the_cache(
+    tmp_path: Path,
+) -> None:
+    """A gate-rejected tile is evicted, so a retry re-downloads and succeeds.
+
+    The reviewer's repro: a degenerate first download must not stay cached,
+    or every retry replays the poisoned bytes and acquire can never recover.
+    """
+    site = tmp_path / "delft"
+    request = _bbox_request(site)
+    stacked = _laz_bytes(
+        [
+            (194008.0, 443008.0, 1.0, 1.0),
+            (194008.0, 443008.0, 1.0, 2.0),
+        ]
+    )
+    http_get = _SwitchablePayload(stacked)
+
+    with pytest.raises(AcquisitionError, match="identical position"):
+        acquire(request, http_get=http_get, now=_fixed_now, tool_version="v")
+    assert http_get.laz_calls == 1  # failed on the first covering sheet
+
+    http_get.payload = _genuine_laz_bytes()
+    written = acquire(
+        request, http_get=http_get, now=_fixed_now, tool_version="v"
+    )
+
+    assert [path.name for path in written] == ["C_37EN1.LAZ", "C_37EN2.LAZ"]
+    # The poisoned sheet was re-downloaded (plus the never-fetched second
+    # sheet), not replayed from the cache.
+    assert http_get.laz_calls == 3
+    for path in written:
+        assert path.read_bytes() == _genuine_laz_bytes()
 
 
 def test_default_http_get_returns_body_and_raises_for_status(

@@ -35,6 +35,7 @@ import numpy as np
 import numpy.typing as npt
 
 from ahn_cli.domain import Product, Provenance
+from ahn_cli.domain.authenticity import degenerate_cloud
 from ahn_cli.prep.decimate import (
     NumpyBackend,
     Thinning,
@@ -113,7 +114,14 @@ def prepare(request: PrepRequest) -> None:
 
     Failure modes:
         - :class:`PrepError` if ``<data_dir>/ahn/`` is missing, holds no LAZ
-          tiles, or a tile lacks the provenance sidecar its crop extent needs.
+          tiles, a tile lacks the provenance sidecar its crop extent needs, or
+          the finished cloud is degenerate (no points survived the class
+          filter/thinning, or every point sits at one identical position) —
+          a degenerate deliverable is never emitted as genuine AHN output:
+          the rejected ``pointcloud.laz`` is removed before the error
+          propagates, and ``pointcloud.ply``/``provenance.json`` are only
+          written after the verification gate, so a rejected run leaves no
+          deliverable behind.
     """
     ahn_dir = request.data_dir / _AHN_SUBDIR
     if not ahn_dir.is_dir():
@@ -131,6 +139,7 @@ def prepare(request: PrepRequest) -> None:
     output = request.data_dir / _POINTCLOUD_LAZ
     dedup_stats = deduplicate_tiles(tiles, output)
     output_points = _apply_selection(output, request)
+    _verify_output_cloud(output)
     if request.export_points:
         export_ply(output, request.data_dir / _POINTCLOUD_PLY)
     _write_prep_provenance(
@@ -187,6 +196,41 @@ def _apply_selection(output: Path, request: PrepRequest) -> int:
         las.points = las.points[indices]
     las.write(str(output))
     return len(las.points)
+
+
+def _verify_output_cloud(output: Path) -> None:
+    """Hard-verify the finished cloud is genuine, non-degenerate AHN data.
+
+    Runs after the class filter and thinning, before the PLY export and the
+    provenance record, so a degenerate deliverable never leaves the prep
+    stage: the written header must not describe an empty cloud or a stack of
+    points all at one identical position. On rejection the degenerate
+    ``pointcloud.laz`` is removed before the error propagates, so it cannot
+    poison a later ``copc`` run that reads the canonical output path; the
+    PLY export and provenance record are written only after this gate, so
+    the LAZ is the sole artefact needing cleanup.
+
+    Failure modes:
+        - :class:`PrepError` if the finished cloud is degenerate (the
+          rejected ``output`` file is removed first).
+    """
+    with laspy.open(str(output)) as reader:
+        header = reader.header
+        count = int(header.point_count)
+        mins = header.mins
+        maxs = header.maxs
+    if degenerate_cloud(count, mins, maxs):
+        detail = (
+            "no points survived the class filter/thinning"
+            if count == 0
+            else f"all {count} points sit at one identical position"
+        )
+        output.unlink(missing_ok=True)
+        msg = (
+            f"prepared cloud at {output} is degenerate ({detail}) — "
+            "refusing to emit it as genuine AHN output."
+        )
+        raise PrepError(msg)
 
 
 def _class_mask(

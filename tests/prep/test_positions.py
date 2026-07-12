@@ -189,7 +189,7 @@ def test_exr_has_magic_version_and_controlled_header(tmp_path: Path) -> None:
 def test_exr_datawindow_matches_raster_dimensions(tmp_path: Path) -> None:
     """The dataWindow/displayWindow describe the raster's pixel extent."""
     src = tmp_path / "dsm.tif"
-    _write_dsm(src, np.zeros((3, 5), dtype=np.float32))
+    _write_dsm(src, np.arange(15, dtype=np.float32).reshape(3, 5))
     out = tmp_path / "positions.exr"
 
     export_positions(src, out)
@@ -347,3 +347,21 @@ def test_missing_dsm_raises_typed_error(tmp_path: Path) -> None:
     """An unreadable/absent DSM funnels to a typed PositionsExportError."""
     with pytest.raises(PositionsExportError, match="DSM"):
         export_positions(tmp_path / "absent.tif", tmp_path / "out.exr")
+
+
+def test_constant_elevation_dsm_is_refused(tmp_path: Path) -> None:
+    """A multi-pixel DSM at one constant elevation carries no genuine relief."""
+    src = tmp_path / "dsm.tif"
+    _write_dsm(src, np.full((2, 2), 5.0, dtype=np.float32))
+
+    with pytest.raises(PositionsExportError, match="genuine relief"):
+        export_positions(src, tmp_path / "out.exr")
+
+
+def test_all_nodata_dsm_is_refused(tmp_path: Path) -> None:
+    """A DSM whose every pixel is a void carries no genuine relief."""
+    src = tmp_path / "dsm.tif"
+    _write_dsm(src, np.full((2, 2), _NODATA, dtype=np.float32))
+
+    with pytest.raises(PositionsExportError, match="genuine relief"):
+        export_positions(src, tmp_path / "out.exr")

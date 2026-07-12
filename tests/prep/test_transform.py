@@ -311,3 +311,48 @@ def test_prepare_with_missing_sidecar_raises(tmp_path: Path) -> None:
 
     with pytest.raises(PrepError, match="provenance sidecar"):
         prepare(PrepRequest(data_dir=site))
+
+
+def test_prepare_rejects_a_filter_that_empties_the_cloud(
+    tmp_path: Path,
+) -> None:
+    """An include filter matching no class yields a refused empty cloud."""
+    site = _fetched_site(tmp_path / "delft")
+
+    with pytest.raises(PrepError, match="no points survived"):
+        prepare(
+            PrepRequest(
+                data_dir=site, include_classes=(26,), export_points=True
+            )
+        )
+    # The rejected deliverable is removed and nothing past the gate ran:
+    # no degenerate LAZ remains for a later `copc` run to pick up.
+    assert not (site / "pointcloud.laz").exists()
+    assert not (site / "pointcloud.ply").exists()
+    assert not (site / "provenance.json").exists()
+
+
+def test_prepare_rejects_a_cloud_stacked_at_one_position(
+    tmp_path: Path,
+) -> None:
+    """Points all at one identical XYZ are refused as fabricated output."""
+    site = tmp_path / "delft"
+    ahn_dir = site / "ahn"
+    ahn_dir.mkdir(parents=True)
+    # Two points at one XYZ with distinct gps_time survive the exact
+    # XYZ+GPS-time dedup sweep, so the finished cloud is a degenerate stack.
+    _write_tile(
+        ahn_dir / "tile_a.LAZ",
+        [
+            (1.0, 1.0, 0.5, 1.0, 2),
+            (1.0, 1.0, 0.5, 2.0, 2),
+        ],
+    )
+    _write_sidecar(ahn_dir, "tile_a", _EXTENT_A)
+
+    with pytest.raises(PrepError, match="identical position"):
+        prepare(PrepRequest(data_dir=site, export_points=True))
+    # The rejected deliverable is removed and nothing past the gate ran.
+    assert not (site / "pointcloud.laz").exists()
+    assert not (site / "pointcloud.ply").exists()
+    assert not (site / "provenance.json").exists()

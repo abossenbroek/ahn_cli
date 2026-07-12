@@ -8,3 +8,6 @@ extend-exclude = ["*.geojson", "*.json", "*.las", "*.laz"]
 # "ND" is the N-Dimensional token in scipy's LinearNDInterpolator, not a typo
 # for "AND".
 ND = "ND"
+# "LOD" (level of detail) is standard point-cloud/COPC terminology (the copc
+# context's LodSampler), not a typo for "Load".
+lod = "lod"

@@ -22,6 +22,7 @@ version = "0.3.5"
 source = { editable = "." }
 dependencies = [
     { name = "click" },
+    { name = "copclib" },
     { name = "defusedxml" },
     { name = "geopandas" },
     { name = "laspy", extra = ["lazrs"] },
@@ -59,6 +60,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "click", specifier = ">=8.2.0" },
+    { name = "copclib", specifier = ">=2.6.3" },
     { name = "defusedxml", specifier = ">=0.7.1" },
     { name = "geopandas", specifier = ">=1.1.0" },
     { name = "laspy", extras = ["lazrs"], specifier = ">=2.6.0" },
@@ -204,6 +206,29 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/d8/53/6f443c9a4a8358a93a6792e2acffb9d9d5cb0a5cfd8802644b7b1c9a02e4/colorama-0.4.6.tar.gz", hash = "sha256:08695f5cb7ed6e0531a20572697297273c47b8cae5a63ffc6d6ed5c201be6e44", size = 27697, upload-time = "2022-10-25T02:36:22.414Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d1/d6/3965ed04c63042e047cb6a3e6ed1a63a35087b6a609aa3a15ed8ac56c221/colorama-0.4.6-py2.py3-none-any.whl", hash = "sha256:4f1d9991f5acc0ca119f9d443620b77f9d6b33703e51011c16baf57afb285fc6", size = 25335, upload-time = "2022-10-25T02:36:20.889Z" },
+]
+
+[[package]]
+name = "copclib"
+version = "2.6.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/9d/b5/b8a2b309758f6ade68ce96e00c2d9d9096f50455e4e61260c6b3f398888d/copclib-2.6.3.tar.gz", hash = "sha256:029908d1aa12550987a1bdcf6a70008e73f6c6a00f1644e6c87886c2617967c9", size = 141223, upload-time = "2025-05-20T16:10:32.895Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d1/fb/b752f2a6c69eba365c9ffd7742a2e3a1faf4529873507562d4aec002e094/copclib-2.6.3-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:1d37d2a352deb22cdab126bfd5a389a2a913d8aa8c245e7a3669a3ac62702bb2", size = 513672, upload-time = "2025-05-20T16:09:43.894Z" },
+    { url = "https://files.pythonhosted.org/packages/55/14/49dc920dd3505d395d00228ba92fa254f1745c60e3fa286c42b91767c967/copclib-2.6.3-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:91e5151e4a08417773975fb9c303175d429d7318a5ebda2ede5060a5b9e7af41", size = 468561, upload-time = "2025-05-20T16:09:45.633Z" },
+    { url = "https://files.pythonhosted.org/packages/f5/68/28abc3194b0b22cdc2b5eed5140ab763ddda8e8c1a0e8ad62f77fd04a422/copclib-2.6.3-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:4362e1cb7f1e5fadbb9985733cea29a92388b7ef40675de4663a456ae8bce4fb", size = 738842, upload-time = "2025-05-20T16:09:46.642Z" },
+    { url = "https://files.pythonhosted.org/packages/f1/7c/b047d3c95c68fa8a9e0f8ef3c4e19d95f2046d05e0f76e9263dd77274a45/copclib-2.6.3-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:a00cc8a1bc9f79a387d0e01dc0e27b52ae06dd39b4057be09abaec312ab0f2a7", size = 783252, upload-time = "2025-05-20T16:09:47.978Z" },
+    { url = "https://files.pythonhosted.org/packages/5f/89/1ef7a3e1ce132b46f2cf35c4575a12daf7ed926ac1aeb5dfe959138d054a/copclib-2.6.3-cp310-cp310-win_amd64.whl", hash = "sha256:bf5b039ba1e1c1e65ca7ccde2fac57499602795662c12fe53fe2562d99f3db40", size = 653279, upload-time = "2025-05-20T16:09:49.516Z" },
+    { url = "https://files.pythonhosted.org/packages/51/4b/9db9c38432a66f7a36cad8500e9962547141cc00b99beec678c56d445aa0/copclib-2.6.3-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:e97a8c5cc74ed02ef9d80fba8dbe759fe6e4893b21edb4a0462e501e97289deb", size = 514928, upload-time = "2025-05-20T16:09:50.833Z" },
+    { url = "https://files.pythonhosted.org/packages/41/97/31aa1c0a25e9265e28805176a7e0dc8829c6448eea02b5a28c7e61a8bbdc/copclib-2.6.3-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:7183a204ccfada96f0dcf0597d1c8e2ed6619d2740e1eae2313e627cae9c0ca1", size = 469782, upload-time = "2025-05-20T16:09:52.36Z" },
+    { url = "https://files.pythonhosted.org/packages/a0/47/4f4f913af0c1f62670cd3123ae756df19adafd08e4c76b546de3a589e16f/copclib-2.6.3-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:68d915fb39a38c1b65df591b1870ceaa979285dbfef3f399a4e76b4cc66d75c7", size = 740459, upload-time = "2025-05-20T16:09:53.418Z" },
+    { url = "https://files.pythonhosted.org/packages/f0/7c/03c98489f7e5a3c88abb6bfa8f4d98bc9c57a74c6673ed77893ba15c257d/copclib-2.6.3-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:0f8c9d2dcc74ee50f4ad3e1d70abe51c2f756eaa1d7f38690db7b8c40790f622", size = 785845, upload-time = "2025-05-20T16:09:54.79Z" },
+    { url = "https://files.pythonhosted.org/packages/82/4d/1cdd39a42eb609815ed9d4dbb4db4f398e07c9a7a3a9e0c24fb97a9b607a/copclib-2.6.3-cp311-cp311-win_amd64.whl", hash = "sha256:d90406f2635e58590bca156d6ad28fa93a6ea585d0fd662dfc7113b2d9a40f6d", size = 653433, upload-time = "2025-05-20T16:09:56.019Z" },
+    { url = "https://files.pythonhosted.org/packages/6f/78/f7a232a96f947103c42db54960791e0ef36031ce0d94c8cc76fa1c5c325f/copclib-2.6.3-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:8225161f3ddfa9f20283dbe8a18c928e662da3cad0321ea26d848e34cca47bda", size = 521644, upload-time = "2025-05-20T16:09:57.362Z" },
+    { url = "https://files.pythonhosted.org/packages/17/33/85a9601a169a3e54aeed6a19eb102d6ee3a49635cf1007eb7698e643fc08/copclib-2.6.3-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:904d379e91bfa3493e4413193059bb92ab499143c6722aa5a96d59ff750be8d2", size = 472238, upload-time = "2025-05-20T16:09:58.381Z" },
+    { url = "https://files.pythonhosted.org/packages/fe/65/3dbace72baf5b0a54b3d05f277a0aa801e66c40bc193a26f55ac2d51b2eb/copclib-2.6.3-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:e3049fea33592a612aec03a42976800a94b605f7a5c70a627792736c6153bc8e", size = 740434, upload-time = "2025-05-20T16:09:59.692Z" },
+    { url = "https://files.pythonhosted.org/packages/6f/c3/ed84fcb41c4e05cea2088051d9100f87250c8f412075b8e2798f3172beda/copclib-2.6.3-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:b9303328f56060bca1385a26a7d9384184c17088971f7bb4d7f410e208ada5ad", size = 785628, upload-time = "2025-05-20T16:10:00.745Z" },
+    { url = "https://files.pythonhosted.org/packages/ee/07/8d6092fa06c05b351b5395f80a17230a2343d7b5488ab096f50b7bb6dc6b/copclib-2.6.3-cp312-cp312-win_amd64.whl", hash = "sha256:a1765201ce3089afe577c257144a38bd03e64e7146ac62263a61aad6029af606", size = 656351, upload-time = "2025-05-20T16:10:02.282Z" },
 ]
 
 [[package]]

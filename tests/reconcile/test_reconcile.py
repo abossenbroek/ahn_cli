@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import laspy
@@ -12,12 +13,13 @@ from ahn_cli.reconcile.method import IdwInterp
 from ahn_cli.reconcile.reconcile import (
     ReconcileError,
     ReconcileRequest,
+    _verify_source_coords,  # pyright: ignore[reportPrivateUsage]
     reconcile,
 )
 from ahn_cli.reconcile.writers import OutputFormat
 
 if TYPE_CHECKING:
-    from pathlib import Path
+    import numpy.typing as npt
 
 _ALL_FORMATS = tuple(OutputFormat)
 
@@ -151,3 +153,92 @@ def test_reconcile_missing_cloud_raises(
         reconcile(
             _request(ortho_path, tmp_path / "absent.laz", tmp_path / "out")
         )
+
+
+def _write_cloud(path: Path, xyz: npt.NDArray[np.float64]) -> Path:
+    """Write ``xyz`` rows as a small point-format-2 LAZ at ``path``."""
+    header = laspy.LasHeader(point_format=2)
+    header.offsets = np.floor(xyz.min(axis=0))
+    header.scales = [0.001, 0.001, 0.001]
+    las = laspy.LasData(header)
+    las.x = xyz[:, 0]
+    las.y = xyz[:, 1]
+    las.z = xyz[:, 2]
+    las.write(str(path))
+    return path
+
+
+def test_reconcile_rejects_a_filter_that_empties_the_cloud(
+    ortho_path: Path, cloud_path: Path, tmp_path: Path
+) -> None:
+    """A class filter leaving no points is a typed refusal, not infill."""
+    request = ReconcileRequest(
+        ortho_path=ortho_path,
+        cloud_path=cloud_path,
+        output_dir=tmp_path / "out",
+        method=IdwInterp(k=8),
+        formats=(OutputFormat.PT,),
+        include_classes=(26,),  # the fixture cloud holds only class 0
+    )
+
+    with pytest.raises(ReconcileError, match="no points left"):
+        reconcile(request)
+
+
+def test_reconcile_rejects_a_single_point_cloud(
+    ortho_path: Path, tmp_path: Path
+) -> None:
+    """One point has no XY extent to interpolate a grid from."""
+    cloud = _write_cloud(
+        tmp_path / "one.laz", np.array([[101.0, 101.0, 3.0]])
+    )
+
+    with pytest.raises(ReconcileError, match="single XY position"):
+        reconcile(_request(ortho_path, cloud, tmp_path / "out"))
+
+
+def test_reconcile_rejects_a_cloud_collapsed_to_one_xy(
+    ortho_path: Path, tmp_path: Path
+) -> None:
+    """Coincident-XY returns collapse in cleaning, leaving no XY extent."""
+    xyz = np.array(
+        [[101.0, 101.0, 1.0], [101.0, 101.0, 2.0], [101.0, 101.0, 3.0]]
+    )
+    cloud = _write_cloud(tmp_path / "stack.laz", xyz)
+
+    with pytest.raises(ReconcileError, match="single XY position"):
+        reconcile(_request(ortho_path, cloud, tmp_path / "out"))
+
+
+def test_verify_source_coords_rejects_identical_xy_points() -> None:
+    """Two or more points all sharing one XY are refused directly.
+
+    The public pipeline always XY-dedupes before this check, so the
+    several-points-one-XY arm is exercised on the helper itself.
+    """
+    coords = np.array([[101.0, 101.0, 1.0], [101.0, 101.0, 2.0]])
+
+    with pytest.raises(ReconcileError, match="single XY position"):
+        _verify_source_coords(coords, Path("cloud.laz"))
+
+
+def test_reconcile_rejects_a_cloud_west_of_the_ortho(
+    ortho_path: Path, tmp_path: Path
+) -> None:
+    """A cloud entirely west of the ortho extent shares no ground with it."""
+    xyz = np.array([[50.0, 101.0, 1.0], [51.0, 102.0, 2.0]])
+    cloud = _write_cloud(tmp_path / "west.laz", xyz)
+
+    with pytest.raises(ReconcileError, match="does not overlap"):
+        reconcile(_request(ortho_path, cloud, tmp_path / "out"))
+
+
+def test_reconcile_rejects_a_cloud_south_of_the_ortho(
+    ortho_path: Path, tmp_path: Path
+) -> None:
+    """A cloud overlapping in X but entirely south in Y is still disjoint."""
+    xyz = np.array([[101.0, 50.0, 1.0], [102.0, 51.0, 2.0]])
+    cloud = _write_cloud(tmp_path / "south.laz", xyz)
+
+    with pytest.raises(ReconcileError, match="does not overlap"):
+        reconcile(_request(ortho_path, cloud, tmp_path / "out"))

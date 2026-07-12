@@ -135,6 +135,7 @@ def _dsm_cog_bytes(tmp_path: Path) -> bytes:
         (1, height, width), 10.0, dtype=np.float32
     )
     pixels[0, 10:12, 10:12] = -9999.0
+    pixels[0, 20, 20] = 12.5  # genuine relief inside the AOI window
     cog = tmp_path / "dsm_sheet.tif"
     with rasterio.open(
         cog,

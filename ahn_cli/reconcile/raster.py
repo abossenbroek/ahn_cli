@@ -31,6 +31,7 @@ import rasterio
 from rasterio.errors import RasterioIOError
 from rasterio.windows import Window
 
+from ahn_cli.domain.authenticity import uniform_image
 from ahn_cli.domain.grid import GeoTransform, PixelGrid
 
 if TYPE_CHECKING:
@@ -41,6 +42,7 @@ if TYPE_CHECKING:
     from typing_extensions import Self
 
 _RGB_BANDS = 3
+_UNIFORMITY_SAMPLE = 512  # decimated read size for the placeholder guard
 """An orthophoto must carry at least three bands (red, green, blue)."""
 
 
@@ -100,13 +102,17 @@ def open_ortho(path: Path) -> OrthoReader:
 
     Contract:
         - ``path`` is a readable GeoTIFF with at least three bands (the first
-          three are red, green, blue).
+          three are red, green, blue) carrying real imagery: a raster whose
+          every sampled RGB pixel is one identical colour is a placeholder
+          grid, not an orthophoto, and colouring a cloud from it would
+          silently paint every output point that colour (the Moerkapelle
+          gray-cloud incident).
         - Returns an :class:`OrthoReader` whose ``grid`` carries the ortho's
           dimensions and geotransform.
 
     Failure modes:
-        - :class:`ReconcileError` if the file is unreadable or has fewer than
-          three bands.
+        - :class:`ReconcileError` if the file is unreadable, has fewer than
+          three bands, or is a single uniform colour.
     """
     try:
         dataset = rasterio.open(str(path))
@@ -119,6 +125,23 @@ def open_ortho(path: Path) -> OrthoReader:
         msg = (
             f"orthophoto {path} has {band_count} band(s); "
             f"at least {_RGB_BANDS} (RGB) are required."
+        )
+        raise ReconcileError(msg)
+    sample = dataset.read(
+        indexes=list(range(1, _RGB_BANDS + 1)),
+        out_shape=(
+            _RGB_BANDS,
+            min(int(dataset.height), _UNIFORMITY_SAMPLE),
+            min(int(dataset.width), _UNIFORMITY_SAMPLE),
+        ),
+    )
+    if uniform_image(sample):
+        dataset.close()
+        msg = (
+            f"orthophoto {path} is a single uniform colour across every "
+            "sampled pixel — that is a placeholder grid, not real imagery; "
+            "reconcile refuses to colour the cloud from it. Fetch the real "
+            "Beeldmateriaal orthophoto (ahn_cli fetch --ortho) first."
         )
         raise ReconcileError(msg)
     affine = cast("tuple[float, ...]", dataset.transform)

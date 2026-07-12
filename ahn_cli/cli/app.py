@@ -68,6 +68,8 @@ from ahn_cli.reconcile.reconcile import (
     reconcile,
 )
 from ahn_cli.reconcile.writers import OutputFormat
+from ahn_cli.tiles3d.build import build_tiles3d
+from ahn_cli.tiles3d.errors import Tiles3dError
 
 _GENERATION_REGISTRY = default_registry()
 """The default AHN generation registry backing the ``--ahn`` choice.
@@ -696,6 +698,56 @@ def copc_command(cloud: Path, out: Path, workdir: Path | None) -> None:
         f"COPC {out}: {result.input_points} pts -> "
         f"{result.written_points} written across {result.node_count} "
         f"node(s), point format {result.point_format_id}."
+    )
+
+
+@cli.command(name="tiles3d")
+@click.option(
+    "--ortho",
+    "ortho",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Orthophoto GeoTIFF (fetch --ortho output), EPSG:28992.",
+)
+@click.option(
+    "--heights",
+    "heights",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help=(
+        "Reconciled EXR heights on the ortho's exact pixel grid "
+        "(reconcile -f exr output)."
+    ),
+)
+@click.option(
+    "--out",
+    "out",
+    required=True,
+    type=click.Path(file_okay=False, path_type=Path),
+    help="Directory receiving tileset.json and the tiles/ glbs.",
+)
+def tiles3d_command(ortho: Path, heights: Path, out: Path) -> None:
+    """Convert the ortho map to an OGC 3D Tiles 1.1 tileset.
+
+    Drapes the orthophoto over the reconciled per-pixel elevations as a
+    quadtree of binary glTF terrain tiles (OGC 22-025r4). The two
+    inputs' dimensions must match perfectly — bit-exact pixel grid and
+    colours — and any missing height is a hard error. Every written
+    artifact is re-verified from disk against an independent rebuild
+    before the tileset is accepted.
+    """
+    bar: tqdm[NoReturn] = tqdm(unit="tile", desc="tiles3d")
+    with bar:
+        try:
+            result = build_tiles3d(
+                ortho, heights, out, progress=_tqdm_progress(bar)
+            )
+        except Tiles3dError as exc:
+            raise click.ClickException(str(exc)) from exc
+    click.echo(
+        f"3D Tiles {result.tileset_path}: {result.tile_count} tile(s) "
+        f"across {result.levels + 1} level(s), {result.vertices} "
+        f"vertices, {result.triangles} triangles; verified."
     )
 
 

@@ -59,7 +59,7 @@ make check
 ```
 
 ### Running the CLI
-`ahn_cli` is a Click **group**; every invocation names a subcommand (`fetch`, `prep`, `reconcile`, `copc`, `import-viirs`, `export-positions`). Running it with no subcommand prints usage to stderr and exits with code 2 — that is expected `click.Group` behavior, not a bug.
+`ahn_cli` is a Click **group**; every invocation names a subcommand (`fetch`, `prep`, `reconcile`, `copc`, `tiles3d`, `import-viirs`, `export-positions`). Running it with no subcommand prints usage to stderr and exits with code 2 — that is expected `click.Group` behavior, not a bug.
 
 ```bash
 # Run the CLI with arguments (ARGS must start with a subcommand)
@@ -95,9 +95,12 @@ uv run ahn_cli reconcile --ortho data/delft/ortho.tif --cloud data/delft/pointcl
 
 # Convert a pipeline LAZ into a validator-green Cloud-Optimized Point Cloud (streaming, 0.5m dedup)
 uv run ahn_cli copc --cloud data/delft/reconciled/reconciled.laz --out data/delft/reconciled/reconciled.copc.laz
+
+# Convert the ortho map + reconciled heights into an OGC 3D Tiles 1.1 tileset (requires `reconcile -f exr`)
+uv run ahn_cli tiles3d --ortho data/delft/ortho/ortho.tif --heights data/delft/reconciled/reconciled.exr --out data/delft/tiles3d
 ```
 
-A typical end-to-end run is `fetch` → `prep` → (`export-positions` and/or `reconcile`) → optionally `copc`: each step reads the previous step's output from the site directory on disk and writes its own outputs plus an updated `provenance.json`; there is no in-memory handoff between subcommands.
+A typical end-to-end run is `fetch` → `prep` → (`export-positions` and/or `reconcile`) → optionally `copc` and/or `tiles3d` (which needs `reconcile -f exr`): each step reads the previous step's output from the site directory on disk and writes its own outputs plus an updated `provenance.json`; there is no in-memory handoff between subcommands.
 
 ## Architecture
 
@@ -142,9 +145,21 @@ AHN CLI acquires and transforms Dutch elevation data (AHN — Actueel Hoogtebest
    - `build.py` — `build_copc()` orchestrator: plan → scatter → per-bucket dedup/LOD-sample/write, ancestors above the bucket level held back and written last; RGB policy (no/black RGB → PDRF 6, 8-bit-looking RGB widened ×257, real 16-bit passthrough).
    - Verified: the real 46.3M-point Moerkapelle site passes `npx copc-validator -d` 24/24 green; `_typos.toml` carries the `lod`/`LinearNDInterpolator`/legacy-geojson spell-check exceptions this work surfaced.
 
-7. **`provenance/`**: `sidecar.py` — deterministic `provenance.json` codec shared by every fetcher/transform step.
+7. **`tiles3d/`** (3D Tiles export bounded context): converts the orthophoto map plus `reconcile`'s EXR heights into an OGC 3D Tiles 1.1 tileset (OGC 22-025r4) — a quadtree of binary glTF terrain tiles draped with the ortho, all coordinates in ECEF with region bounding volumes in EPSG:4979 radians. The two inputs must match **perfectly**: equal dimensions, EXR X/Y planes bit-equal to the ortho's pixel centres, EXR colour planes bit-equal to this ortho's bands, every elevation finite — any mismatch or missing value is a hard `Tiles3dError`, and data is never infilled. Every vertex/texel at every LOD is a genuine source sample (stride subsampling, no averaging).
+   - `errors.py` — `Tiles3dError`, the context's single typed error.
+   - `exr.py` — strict byte-level reader for reconcile's uncompressed EXR (exact attribute set, offset table, scanline framing; refuses truncation/trailing bytes).
+   - `sources.py` — `load_terrain()` with the perfect-dimension-match gates and the `uniform_image`/`flat_surface` authenticity guards.
+   - `geodesy.py` — pyproj EPSG:7415 → EPSG:4978 (ECEF) and → EPSG:4979 (radians); deterministic per machine (PROJ grid availability affects absolute heights, never self-consistency).
+   - `quadtree.py` — tiling plan: shared-boundary pixel spans, per-level strides, `geometric_error` (leaves are 0).
+   - `mesh.py` — RTC float32 vertex grids swizzled to glTF y-up (`(x, z, -y)`), texel-centre UVs, exact per-tile EPSG:4979 regions.
+   - `png.py` / `gltf.py` / `tileset.py` — hand-packed deterministic writers (stdlib zlib PNG, glb container, sorted-key tileset.json).
+   - `emit.py` — pure in-memory emission shared by build and verify (children-first, so parent regions contain all descendant content by construction).
+   - `build.py` — `build_tiles3d()` orchestrator; a failed or verification-rejected build removes everything it wrote.
+   - `verify.py` — the **strictest post-write verifier**, run unconditionally as the build's final step: re-reads every artifact from disk and checks exact tileset key sets and 1.1 rules, region validity/containment, content-link integrity (no orphans/escapes/duplicates), glb container framing, accessor bounds with bit-exact POSITION extremes, index/UV validity, CRC-verified PNG textures bit-equal to the sampled ortho, vertex containment in every enclosing region, full leaf coverage, and whole-file **byte identity** against an independent rebuild from the sources.
 
-8. **`cache/`**: `store.py`'s `ContentAddressedCache` + `key.py`'s `CacheKey` — a checksum-verified, idempotent cache keyed by (product, generation/vintage, tile id), making `fetch` safe to re-run.
+8. **`provenance/`**: `sidecar.py` — deterministic `provenance.json` codec shared by every fetcher/transform step.
+
+9. **`cache/`**: `store.py`'s `ContentAddressedCache` + `key.py`'s `CacheKey` — a checksum-verified, idempotent cache keyed by (product, generation/vintage, tile id), making `fetch` safe to re-run.
 
 ### Legacy / deprecated modules
 
@@ -154,11 +169,11 @@ AHN CLI acquires and transforms Dutch elevation data (AHN — Actueel Hoogtebest
 
 ### Key Design Patterns
 
-- Each bounded context (`fetch`, `prep`, `reconcile`, `copc`) owns one pipeline stage and communicates through `domain/` value objects and the `provenance/` sidecar — no context reaches into another's internals.
-- `fetch` is idempotent via the content-addressed `cache/`; `prep`, `reconcile`, and `copc` are pure transforms over already-cached/fetched inputs with no network access.
+- Each bounded context (`fetch`, `prep`, `reconcile`, `copc`, `tiles3d`) owns one pipeline stage and communicates through `domain/` value objects and the `provenance/` sidecar — no context reaches into another's internals.
+- `fetch` is idempotent via the content-addressed `cache/`; `prep`, `reconcile`, `copc`, and `tiles3d` are pure transforms over already-cached/fetched inputs with no network access.
 - Point cloud processing streams/block-processes rather than loading whole tiles where practical (DSM windowed COG reads, `reconcile`'s block-streamed interpolation) to manage memory on large areas.
 - Deterministic outputs are a first-class requirement: `provenance.json`, the `reconcile` writers, and Poisson-disk thinning (via `--thin-seed`) are all designed to be reproducible given the same inputs.
-- Every verb's output step hard-verifies data authenticity (via the `domain/authenticity.py` predicates) before emitting: only a genuine AHN cloud / genuine imagery passes — placeholders, degenerate clouds, flat surfaces, and non-overlapping `reconcile` inputs are refused with the verb's typed error. Data is never infilled to satisfy a step.
+- Every verb's output step hard-verifies data authenticity (via the `domain/authenticity.py` predicates) before emitting: only a genuine AHN cloud / genuine imagery passes — placeholders, degenerate clouds, and flat surfaces are refused with the verb's typed error. Dimensions must match perfectly and missing data is a hard error: `reconcile` requires the cloud's XY bbox to cover every ortho pixel centre and refuses any void estimate (removing partial outputs), and `tiles3d` requires bit-exact ortho/EXR grid+colour agreement and all-finite heights. Data is never infilled to satisfy a step.
 - The `cli/` layer is a thin adapter: argument parsing, validation, and error translation only. All business logic lives in the bounded-context packages, never in `cli/app.py`.
 
 ### Important Constants
@@ -186,7 +201,7 @@ The tool works primarily in the Dutch national grid, EPSG:28992 (RD New / Amersf
 ### Testing Structure
 
 Tests are organized to mirror the source layout:
-- `tests/domain/`, `tests/fetch/`, `tests/prep/`, `tests/reconcile/`, `tests/copc/`, `tests/provenance/`, `tests/cache/`, `tests/cli/` — one directory per bounded context / adapter, matching `ahn_cli/`.
+- `tests/domain/`, `tests/fetch/`, `tests/prep/`, `tests/reconcile/`, `tests/copc/`, `tests/tiles3d/`, `tests/provenance/`, `tests/cache/`, `tests/cli/` — one directory per bounded context / adapter, matching `ahn_cli/`.
 - `tests/nightly/` — live checks against the real PDOK/Beeldmateriaal endpoints; marked `nightly`, excluded from `make test` by default (`addopts = "-m 'not nightly'"`), run explicitly via `make test-nightly`.
 - `tests/test_bounded_contexts.py` — contract test asserting the `fetch`/`prep` docstrings and `domain.__all__` match the bounded-context framing described above.
 - `tests/test_integration_vertical_slice.py` — end-to-end acceptance test for the full fetch → prep pipeline.
@@ -200,7 +215,7 @@ The project uses modern Python tooling:
 - `pyright` (strict mode) for type checking
 - `pytest` for testing (`--cov=ahn_cli --cov-branch`, `fail_under = 100` on non-legacy code)
 - Python 3.10–3.12 supported
-- Key libraries: laspy (point clouds), copclib (COPC container writing), geopandas/shapely (geometry), rasterio (rasters/COGs), scipy (kNN), pdal (optional), mlx (optional, Apple-silicon GPU decimation)
+- Key libraries: laspy (point clouds), copclib (COPC container writing), geopandas/shapely (geometry), rasterio (rasters/COGs), scipy (kNN), pyproj (EPSG:7415 → ECEF/EPSG:4979 for 3D Tiles), pdal (optional), mlx (optional, Apple-silicon GPU decimation)
 
 ### CI
 

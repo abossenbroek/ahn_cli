@@ -1,4 +1,4 @@
-"""The strict-profile tile encoder: a float32 glb with an embedded PNG.
+"""The tile encoders behind the profile seam: strict and game.
 
 :class:`StrictEncoder` is the original, byte-frozen tiles3d
 representation extracted behind the
@@ -10,6 +10,13 @@ no separate texture file is written. All glTF/PNG knowledge lives here
 emitter drives this module's ``build_glb`` / ``encode_png`` globals, and
 future profiles swap in their own encoder without the rest of the
 pipeline changing.
+
+:class:`GameEncoder` is the compact runtime profile: it quantizes the
+same RTC mesh (``KHR_mesh_quantization``), meshopt-compresses the three
+streams (``EXT_meshopt_compression``) and drapes the tile with a baseline
+JPEG — all still a pure, deterministic function of the payload, assembled
+by :mod:`ahn_cli.tiles3d.gltf_quant`. Both encoders embed their texture,
+so :class:`~ahn_cli.tiles3d.payload.EncodedTile` carries no separate file.
 """
 
 from __future__ import annotations
@@ -17,13 +24,21 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ahn_cli.tiles3d.gltf import build_glb
+from ahn_cli.tiles3d.gltf_quant import build_game_glb
+from ahn_cli.tiles3d.jpeg import encode_jpeg
+from ahn_cli.tiles3d.meshopt import (
+    encode_indices,
+    encode_positions,
+    encode_uvs,
+)
 from ahn_cli.tiles3d.payload import EncodedTile
 from ahn_cli.tiles3d.png import encode_png
+from ahn_cli.tiles3d.quantize import quantize_positions, quantize_uvs
 
 if TYPE_CHECKING:
     from ahn_cli.tiles3d.payload import TilePayload
 
-__all__ = ["StrictEncoder"]
+__all__ = ["GameEncoder", "StrictEncoder"]
 
 
 class StrictEncoder:
@@ -44,6 +59,42 @@ class StrictEncoder:
     def encode(self, payload: TilePayload) -> EncodedTile:
         """Pack the payload's mesh and pixels into a self-contained glb."""
         content = build_glb(payload.mesh, encode_png(payload.rgb))
+        return EncodedTile(
+            content=content,
+            content_name=f"{payload.level}-{payload.tx}-{payload.ty}.glb",
+        )
+
+
+class GameEncoder:
+    """Encode a tile as a quantized, meshopt-compressed glb with a JPEG.
+
+    Contract:
+        - :meth:`encode` quantizes ``payload.mesh`` positions and UVs
+          (``KHR_mesh_quantization``), meshopt-compresses all three
+          streams (``EXT_meshopt_compression``), JPEG-encodes
+          ``payload.rgb`` and assembles them via
+          :func:`ahn_cli.tiles3d.gltf_quant.build_game_glb`, named
+          ``"<level>-<tx>-<ty>.glb"`` with the texture embedded
+          (``EncodedTile.texture is None``).
+
+    Invariants:
+        - Deterministic: a pure function of the payload.
+        - Satisfies the :class:`~ahn_cli.tiles3d.payload.TileEncoder`
+          protocol.
+    """
+
+    def encode(self, payload: TilePayload) -> EncodedTile:
+        """Quantize, compress and JPEG-drape the payload into a glb."""
+        quantized = quantize_positions(payload.mesh.positions)
+        uv_ints = quantize_uvs(payload.mesh.uvs)
+        content = build_game_glb(
+            quantized,
+            encode_positions(quantized.ints),
+            encode_uvs(uv_ints),
+            encode_indices(payload.mesh.indices),
+            encode_jpeg(payload.rgb),
+            payload.mesh.center,
+        )
         return EncodedTile(
             content=content,
             content_name=f"{payload.level}-{payload.tx}-{payload.ty}.glb",

@@ -9,8 +9,11 @@ from ahn_cli.tiles3d.errors import Tiles3dError
 from ahn_cli.tiles3d.quantize import (
     EPSILON_SCALE,
     UINT16_MAX,
+    axis_error_bound,
+    dequantize_axis,
     dequantize_positions,
     position_error_bound,
+    quantize_axis,
     quantize_positions,
     quantize_uvs,
 )
@@ -202,3 +205,59 @@ def test_quantize_uvs_rejects_non_finite() -> None:
     """A non-finite UV is refused before the range check."""
     with pytest.raises(Tiles3dError, match="finite"):
         quantize_uvs(np.array([[np.inf, 0.5]], dtype=np.float32))
+
+
+def test_quantize_axis_matches_a_single_position_column() -> None:
+    """A quantized axis equals that column of quantize_positions."""
+    values = np.array([1.0, 3.5, 40.0, -5.0, 12.25], dtype=np.float32)
+    block = np.column_stack(
+        [values, np.zeros_like(values), np.zeros_like(values)]
+    )
+    axis = quantize_axis(values)
+    columns = quantize_positions(block)
+    assert np.array_equal(axis.ints, columns.ints[:, 0])
+    assert axis.scale == columns.scale[0]
+    assert axis.offset == columns.translation[0]
+
+
+def test_quantize_axis_round_trip_is_within_bound() -> None:
+    """Dequantizing stays within the exported half-step bound."""
+    rng = np.random.default_rng(5)
+    values = rng.uniform(-5.0, 40.0, 500).astype(np.float32)
+    axis = quantize_axis(values)
+    recovered = dequantize_axis(axis)
+    bound = axis_error_bound(axis.scale)
+    assert float(np.abs(recovered - values.astype(np.float64)).max()) <= bound
+
+
+def test_quantize_axis_flat_uses_epsilon_scale() -> None:
+    """A zero-extent axis stores all zeros and dequantizes exactly."""
+    values = np.full(8, 7.5, dtype=np.float32)
+    axis = quantize_axis(values)
+    assert axis.scale == EPSILON_SCALE
+    assert axis.offset == 7.5
+    assert np.array_equal(axis.ints, np.zeros(8, dtype=np.uint16))
+    assert np.array_equal(dequantize_axis(axis), np.full(8, 7.5))
+
+
+def test_axis_error_bound_is_half_a_step() -> None:
+    """The bound is exactly half the scale."""
+    assert axis_error_bound(0.004) == 0.002
+
+
+def test_quantize_axis_rejects_wrong_shape() -> None:
+    """A 2-D array is not a single axis."""
+    with pytest.raises(Tiles3dError, match="axis"):
+        quantize_axis(np.zeros((4, 2), dtype=np.float32))
+
+
+def test_quantize_axis_rejects_empty() -> None:
+    """An empty vector has no extent to quantize."""
+    with pytest.raises(Tiles3dError, match="n >= 1"):
+        quantize_axis(np.empty(0, dtype=np.float32))
+
+
+def test_quantize_axis_rejects_non_finite() -> None:
+    """A non-finite value is refused."""
+    with pytest.raises(Tiles3dError, match="finite"):
+        quantize_axis(np.array([1.0, np.nan, 3.0], dtype=np.float32))

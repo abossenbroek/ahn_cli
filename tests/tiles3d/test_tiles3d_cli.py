@@ -206,3 +206,20 @@ def test_tiles3d_drives_the_progress_bar(
     )
     assert result.exit_code == 0, result.output
     assert spy.updates == [(1, 1)]
+
+
+def test_tiles3d_heightfield_profile_builds_and_writes_provenance(
+    tmp_path: Path,
+) -> None:
+    """`--profile heightfield` builds .hf + .jpg tiles and provenance.json."""
+    ortho, heights = _inputs(tmp_path)
+    out = tmp_path / "heightfield"
+    result = _run(out, ortho, heights, "--profile", "heightfield")
+    assert result.exit_code == 0, result.output
+    assert "verified" in result.output
+    assert (out / "tileset.json").is_file()
+    assert (out / "tiles" / "0-0-0.hf").is_file()
+    assert (out / "tiles" / "0-0-0.jpg").is_file()
+    document = json.loads((out / "provenance.json").read_text())
+    assert document["profile"] == "heightfield"
+    assert document["quantization"]["height_bits"] == 16

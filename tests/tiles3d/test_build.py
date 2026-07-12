@@ -631,3 +631,31 @@ def test_unwritable_output_is_a_typed_error(tmp_path: Path) -> None:
     blocker.write_text("file, not dir")
     with pytest.raises(Tiles3dError, match="not writable"):
         build_tiles3d(ortho, heights, blocker)
+
+
+def test_heightfield_build_writes_chunks_textures_and_provenance(
+    tmp_path: Path,
+) -> None:
+    """A heightfield build writes one .hf + .jpg per tile and provenance."""
+    ortho, heights = _make_inputs(tmp_path, 20, 14)
+    out = tmp_path / "out"
+    result = build_tiles3d(
+        ortho, heights, out, tile_pixels=8, profile=Profile.HEIGHTFIELD
+    )
+    document = _tileset(out)
+    referenced: list[str] = []
+
+    def walk(entry: dict[str, Any]) -> None:
+        referenced.append(entry["content"]["uri"])
+        for child in entry.get("children", []):
+            walk(child)
+
+    walk(document["root"])
+    assert len(referenced) == result.tile_count
+    assert all(uri.endswith(".hf") for uri in referenced)
+    hf = {f"tiles/{p.name}" for p in (out / "tiles").glob("*.hf")}
+    jpg = {f"tiles/{p.name}" for p in (out / "tiles").glob("*.jpg")}
+    assert hf == set(referenced)
+    assert len(jpg) == result.tile_count
+    assert (out / "provenance.json").is_file()
+    assert '"profile": "heightfield"' in (out / "provenance.json").read_text()

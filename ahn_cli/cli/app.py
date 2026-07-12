@@ -733,9 +733,10 @@ def copc_command(cloud: Path, out: Path, workdir: Path | None) -> None:
     default="strict",
     show_default=True,
     help=(
-        "Export profile: 'strict' (lossless float32 glTF + PNG) or "
-        "'game' (quantized, meshopt-compressed glTF + JPEG, with a "
-        "provenance.json)."
+        "Export profile: 'strict' (lossless float32 glTF + PNG), 'game' "
+        "(quantized, meshopt-compressed glTF + JPEG), or 'heightfield' "
+        "(vendor .hf height chunk + sibling JPEG). The lossy 'game' and "
+        "'heightfield' profiles also write a provenance.json."
     ),
 )
 def tiles3d_command(
@@ -749,9 +750,10 @@ def tiles3d_command(
     colours — and any missing height is a hard error. Every written
     artifact is re-verified from disk against an independent rebuild
     before the tileset is accepted. ``--profile game`` emits the compact
-    runtime representation and a deterministic provenance.json alongside
-    it; ``--profile strict`` (the default) is the byte-frozen lossless
-    profile.
+    runtime glTF representation and ``--profile heightfield`` emits the
+    vendor ``.hf`` height chunks with sibling JPEGs; both lossy profiles
+    write a deterministic provenance.json alongside the tileset.
+    ``--profile strict`` (the default) is the byte-frozen lossless profile.
     """
     try:
         profile = Profile.parse(profile_name)

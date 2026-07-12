@@ -30,10 +30,17 @@ from ahn_cli.tiles3d.tileset import (
 if TYPE_CHECKING:
     from ahn_cli.tiles3d.mesh import Region
     from ahn_cli.tiles3d.payload import TileEncoder
+    from ahn_cli.tiles3d.profile import Profile
     from ahn_cli.tiles3d.quadtree import TilePlan, TreePlan
     from ahn_cli.tiles3d.sources import TerrainGrid
 
-__all__ = ["ComputedBuild", "compute_build", "pixel_size", "tile_uri"]
+__all__ = [
+    "ComputedBuild",
+    "compute_build",
+    "pixel_size",
+    "texture_uri",
+    "tile_uri",
+]
 
 ProgressCallback = Callable[[int, int], None]
 
@@ -47,20 +54,35 @@ class ComputedBuild:
     """Every artifact of one build, keyed by output-relative path.
 
     Contract (fields):
-        - ``glbs``: ``{relative uri: glb bytes}`` for every tile.
+        - ``glbs``: ``{relative uri: content bytes}`` for every tile
+          (``.glb`` for the glTF profiles, ``.hf`` for heightfield).
+        - ``textures``: ``{relative uri: texture bytes}`` for the profiles
+          that write a sibling texture file (empty for the embedded-texture
+          glTF profiles).
         - ``document``: the tileset.json document (pre-serialisation).
         - ``vertices`` / ``triangles``: totals across every tile.
     """
 
     glbs: dict[str, bytes]
+    textures: dict[str, bytes]
     document: dict[str, object]
     vertices: int
     triangles: int
 
 
-def tile_uri(tile: TilePlan) -> str:
-    """Return the tile's output-relative content uri."""
-    return f"{TILES_SUBDIR}/{tile.level}-{tile.tx}-{tile.ty}.glb"
+def tile_uri(tile: TilePlan, profile: Profile) -> str:
+    """Return the tile's output-relative content uri for ``profile``."""
+    base = f"{tile.level}-{tile.tx}-{tile.ty}"
+    return f"{TILES_SUBDIR}/{base}{profile.content_suffix()}"
+
+
+def texture_uri(tile: TilePlan, profile: Profile) -> str | None:
+    """Return the tile's sibling texture uri, or ``None`` when embedded."""
+    suffix = profile.texture_suffix()
+    if suffix is None:
+        return None
+    base = f"{tile.level}-{tile.tx}-{tile.ty}"
+    return f"{TILES_SUBDIR}/{base}{suffix}"
 
 
 def pixel_size(terrain: TerrainGrid) -> float:
@@ -89,6 +111,7 @@ def compute_build(
     )
     return ComputedBuild(
         glbs=emitter.glbs,
+        textures=emitter.textures,
         document=tileset_document(root_entry, tileset_error),
         vertices=emitter.vertices,
         triangles=emitter.triangles,
@@ -112,6 +135,7 @@ class _Emitter:
         self._encoder = encoder
         self._done = 0
         self.glbs: dict[str, bytes] = {}
+        self.textures: dict[str, bytes] = {}
         self.vertices = 0
         self.triangles = 0
 
@@ -145,6 +169,10 @@ class _Emitter:
         encoded = self._encoder.encode(payload)
         uri = f"{TILES_SUBDIR}/{encoded.content_name}"
         self.glbs[uri] = encoded.content
+        if encoded.texture is not None:
+            self.textures[f"{TILES_SUBDIR}/{encoded.texture_name}"] = (
+                encoded.texture
+            )
         self.vertices += int(mesh.positions.shape[0])
         self.triangles += int(mesh.indices.shape[0]) // 3
         self._done += 1

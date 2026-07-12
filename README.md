@@ -196,6 +196,7 @@ ahn_cli tiles3d --ortho data/delft/ortho/ortho.tif --heights data/delft/reconcil
 
 - `strict` (default) — lossless float32 glTF with embedded PNG textures; writes no sidecar.
 - `game` — the compact runtime profile: quantized (`KHR_mesh_quantization`) geometry, `EXT_meshopt_compression` streams and baseline JPEG textures, plus a deterministic `provenance.json` recording the pinned quantization/JPEG/encoder settings.
+- `heightfield` — the vendor Approach-C profile: each tile is a self-describing `.hf` chunk (fixed header + zstd-framed `uint16` NAP-height plane; format spec in `docs/superpowers/specs/2026-07-12-heightfield-chunk-format.md`) with a sibling baseline JPEG, plus a `provenance.json`; the tileset stays valid 3D Tiles but `.hf` is a vendor content type the generic validator does not recognize.
 
 ```bash
 ahn_cli tiles3d --ortho data/delft/ortho/ortho.tif --heights data/delft/reconciled/reconciled.exr --out data/delft/tiles3d --profile game

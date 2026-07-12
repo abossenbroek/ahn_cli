@@ -376,6 +376,77 @@ def test_first_build_partial_write_leaves_nothing(
     assert list(out.iterdir()) == []
 
 
+def _dying_tileset_write(document: dict[str, object], path: Path) -> None:
+    """Stand in for write_tileset, leaving a partial file behind."""
+    del document
+    path.write_text("{ partial")
+    msg = "disk full"
+    raise OSError(msg)
+
+
+def test_partial_tileset_write_leaves_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A tileset write dying midway leaves no partial file behind."""
+    ortho, heights = _make_inputs(tmp_path, 6, 6)
+    out = tmp_path / "out"
+    monkeypatch.setattr(build_module, "write_tileset", _dying_tileset_write)
+    with pytest.raises(Tiles3dError, match="not writable"):
+        build_tiles3d(ortho, heights, out)
+    assert list(out.iterdir()) == []
+
+
+def test_partial_tileset_write_restores_the_deliverable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A tileset write dying midway on a rebuild restores the old build."""
+    ortho, heights = _make_inputs(tmp_path, 6, 6)
+    out = tmp_path / "out"
+    build_tiles3d(ortho, heights, out)
+    good = _snapshot(out)
+    monkeypatch.setattr(build_module, "write_tileset", _dying_tileset_write)
+    with pytest.raises(Tiles3dError, match="not writable"):
+        build_tiles3d(ortho, heights, out)
+    assert _snapshot(out) == good
+
+
+def test_failed_recovery_leaves_state_for_the_next_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A recovery that cannot drop the backup never touches the build."""
+    ortho, heights = _make_inputs(tmp_path, 6, 6)
+    out = tmp_path / "out"
+    build_tiles3d(ortho, heights, out)
+    good = _snapshot(out)
+    (out / build_module.ACCEPT_MARKER).touch()
+    leftover = out / build_module.BACKUP_SUBDIR
+    (leftover / "tiles").mkdir(parents=True)
+    (leftover / "tiles" / "0-0-0.glb").write_bytes(b"stale")
+
+    def refuse(*_args: object, **_kwargs: object) -> NoReturn:
+        msg = "locked"
+        raise OSError(msg)
+
+    monkeypatch.setattr(build_module.shutil, "rmtree", refuse)
+    with pytest.raises(Tiles3dError, match="not writable"):
+        build_tiles3d(ortho, heights, out)
+    assert (out / build_module.ACCEPT_MARKER).is_file()
+    tool_paths = {build_module.BACKUP_SUBDIR, build_module.ACCEPT_MARKER}
+    after = {
+        rel: data
+        for rel, data in _snapshot(out).items()
+        if rel.parts[0] not in tool_paths
+    }
+    assert after == good
+    monkeypatch.undo()
+    result = build_tiles3d(ortho, heights, out)
+    assert result.tile_count == 1
+    assert sorted(p.name for p in out.iterdir()) == [
+        "tiles",
+        "tileset.json",
+    ]
+
+
 def _flaky_rename(monkeypatch: pytest.MonkeyPatch, failing_call: int) -> None:
     """Patch Path.rename to die on call N of the hold step."""
     calls = {"count": 0}

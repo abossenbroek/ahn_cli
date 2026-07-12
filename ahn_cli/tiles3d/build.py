@@ -110,7 +110,6 @@ def build_tiles3d(
     terrain = load_terrain(ortho, heights)
     tree = plan_quadtree(terrain.width, terrain.height, tile_pixels)
     computed = compute_build(terrain, tree, progress=progress)
-    written: list[Path] = []
     tiles_dir = out / TILES_SUBDIR
     tileset_path = out / TILESET_NAME
     backup_dir = out / BACKUP_SUBDIR
@@ -123,11 +122,8 @@ def build_tiles3d(
         held = True
         tiles_dir.mkdir(parents=True, exist_ok=True)
         for uri, data in computed.glbs.items():
-            path = out / uri
-            path.write_bytes(data)
-            written.append(path)
+            (out / uri).write_bytes(data)
         write_tileset(computed.document, tileset_path)
-        written.append(tileset_path)
         verify_tiles3d(out, ortho, heights, tile_pixels=tile_pixels)
         accepted = True
     except OSError as exc:
@@ -145,8 +141,9 @@ def build_tiles3d(
                 raise Tiles3dError(msg) from exc
         else:
             try:
-                _discard(written, tiles_dir, wipe_tiles=held)
-                _restore_stale(tiles_dir, tileset_path, backup_dir)
+                if held:
+                    _discard(tiles_dir, tileset_path)
+                _restore_stale(tiles_dir, tileset_path, backup_dir, marker)
             except OSError as exc:
                 msg = (
                     f"3D Tiles output at {out} could not restore the "
@@ -179,7 +176,7 @@ def _recover(
             shutil.rmtree(backup_dir)
         marker.unlink()
         return
-    _restore_stale(tiles_dir, tileset_path, backup_dir)
+    _restore_stale(tiles_dir, tileset_path, backup_dir, marker)
 
 
 def _hold_stale(
@@ -207,7 +204,7 @@ def _drop_backup(backup_dir: Path, marker: Path) -> None:
 
 
 def _restore_stale(
-    tiles_dir: Path, tileset_path: Path, backup_dir: Path
+    tiles_dir: Path, tileset_path: Path, backup_dir: Path, marker: Path
 ) -> None:
     """Move a held-aside previous deliverable back into place.
 
@@ -217,8 +214,12 @@ def _restore_stale(
     verified copy is renamed back. An artifact absent from the backup
     keeps the copy in ``out`` (a kill between the two hold renames
     leaves the not-yet-held, still-verified artifact in place).
+
+    A surviving accept marker means the opposite: the artifacts in
+    place are a verified build and the backup is disposable (a failed
+    recovery leaves both for the next run) — never restore over them.
     """
-    if not backup_dir.is_dir():
+    if marker.exists() or not backup_dir.is_dir():
         return
     held_tiles = backup_dir / TILES_SUBDIR
     if held_tiles.is_dir():
@@ -232,19 +233,17 @@ def _restore_stale(
     backup_dir.rmdir()
 
 
-def _discard(
-    written: list[Path], tiles_dir: Path, *, wipe_tiles: bool
-) -> None:
+def _discard(tiles_dir: Path, tileset_path: Path) -> None:
     """Remove everything a rejected build wrote (never leave stale).
 
-    ``wipe_tiles`` is True once the hold step completed: from then on
-    ``tiles_dir`` holds only the rejected run's output — including any
-    partial file a failed write created without ever being tracked in
-    ``written`` — and is removed wholesale. Before the hold completes,
-    a ``tiles_dir`` still in place is the untouched previous
-    deliverable and must not be removed.
+    Runs only once the hold step has completed: from then on, anything
+    at these two tool-owned paths is the rejected run's output —
+    including partial files a failed write created — and is removed
+    wholesale. Before the hold completes, artifacts still in place are
+    the untouched previous deliverable, and the caller must not call
+    this at all.
     """
-    for path in written:
-        path.unlink(missing_ok=True)
-    if wipe_tiles and tiles_dir.is_dir():
+    if tileset_path.is_file():
+        tileset_path.unlink()
+    if tiles_dir.is_dir():
         shutil.rmtree(tiles_dir)

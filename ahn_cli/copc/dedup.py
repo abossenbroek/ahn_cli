@@ -79,6 +79,11 @@ def dedupe_voxels(
     is_outlier = deviation.astype(np.float64) > cutoff
 
     difference = quantized - medians[group_of]
-    distance_sq = np.einsum("ij,ij->i", difference, difference)
-    ranking = np.lexsort((np.arange(n), distance_sq, is_outlier, group_of))
+    # Annotated: einsum/arange infer as partially unknown under the numpy
+    # 2.3 stubs (Python >= 3.11), failing strict pyright at the lexsort call.
+    distance_sq: npt.NDArray[np.int64] = np.einsum(
+        "ij,ij->i", difference, difference
+    )
+    tie_break: npt.NDArray[np.int64] = np.arange(n, dtype=np.int64)
+    ranking = np.lexsort((tie_break, distance_sq, is_outlier, group_of))
     return np.sort(ranking[starts]).astype(np.int64)

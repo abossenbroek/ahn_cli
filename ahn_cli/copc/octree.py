@@ -373,9 +373,14 @@ class LodSampler:
         flat_cell = (cell_ids[:, 0] * grid + cell_ids[:, 1]) * grid + (
             cell_ids[:, 2]
         )
+        # Annotated: arange infers as partially unknown under the numpy 2.3
+        # stubs (Python >= 3.11), failing strict pyright at the lexsort call.
+        tie_break: npt.NDArray[np.int64] = np.arange(
+            state.cells.shape[0], dtype=np.int64
+        )
         order = np.lexsort(
             (
-                np.arange(state.cells.shape[0]),
+                tie_break,
                 state.cells[:, 2],
                 state.cells[:, 1],
                 state.cells[:, 0],

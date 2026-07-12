@@ -14,6 +14,7 @@ import rasterio
 from rasterio.transform import from_bounds
 
 from ahn_cli.reconcile.writers import OutputFormat, write_reconciled
+from ahn_cli.tiles3d.sources import TerrainGrid
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -91,6 +92,21 @@ def synth_rgb(
     """Build a deterministic non-uniform ``(h, w, 3)`` uint8 image."""
     rng = np.random.default_rng(seed)
     return rng.integers(0, 256, (height, width, 3)).astype(np.uint8)
+
+
+def make_terrain(width: int, height: int, seed: int = 4) -> TerrainGrid:
+    """Build an in-memory TerrainGrid matching :func:`make_ortho`'s grid."""
+    rgb = synth_rgb(width, height, seed)
+    grid = grid_for_ortho(rgb)
+    return TerrainGrid(
+        width=width,
+        height=height,
+        transform=(RES, 0.0, MINX, 0.0, -RES, MAXY),
+        x=grid[:, :, 0].astype(np.float32),
+        y=grid[:, :, 1].astype(np.float32),
+        z=grid[:, :, 2].astype(np.float32),
+        rgb=rgb,
+    )
 
 
 def grid_for_ortho(

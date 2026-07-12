@@ -44,17 +44,19 @@ from ahn_cli.tiles3d.emit import (
     TILES_SUBDIR,
     TILESET_NAME,
     compute_build,
+    texture_uri,
     tile_uri,
 )
 from ahn_cli.tiles3d.errors import Tiles3dError
 from ahn_cli.tiles3d.geodesy import Geodesy
 from ahn_cli.tiles3d.png import decode_png
 from ahn_cli.tiles3d.profile import Profile
-from ahn_cli.tiles3d.provenance import PROVENANCE_NAME, render_game_provenance
+from ahn_cli.tiles3d.provenance import PROVENANCE_NAME, render_provenance
 from ahn_cli.tiles3d.quadtree import plan_quadtree, sample_indices
 from ahn_cli.tiles3d.sources import load_terrain
 from ahn_cli.tiles3d.tileset import render_tileset
 from ahn_cli.tiles3d.verify_game import verify_game_tile
+from ahn_cli.tiles3d.verify_heightfield import verify_heightfield_tile
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -114,23 +116,44 @@ def verify_tiles3d(
     _verify_leaf_coverage(tree, terrain)
     document = _read_tileset(out_dir / TILESET_NAME)
     flat = _verify_document(document)
-    tiles_by_uri = {tile_uri(t): t for t in _walk(tree.root)}
-    _verify_links(out_dir, flat, tiles_by_uri)
+    tiles = _walk(tree.root)
+    tiles_by_uri = {tile_uri(t, profile): t for t in tiles}
+    texture_by_uri = {
+        tile_uri(t, profile): texture_uri(t, profile) for t in tiles
+    }
+    expected_textures = {u for u in texture_by_uri.values() if u is not None}
+    _verify_links(out_dir, flat, tiles_by_uri, expected_textures)
     geodesy = Geodesy()
     for entry, enclosing_regions in flat:
         uri = _entry_uri(entry)
         tile = tiles_by_uri[uri]
-        gltf, binary = _parse_glb((out_dir / uri).read_bytes(), uri)
-        if profile is Profile.STRICT:
-            _verify_gltf(gltf, binary, uri)
-            _verify_texture(gltf, binary, terrain, tile, uri)
+        if profile is Profile.HEIGHTFIELD:
+            # This profile always writes a sibling texture (never None).
+            texture = cast("str", texture_by_uri[uri])
+            verify_heightfield_tile(
+                out_dir, uri, texture, terrain, tile, geodesy
+            )
             _verify_containment(
                 terrain, tile, enclosing_regions, geodesy, uri
             )
         else:
-            verify_game_tile(
-                gltf, binary, terrain, tile, enclosing_regions, geodesy, uri
-            )
+            gltf, binary = _parse_glb((out_dir / uri).read_bytes(), uri)
+            if profile is Profile.STRICT:
+                _verify_gltf(gltf, binary, uri)
+                _verify_texture(gltf, binary, terrain, tile, uri)
+                _verify_containment(
+                    terrain, tile, enclosing_regions, geodesy, uri
+                )
+            else:
+                verify_game_tile(
+                    gltf,
+                    binary,
+                    terrain,
+                    tile,
+                    enclosing_regions,
+                    geodesy,
+                    uri,
+                )
     computed = compute_build(terrain, tree, encoder=profile.encoder())
     _verify_byte_identity(out_dir, computed, profile)
 
@@ -340,8 +363,15 @@ def _verify_links(
     out_dir: Path,
     flat: _Flat,
     tiles_by_uri: dict[str, TilePlan],
+    expected_textures: set[str],
 ) -> None:
-    """Verify uris are safe, planned, unique, present — no orphans."""
+    """Verify uris are safe, planned, unique, present — no orphans.
+
+    ``expected_textures`` are the sibling texture files a profile writes
+    but does not reference from ``tileset.json`` (empty for the
+    embedded-texture glTF profiles): each must exist, and they are excluded
+    from the orphan sweep so a genuine texture is not mistaken for one.
+    """
     seen: set[str] = set()
     for entry, _ in flat:
         uri = _entry_uri(entry)
@@ -365,11 +395,16 @@ def _verify_links(
             (out_dir / uri).is_file(),
             f"missing content file: {uri}.",
         )
+    for texture in sorted(expected_textures):
+        _require(
+            (out_dir / texture).is_file(),
+            f"missing texture file: {texture}.",
+        )
     on_disk = {
         f"{TILES_SUBDIR}/{path.name}"
         for path in (out_dir / TILES_SUBDIR).iterdir()
     }
-    orphans = on_disk - seen
+    orphans = on_disk - seen - expected_textures
     _require(
         not orphans,
         f"tile files on disk are not referenced by tileset.json: "
@@ -555,10 +590,16 @@ def _verify_byte_identity(
 ) -> None:
     """Verify every artifact byte-equals its independent rebuild.
 
-    Under the game profile this backstop also covers ``provenance.json``,
-    recomputed in-process from the pinned encoder settings.
+    Covers every tile content file and every sibling texture file (the
+    heightfield profile's ``.jpg`` set), plus — under the lossy profiles —
+    ``provenance.json``, recomputed in-process from the pinned settings.
     """
     for uri, expected in computed.glbs.items():
+        _require(
+            (out_dir / uri).read_bytes() == expected,
+            f"{uri} does not byte-equal its independent rebuild.",
+        )
+    for uri, expected in computed.textures.items():
         _require(
             (out_dir / uri).read_bytes() == expected,
             f"{uri} does not byte-equal its independent rebuild.",
@@ -568,9 +609,10 @@ def _verify_byte_identity(
         == render_tileset(computed.document).encode("utf-8"),
         "tileset.json does not byte-equal its independent rebuild.",
     )
-    if profile is Profile.GAME:
+    provenance = render_provenance(profile)
+    if provenance is not None:
         _require(
             (out_dir / PROVENANCE_NAME).read_bytes()
-            == render_game_provenance().encode("utf-8"),
+            == provenance.encode("utf-8"),
             "provenance.json does not byte-equal its independent rebuild.",
         )

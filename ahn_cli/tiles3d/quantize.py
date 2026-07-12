@@ -58,9 +58,13 @@ if TYPE_CHECKING:
 __all__ = [
     "EPSILON_SCALE",
     "UINT16_MAX",
+    "QuantizedAxis",
     "QuantizedPositions",
+    "axis_error_bound",
+    "dequantize_axis",
     "dequantize_positions",
     "position_error_bound",
+    "quantize_axis",
     "quantize_positions",
     "quantize_uvs",
 ]
@@ -166,6 +170,78 @@ def position_error_bound(scale: Axis3) -> Axis3:
     return (scale[0] / 2.0, scale[1] / 2.0, scale[2] / 2.0)
 
 
+@dataclass(frozen=True, eq=False)
+class QuantizedAxis:
+    """A single axis' ``uint16`` levels plus its affine dequant transform.
+
+    Contract (fields):
+        - ``ints``: ``(n,)`` uint16 quantized values, each in ``[0, 65535]``.
+        - ``scale``: metres per level (:data:`EPSILON_SCALE` on a zero-extent
+          axis), always strictly positive.
+        - ``offset``: the axis minimum (the affine translation).
+
+    Invariants:
+        - ``dequant = ints * scale + offset`` reconstructs the source to
+          within :func:`axis_error_bound`.
+        - ``eq=False``: wraps an array, so instances compare by identity.
+    """
+
+    ints: npt.NDArray[np.uint16]
+    scale: float
+    offset: float
+
+
+def quantize_axis(values: npt.NDArray[np.floating]) -> QuantizedAxis:
+    """Quantize one axis of values to ``uint16`` (the position scheme, 1-D).
+
+    Contract:
+        - ``values``: a ``(n,)`` float array (``n >= 1``), all finite. Uses
+          exactly the per-axis affine of :func:`quantize_positions`:
+          ``offset = min``, ``scale = extent / 65535`` (or
+          :data:`EPSILON_SCALE` when the extent is 0), and
+          ``ints = round_half_even((v - offset) / scale)`` clamped to
+          ``[0, 65535]`` — so a value quantized here matches the same value
+          quantized as one column of :func:`quantize_positions`.
+
+    Failure modes:
+        - Raises :class:`~ahn_cli.tiles3d.errors.Tiles3dError` if ``values``
+          is not ``(n,)`` with ``n >= 1`` or holds any non-finite value.
+    """
+    data = _finite_1d(values, "axis")
+    lo = float(data.min())
+    extent = float(data.max()) - lo
+    scale = extent / UINT16_MAX if extent > 0.0 else EPSILON_SCALE
+    ints = np.clip(np.rint((data - lo) / scale), 0, UINT16_MAX).astype(
+        np.uint16,
+    )
+    return QuantizedAxis(ints=ints, scale=scale, offset=lo)
+
+
+def dequantize_axis(quantized: QuantizedAxis) -> npt.NDArray[np.float64]:
+    """Reconstruct float64 values from a :class:`QuantizedAxis`.
+
+    Contract:
+        - Returns ``ints * scale + offset`` as a ``(n,)`` float64 array,
+          inverse to within :func:`axis_error_bound`; a zero-extent axis
+          reconstructs its single value exactly.
+    """
+    return quantized.ints.astype(np.float64) * quantized.scale + (
+        quantized.offset
+    )
+
+
+def axis_error_bound(scale: float) -> float:
+    """Return the worst-case round-trip error of a single quantized axis.
+
+    Contract:
+        - Returns ``scale / 2`` — half a quantization step, equivalently
+          ``extent / 65535 / 2``. A dequantized value differs from its
+          source by at most this. The verifier asserts against this
+          exported formula, never a literal.
+    """
+    return scale / 2.0
+
+
 def quantize_uvs(uvs: npt.NDArray[np.floating]) -> npt.NDArray[np.uint16]:
     """Quantize texel-centre UVs to core-glTF normalized ``uint16``.
 
@@ -188,6 +264,27 @@ def quantize_uvs(uvs: npt.NDArray[np.floating]) -> npt.NDArray[np.uint16]:
     return np.clip(np.rint(data * UINT16_MAX), 0, UINT16_MAX).astype(
         np.uint16
     )
+
+
+def _finite_1d(
+    array: npt.NDArray[np.floating], name: str
+) -> npt.NDArray[np.float64]:
+    """Validate an ``(n,)`` finite float vector; return it as float64.
+
+    Raises :class:`~ahn_cli.tiles3d.errors.Tiles3dError` when the shape is
+    not ``(n,)`` with ``n >= 1`` or any value is non-finite.
+    """
+    data = np.asarray(array, dtype=np.float64)
+    if data.ndim != 1 or data.shape[0] < 1:
+        msg = (
+            f"quantize {name}: expected a (n,) array with n >= 1, "
+            f"got shape {data.shape}."
+        )
+        raise Tiles3dError(msg)
+    if not np.isfinite(data).all():
+        msg = f"quantize {name}: every value must be finite."
+        raise Tiles3dError(msg)
+    return data
 
 
 def _finite_2d(

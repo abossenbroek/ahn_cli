@@ -11,9 +11,9 @@ a nationwide mosaic.
 A failed build leaves nothing behind: every path written so far is
 removed before the error propagates. Re-runs into the same output
 directory are safe in both directions: a previous build's artifacts
-(``tileset.json``, the ``tiles/`` subtree and -- under the game profile
--- ``provenance.json``, all tool-owned) are cleaned by a strict rebuild
-and restored by a failed game rebuild; they are
+(``tileset.json``, the ``tiles/`` subtree and -- under the lossy
+profiles -- ``provenance.json``, all tool-owned) are cleaned by a strict
+rebuild and restored by a failed lossy rebuild; they are
 held aside in a scratch directory while the new build is written and
 verified, dropped only once the new build is accepted, and moved back
 into place when the new build fails for any reason — a previously
@@ -39,7 +39,7 @@ from ahn_cli.tiles3d.emit import (
 )
 from ahn_cli.tiles3d.errors import Tiles3dError
 from ahn_cli.tiles3d.profile import Profile
-from ahn_cli.tiles3d.provenance import PROVENANCE_NAME, render_game_provenance
+from ahn_cli.tiles3d.provenance import PROVENANCE_NAME, render_provenance
 from ahn_cli.tiles3d.quadtree import plan_quadtree
 from ahn_cli.tiles3d.sources import load_terrain
 from ahn_cli.tiles3d.tileset import write_tileset
@@ -90,10 +90,13 @@ def build_tiles3d(
 
     Contract:
         - Writes ``<out>/tileset.json`` and one
-          ``<out>/tiles/<level>-<tx>-<ty>.glb`` per quadtree tile, each
+          ``<out>/tiles/<level>-<tx>-<ty>`` content file per quadtree tile
+          (``.glb`` for the glTF profiles, ``.hf`` for heightfield), each
           packed by ``profile``'s encoder, then hard-verifies everything
           written (strict re-read + independent recomputation) before
-          returning. The game profile additionally writes a deterministic
+          returning. The heightfield profile additionally writes one
+          sibling ``.jpg`` texture per tile. The lossy ``game`` and
+          ``heightfield`` profiles each write a deterministic
           ``<out>/provenance.json``; the strict profile writes none (its
           output is byte-frozen).
         - Calls ``progress(tiles_done, tile_total)`` per computed tile.
@@ -104,8 +107,8 @@ def build_tiles3d(
           verification-rejected build removes every written output
           before raising.
         - A previous build's tool-owned artifacts in ``out``
-          (``tileset.json``, the ``tiles/`` subtree, and — under the game
-          profile — ``provenance.json``) are replaced only once the new
+          (``tileset.json``, the ``tiles/`` subtree, and — under the lossy
+          profiles — ``provenance.json``) are replaced only once the new
           build has passed verification: they are held aside during the
           rebuild and moved back into place if the rebuild fails for any
           reason. An input-gate failure never touches them at all.
@@ -134,11 +137,12 @@ def build_tiles3d(
         tiles_dir.mkdir(parents=True, exist_ok=True)
         for uri, data in computed.glbs.items():
             (out / uri).write_bytes(data)
+        for uri, data in computed.textures.items():
+            (out / uri).write_bytes(data)
         write_tileset(computed.document, tileset_path)
-        if profile is Profile.GAME:
-            provenance_path.write_text(
-                render_game_provenance(), encoding="utf-8"
-            )
+        provenance = render_provenance(profile)
+        if provenance is not None:
+            provenance_path.write_text(provenance, encoding="utf-8")
         verify_tiles3d(
             out, ortho, heights, tile_pixels=tile_pixels, profile=profile
         )

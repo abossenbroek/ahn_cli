@@ -14,7 +14,11 @@ from __future__ import annotations
 import enum
 from typing import TYPE_CHECKING
 
-from ahn_cli.tiles3d.encoders import GameEncoder, StrictEncoder
+from ahn_cli.tiles3d.encoders import (
+    GameEncoder,
+    HeightfieldEncoder,
+    StrictEncoder,
+)
 from ahn_cli.tiles3d.errors import Tiles3dError
 
 if TYPE_CHECKING:
@@ -28,9 +32,16 @@ class Profile(enum.Enum):
 
     Contract:
         - ``STRICT`` (`"strict"`) is the lossless float32 + PNG profile;
-          ``GAME`` (`"game"`) is the quantized + meshopt + JPEG profile.
+          ``GAME`` (`"game"`) is the quantized + meshopt + JPEG profile;
+          ``HEIGHTFIELD`` (`"heightfield"`) is the vendor ``.hf`` height
+          chunk + sibling JPEG profile.
         - :meth:`encoder` returns a fresh :class:`TileEncoder` for the
           member; :meth:`parse` turns a CLI string into a member.
+        - :meth:`content_suffix` / :meth:`texture_suffix` name the
+          on-disk file extensions a profile writes per tile (the texture
+          suffix is ``None`` for the embedded-texture glTF profiles), so
+          the emitter and verifier resolve tile filenames without
+          branching on the profile themselves.
 
     Invariants:
         - The only mapping from a profile name to an encoder; the rest of
@@ -39,6 +50,7 @@ class Profile(enum.Enum):
 
     STRICT = "strict"
     GAME = "game"
+    HEIGHTFIELD = "heightfield"
 
     @classmethod
     def parse(cls, text: str) -> Profile:
@@ -62,5 +74,29 @@ class Profile(enum.Enum):
         """Return a fresh :class:`TileEncoder` for this profile."""
         return _ENCODERS[self]()
 
+    def content_suffix(self) -> str:
+        """Return this profile's per-tile content-file extension."""
+        return _CONTENT_SUFFIX[self]
 
-_ENCODERS = {Profile.STRICT: StrictEncoder, Profile.GAME: GameEncoder}
+    def texture_suffix(self) -> str | None:
+        """Return the sibling texture extension, or ``None`` if embedded."""
+        return _TEXTURE_SUFFIX[self]
+
+
+_ENCODERS = {
+    Profile.STRICT: StrictEncoder,
+    Profile.GAME: GameEncoder,
+    Profile.HEIGHTFIELD: HeightfieldEncoder,
+}
+
+_CONTENT_SUFFIX = {
+    Profile.STRICT: ".glb",
+    Profile.GAME: ".glb",
+    Profile.HEIGHTFIELD: ".hf",
+}
+
+_TEXTURE_SUFFIX: dict[Profile, str | None] = {
+    Profile.STRICT: None,
+    Profile.GAME: None,
+    Profile.HEIGHTFIELD: ".jpg",
+}

@@ -15,8 +15,15 @@ pipeline changing.
 same RTC mesh (``KHR_mesh_quantization``), meshopt-compresses the three
 streams (``EXT_meshopt_compression``) and drapes the tile with a baseline
 JPEG — all still a pure, deterministic function of the payload, assembled
-by :mod:`ahn_cli.tiles3d.gltf_quant`. Both encoders embed their texture,
-so :class:`~ahn_cli.tiles3d.payload.EncodedTile` carries no separate file.
+by :mod:`ahn_cli.tiles3d.gltf_quant`. Both glTF encoders embed their
+texture, so their :class:`~ahn_cli.tiles3d.payload.EncodedTile` carries no
+separate file.
+
+:class:`HeightfieldEncoder` is the vendor Approach-C profile: it packs the
+tile's quantized NAP height plane into a self-describing ``.hf`` chunk
+(:mod:`ahn_cli.tiles3d.heightfield`) and drapes it with the *same* baseline
+JPEG as the game profile, written **alongside** as a separate texture file
+— the first encoder whose ``EncodedTile.texture`` is not ``None``.
 """
 
 from __future__ import annotations
@@ -25,6 +32,7 @@ from typing import TYPE_CHECKING
 
 from ahn_cli.tiles3d.gltf import build_glb
 from ahn_cli.tiles3d.gltf_quant import build_game_glb
+from ahn_cli.tiles3d.heightfield import encode_heightfield
 from ahn_cli.tiles3d.jpeg import encode_jpeg
 from ahn_cli.tiles3d.meshopt import (
     encode_indices,
@@ -38,7 +46,7 @@ from ahn_cli.tiles3d.quantize import quantize_positions, quantize_uvs
 if TYPE_CHECKING:
     from ahn_cli.tiles3d.payload import TilePayload
 
-__all__ = ["GameEncoder", "StrictEncoder"]
+__all__ = ["GameEncoder", "HeightfieldEncoder", "StrictEncoder"]
 
 
 class StrictEncoder:
@@ -62,6 +70,33 @@ class StrictEncoder:
         return EncodedTile(
             content=content,
             content_name=f"{payload.level}-{payload.tx}-{payload.ty}.glb",
+        )
+
+
+class HeightfieldEncoder:
+    """Encode a tile as a ``.hf`` height chunk plus a sibling JPEG.
+
+    Contract:
+        - :meth:`encode` packs ``payload``'s quantized NAP height plane
+          into a ``.hf`` chunk (:func:`ahn_cli.tiles3d.heightfield.encode_heightfield`),
+          names it ``"<level>-<tx>-<ty>.hf"``, and returns the same sampled
+          ortho as a baseline JPEG in ``texture`` named
+          ``"<level>-<tx>-<ty>.jpg"`` — a separate file, not embedded.
+
+    Invariants:
+        - Deterministic: a pure function of the payload.
+        - Satisfies the :class:`~ahn_cli.tiles3d.payload.TileEncoder`
+          protocol; the only encoder with ``EncodedTile.texture`` set.
+    """
+
+    def encode(self, payload: TilePayload) -> EncodedTile:
+        """Pack the height plane into a ``.hf`` and drape it with a JPEG."""
+        base = f"{payload.level}-{payload.tx}-{payload.ty}"
+        return EncodedTile(
+            content=encode_heightfield(payload),
+            content_name=f"{base}.hf",
+            texture=encode_jpeg(payload.rgb),
+            texture_name=f"{base}.jpg",
         )
 
 

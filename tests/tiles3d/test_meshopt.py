@@ -36,7 +36,7 @@ from ahn_cli.tiles3d.meshopt import (
 )
 
 
-def _grid_triangles(n_cols: int, n_rows: int) -> np.ndarray:
+def _grid_triangles(n_cols: int, n_rows: int) -> npt.NDArray[np.uint32]:
     """Replicate ``ahn_cli.tiles3d.mesh._grid_triangles`` exactly.
 
     The two-triangles-per-cell ``(a, c, d), (a, d, b)`` winding is the
@@ -54,13 +54,13 @@ def _grid_triangles(n_cols: int, n_rows: int) -> np.ndarray:
     return triangles.reshape(-1).astype(np.uint32)
 
 
-def _rng_positions(n: int) -> np.ndarray:
+def _rng_positions(n: int) -> npt.NDArray[np.uint16]:
     """Seeded ``(n, 3)`` uint16 stand-in for quantized RTC vertices."""
     rng = np.random.default_rng(1)
     return rng.integers(0, 65536, size=(n, 3), dtype=np.uint16)
 
 
-def _rng_uvs(n: int) -> np.ndarray:
+def _rng_uvs(n: int) -> npt.NDArray[np.uint16]:
     """Seeded ``(n, 2)`` uint16 stand-in for quantized UVs."""
     rng = np.random.default_rng(2)
     return rng.integers(0, 65536, size=(n, 2), dtype=np.uint16)

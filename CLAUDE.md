@@ -96,11 +96,11 @@ uv run ahn_cli reconcile --ortho data/delft/ortho.tif --cloud data/delft/pointcl
 # Convert a pipeline LAZ into a validator-green Cloud-Optimized Point Cloud (streaming, 0.5m dedup)
 uv run ahn_cli copc --cloud data/delft/reconciled/reconciled.laz --out data/delft/reconciled/reconciled.copc.laz
 
-# Convert the ortho map + reconciled heights into an OGC 3D Tiles 1.1 tileset (requires `reconcile -f exr`)
+# Convert the ortho map + reconciled heights into an OGC 3D Tiles 1.1 tileset (requires `reconcile --format exr`)
 uv run ahn_cli tiles3d --ortho data/delft/ortho/ortho.tif --heights data/delft/reconciled/reconciled.exr --out data/delft/tiles3d
 ```
 
-A typical end-to-end run is `fetch` → `prep` → (`export-positions` and/or `reconcile`) → optionally `copc` and/or `tiles3d` (which needs `reconcile -f exr`): each step reads the previous step's output from the site directory on disk and writes its own outputs plus an updated `provenance.json`; there is no in-memory handoff between subcommands.
+A typical end-to-end run is `fetch` → `prep` → (`export-positions` and/or `reconcile`) → optionally `copc` and/or `tiles3d` (which needs `reconcile --format exr`): each step reads the previous step's output from the site directory on disk and writes its own outputs plus an updated `provenance.json`; there is no in-memory handoff between subcommands.
 
 ## Architecture
 

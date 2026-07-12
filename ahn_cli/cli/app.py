@@ -716,7 +716,7 @@ def copc_command(cloud: Path, out: Path, workdir: Path | None) -> None:
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
     help=(
         "Reconciled EXR heights on the ortho's exact pixel grid "
-        "(reconcile -f exr output)."
+        "(reconcile --format exr output)."
     ),
 )
 @click.option(

@@ -39,7 +39,7 @@ Standard: OGC 22-025r4 — 3D Tiles 1.1 (https://docs.ogc.org/cs/22-025r4/22-025
   ground truth.
 - `--heights`: the `reconcile` EXR output (6-channel B,G,R,X,Y,Z float32,
   EPSG:7415 heights). Geometry ground truth. The pipeline is
-  `fetch → prep → reconcile -f exr → tiles3d`.
+  `fetch → prep → reconcile --format exr → tiles3d`.
 
 Input gates (all → `Tiles3dError`):
 
@@ -213,5 +213,16 @@ recomputation from the input rasters**. Any failure → outputs deleted →
 
 - `pyproject.toml`: add `pyproj>=3.7`.
 - `cli/__init__.py` docstring + CLAUDE.md: document the new subcommand and
-  the `reconcile -f exr` prerequisite, and the stricter reconcile
+  the `reconcile --format exr` prerequisite, and the stricter reconcile
   contract (full coverage required; voids are errors).
+
+## Follow-up: conformance results (2026-07-11)
+
+- Real-data smoke: the Amsterdam LFS fixtures (256x256 Beeldmateriaal
+  ortho window + AHN5 cloud) ran `reconcile --format exr` ->
+  `tiles3d`; the built-in strict verifier passed.
+- External conformance: Cesium's `3d-tiles-validator` on that output
+  reported **0 errors, 0 warnings, 0 infos**.
+- The Moerkapelle site has no fetched ortho on disk (only the uniform
+  placeholder grid, which the gates refuse by design); run
+  `ahn_cli fetch --ortho` there before a full-site conversion.

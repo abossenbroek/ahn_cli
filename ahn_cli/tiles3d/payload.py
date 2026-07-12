@@ -43,9 +43,9 @@ class TilePayload:
           :func:`ahn_cli.tiles3d.mesh.build_tile_mesh` computes it —
           positions, texel-centre uvs, indices, float64 centre, the
           EPSG:4979 region, and the sampled col/row indices.
-        - ``x``/``y``/``z``: the ``(rows, cols)`` float32 source planes
-          sampled at ``stride`` (EPSG:28992 pixel centres and NAP
-          height), carried so an encoder needs no geodesy of its own.
+        - ``z``: the ``(rows, cols)`` float32 NAP height plane sampled at
+          ``stride``, carried so the heightfield encoder needs no geodesy
+          of its own.
         - ``rgb``: the ``(rows, cols, 3)`` uint8 ortho pixels sampled at
           ``stride``.
 
@@ -61,8 +61,6 @@ class TilePayload:
     stride: int
     geometric_error: float
     mesh: TileMesh
-    x: npt.NDArray[np.float32]
-    y: npt.NDArray[np.float32]
     z: npt.NDArray[np.float32]
     rgb: npt.NDArray[np.uint8]
 

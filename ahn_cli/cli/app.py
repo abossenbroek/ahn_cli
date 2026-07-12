@@ -771,7 +771,11 @@ def tiles3d_command(
             )
         except Tiles3dError as exc:
             raise click.ClickException(str(exc)) from exc
-    suffix = " profile=game." if profile is Profile.GAME else ""
+    # Both lossy profiles announce themselves; strict stays bare because it
+    # is the byte-identical default.
+    suffix = (
+        f" profile={profile.value}." if profile is not Profile.STRICT else ""
+    )
     click.echo(
         f"3D Tiles {result.tileset_path}: {result.tile_count} tile(s) "
         f"across {result.levels + 1} level(s), {result.vertices} "

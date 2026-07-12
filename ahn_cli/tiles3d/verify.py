@@ -101,12 +101,15 @@ def verify_tiles3d(
           all from fresh disk reads.
         - ``profile`` selects the encoder for the independent rebuild so
           the byte-identity backstop reproduces the same on-disk bytes;
-          under the game profile that backstop also covers
-          ``provenance.json``. Each profile runs its own per-tile checks
-          before the backstop: the strict profile's float32/PNG
-          glTF/texture/containment checks, or the game profile's four
-          quantized/meshopt/JPEG families plus dequantized-vertex
-          containment (:func:`~ahn_cli.tiles3d.verify_game.verify_game_tile`).
+          under either lossy profile (game or heightfield) that backstop
+          also covers ``provenance.json``. Each profile runs its own
+          per-tile checks before the backstop: the strict profile's
+          float32/PNG glTF/texture/containment checks; the game profile's
+          four quantized/meshopt/JPEG families plus dequantized-vertex
+          containment (:func:`~ahn_cli.tiles3d.verify_game.verify_game_tile`);
+          or the heightfield profile's ``.hf``/JPEG checks plus
+          containment
+          (:func:`~ahn_cli.tiles3d.verify_heightfield.verify_heightfield_tile`).
 
     Failure modes:
         - :class:`Tiles3dError` naming the first failed check.

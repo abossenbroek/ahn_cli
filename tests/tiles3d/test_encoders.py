@@ -1,4 +1,4 @@
-"""Tests for the strict- and game-profile tile encoders."""
+"""Tests for the strict-, game- and heightfield-profile tile encoders."""
 
 from __future__ import annotations
 
@@ -42,8 +42,6 @@ def _payload(width: int = 6, height: int = 5) -> TilePayload:
         stride=tile.stride,
         geometric_error=geometric_error(tile.stride, 0.5),
         mesh=mesh,
-        x=terrain.x[grid],
-        y=terrain.y[grid],
         z=terrain.z[grid],
         rgb=terrain.rgb[grid],
     )
@@ -74,8 +72,6 @@ def test_strict_content_name_tracks_the_tile_coordinates() -> None:
         stride=leaf.stride,
         geometric_error=geometric_error(leaf.stride, 0.5),
         mesh=mesh,
-        x=terrain.x[grid],
-        y=terrain.y[grid],
         z=terrain.z[grid],
         rgb=terrain.rgb[grid],
     )
@@ -119,8 +115,6 @@ def test_game_content_name_tracks_the_tile_coordinates() -> None:
         stride=leaf.stride,
         geometric_error=geometric_error(leaf.stride, 0.5),
         mesh=mesh,
-        x=terrain.x[grid],
-        y=terrain.y[grid],
         z=terrain.z[grid],
         rgb=terrain.rgb[grid],
     )
@@ -181,8 +175,6 @@ def test_heightfield_names_track_the_tile_coordinates() -> None:
         stride=leaf.stride,
         geometric_error=geometric_error(leaf.stride, 0.5),
         mesh=mesh,
-        x=terrain.x[grid],
-        y=terrain.y[grid],
         z=terrain.z[grid],
         rgb=terrain.rgb[grid],
     )

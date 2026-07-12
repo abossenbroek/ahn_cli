@@ -68,6 +68,9 @@ size target of ~1–1.5 bytes/pixel.
 `region` uses the OGC 3D Tiles region ordering
 `(west, south, east, north, minHeight, maxHeight)` and is bit-for-bit the
 same six doubles as this tile's `tileset.json` bounding volume.
+Reconstructed (dequantized) heights may exceed the stored `[minHeight,
+maxHeight]` range by up to `z_scale / 2` per the quantization bound below,
+so consumers must not assume exact containment of dequantized values.
 
 ## Payload
 

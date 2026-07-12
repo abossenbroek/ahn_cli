@@ -9,11 +9,15 @@ The whole grid is held in memory: the inputs are one site's ortho, not
 a nationwide mosaic.
 
 A failed build leaves nothing behind: every path written so far is
-removed before the error propagates.
+removed before the error propagates. Stale artifacts from a previous
+build into the same directory (``tileset.json`` and the ``tiles/``
+subtree, both tool-owned) are cleared once every input gate has
+passed, so re-runs into the same output directory are safe.
 """
 
 from __future__ import annotations
 
+import shutil
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -77,6 +81,11 @@ def build_tiles3d(
         - Deterministic per machine (see geodesy caveat); a failed or
           verification-rejected build removes every written output
           before raising.
+        - Stale artifacts from a previous build into ``out`` (the
+          tool-owned ``tileset.json`` and ``tiles/`` subtree) are
+          removed after every input gate has passed and before any
+          writing; an input-gate failure never touches a previous
+          deliverable.
 
     Failure modes:
         - :class:`Tiles3dError` for every input gate
@@ -90,6 +99,7 @@ def build_tiles3d(
     tiles_dir = out / TILES_SUBDIR
     tileset_path = out / TILESET_NAME
     try:
+        _clear_stale(tiles_dir, tileset_path)
         tiles_dir.mkdir(parents=True, exist_ok=True)
         for uri, data in computed.glbs.items():
             path = out / uri
@@ -111,6 +121,13 @@ def build_tiles3d(
         vertices=computed.vertices,
         triangles=computed.triangles,
     )
+
+
+def _clear_stale(tiles_dir: Path, tileset_path: Path) -> None:
+    """Remove a previous build's tool-owned artifacts from ``out``."""
+    tileset_path.unlink(missing_ok=True)
+    if tiles_dir.is_dir():
+        shutil.rmtree(tiles_dir)
 
 
 def _discard(written: list[Path], tiles_dir: Path) -> None:

@@ -154,7 +154,7 @@ AHN CLI acquires and transforms Dutch elevation data (AHN — Actueel Hoogtebest
    - `mesh.py` — RTC float32 vertex grids swizzled to glTF y-up (`(x, z, -y)`), texel-centre UVs, exact per-tile EPSG:4979 regions.
    - `png.py` / `gltf.py` / `tileset.py` — hand-packed deterministic writers (stdlib zlib PNG, glb container, sorted-key tileset.json).
    - `emit.py` — pure in-memory emission shared by build and verify (children-first, so parent regions contain all descendant content by construction).
-   - `build.py` — `build_tiles3d()` orchestrator; a failed or verification-rejected build removes everything it wrote.
+   - `build.py` — `build_tiles3d()` orchestrator; a failed or verification-rejected build removes everything it wrote, and stale artifacts from a previous build into the same `--out` (the tool-owned `tileset.json` + `tiles/` subtree) are cleared once every input gate has passed, so re-runs are safe.
    - `verify.py` — the **strictest post-write verifier**, run unconditionally as the build's final step: re-reads every artifact from disk and checks exact tileset key sets and 1.1 rules, region validity/containment, content-link integrity (no orphans/escapes/duplicates), glb container framing, accessor bounds with bit-exact POSITION extremes, index/UV validity, CRC-verified PNG textures bit-equal to the sampled ortho, vertex containment in every enclosing region, full leaf coverage, and whole-file **byte identity** against an independent rebuild from the sources.
 
 8. **`provenance/`**: `sidecar.py` — deterministic `provenance.json` codec shared by every fetcher/transform step.

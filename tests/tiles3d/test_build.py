@@ -156,6 +156,44 @@ def test_rejected_verification_removes_every_output(
     assert list(out.iterdir()) == []
 
 
+def test_rebuild_replaces_stale_artifacts(tmp_path: Path) -> None:
+    """Rebuilding into a used directory leaves only the new build."""
+    first_dir = tmp_path / "a"
+    second_dir = tmp_path / "b"
+    first_dir.mkdir()
+    second_dir.mkdir()
+    ortho_a, heights_a = _make_inputs(first_dir, 20, 14)
+    out = tmp_path / "out"
+    build_tiles3d(ortho_a, heights_a, out, tile_pixels=8)
+    ortho_b, heights_b = _make_inputs(second_dir, 6, 6, seed=12)
+    result = build_tiles3d(ortho_b, heights_b, out)
+    assert result.tile_count == 1
+    names = sorted(p.name for p in (out / "tiles").iterdir())
+    assert names == ["0-0-0.glb"]
+
+
+def test_gate_failure_preserves_the_previous_build(tmp_path: Path) -> None:
+    """An input-gate failure never touches an existing deliverable."""
+    ortho, heights = _make_inputs(tmp_path, 6, 6)
+    out = tmp_path / "out"
+    build_tiles3d(ortho, heights, out)
+    before = {
+        p.relative_to(out): p.read_bytes()
+        for p in out.rglob("*")
+        if p.is_file()
+    }
+    other = synth_rgb(6, 6, seed=99)
+    bad_heights = write_exr(tmp_path / "bad.exr", grid_for_ortho(other))
+    with pytest.raises(Tiles3dError, match="plane"):
+        build_tiles3d(ortho, bad_heights, out)
+    after = {
+        p.relative_to(out): p.read_bytes()
+        for p in out.rglob("*")
+        if p.is_file()
+    }
+    assert after == before
+
+
 def test_unwritable_output_is_a_typed_error(tmp_path: Path) -> None:
     """An output path that cannot be a directory is refused."""
     ortho, heights = _make_inputs(tmp_path, 6, 6)

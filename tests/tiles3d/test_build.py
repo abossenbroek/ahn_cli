@@ -170,6 +170,52 @@ def test_rebuild_replaces_stale_artifacts(tmp_path: Path) -> None:
     assert result.tile_count == 1
     names = sorted(p.name for p in (out / "tiles").iterdir())
     assert names == ["0-0-0.glb"]
+    assert sorted(p.name for p in out.iterdir()) == [
+        "tiles",
+        "tileset.json",
+    ]
+
+
+def test_failed_rebuild_restores_the_previous_deliverable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rebuild the verifier rejects puts the old build back, intact."""
+    ortho, heights = _make_inputs(tmp_path, 20, 14)
+    out = tmp_path / "out"
+    build_tiles3d(ortho, heights, out, tile_pixels=8)
+    before = {
+        p.relative_to(out): p.read_bytes()
+        for p in out.rglob("*")
+        if p.is_file()
+    }
+
+    def compact_write(document: dict[str, object], path: Path) -> None:
+        path.write_text(json.dumps(document, sort_keys=True))
+
+    monkeypatch.setattr(build_module, "write_tileset", compact_write)
+    with pytest.raises(Tiles3dError, match="byte-equal"):
+        build_tiles3d(ortho, heights, out, tile_pixels=8)
+    after = {
+        p.relative_to(out): p.read_bytes()
+        for p in out.rglob("*")
+        if p.is_file()
+    }
+    assert after == before
+
+
+def test_leftover_backup_scratch_is_cleared(tmp_path: Path) -> None:
+    """Scratch from a crashed earlier rebuild never leaks into a build."""
+    ortho, heights = _make_inputs(tmp_path, 6, 6)
+    out = tmp_path / "out"
+    leftover = out / build_module.BACKUP_SUBDIR
+    leftover.mkdir(parents=True)
+    (leftover / "0-0-0.glb").write_bytes(b"stale")
+    build_tiles3d(ortho, heights, out)
+    assert not leftover.exists()
+    assert sorted(p.name for p in out.iterdir()) == [
+        "tiles",
+        "tileset.json",
+    ]
 
 
 def test_gate_failure_preserves_the_previous_build(tmp_path: Path) -> None:

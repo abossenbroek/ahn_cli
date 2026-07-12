@@ -9,10 +9,13 @@ The whole grid is held in memory: the inputs are one site's ortho, not
 a nationwide mosaic.
 
 A failed build leaves nothing behind: every path written so far is
-removed before the error propagates. Stale artifacts from a previous
-build into the same directory (``tileset.json`` and the ``tiles/``
-subtree, both tool-owned) are cleared once every input gate has
-passed, so re-runs into the same output directory are safe.
+removed before the error propagates. Re-runs into the same output
+directory are safe in both directions: a previous build's artifacts
+(``tileset.json`` and the ``tiles/`` subtree, both tool-owned) are
+held aside in a scratch directory while the new build is written and
+verified, dropped only once the new build is accepted, and moved back
+into place when the new build fails for any reason — a previously
+verified deliverable is never destroyed by a failed rebuild.
 """
 
 from __future__ import annotations
@@ -37,6 +40,9 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 __all__ = ["ProgressCallback", "Tiles3dBuildResult", "build_tiles3d"]
+
+BACKUP_SUBDIR = ".tiles3d-backup"
+"""Tool-owned scratch holding the previous deliverable during a rebuild."""
 
 
 @dataclass(frozen=True)
@@ -81,11 +87,12 @@ def build_tiles3d(
         - Deterministic per machine (see geodesy caveat); a failed or
           verification-rejected build removes every written output
           before raising.
-        - Stale artifacts from a previous build into ``out`` (the
-          tool-owned ``tileset.json`` and ``tiles/`` subtree) are
-          removed after every input gate has passed and before any
-          writing; an input-gate failure never touches a previous
-          deliverable.
+        - A previous build's artifacts in ``out`` (the tool-owned
+          ``tileset.json`` and ``tiles/`` subtree) are replaced only
+          once the new build has passed verification: they are held
+          aside during the rebuild and moved back into place if the
+          rebuild fails for any reason. An input-gate failure never
+          touches them at all.
 
     Failure modes:
         - :class:`Tiles3dError` for every input gate
@@ -98,8 +105,10 @@ def build_tiles3d(
     written: list[Path] = []
     tiles_dir = out / TILES_SUBDIR
     tileset_path = out / TILESET_NAME
+    backup_dir = out / BACKUP_SUBDIR
+    accepted = False
     try:
-        _clear_stale(tiles_dir, tileset_path)
+        _hold_stale(tiles_dir, tileset_path, backup_dir)
         tiles_dir.mkdir(parents=True, exist_ok=True)
         for uri, data in computed.glbs.items():
             path = out / uri
@@ -108,12 +117,16 @@ def build_tiles3d(
         write_tileset(computed.document, tileset_path)
         written.append(tileset_path)
         verify_tiles3d(out, ortho, heights, tile_pixels=tile_pixels)
-    except (Tiles3dError, OSError) as exc:
-        _discard(written, tiles_dir)
-        if isinstance(exc, Tiles3dError):
-            raise
+        accepted = True
+    except OSError as exc:
         msg = f"3D Tiles output at {out} is not writable: {exc}"
         raise Tiles3dError(msg) from exc
+    finally:
+        if accepted:
+            shutil.rmtree(backup_dir, ignore_errors=True)
+        else:
+            _discard(written, tiles_dir)
+            _restore_stale(out, backup_dir)
     return Tiles3dBuildResult(
         tileset_path=tileset_path,
         tile_count=tree.tile_count,
@@ -123,11 +136,31 @@ def build_tiles3d(
     )
 
 
-def _clear_stale(tiles_dir: Path, tileset_path: Path) -> None:
-    """Remove a previous build's tool-owned artifacts from ``out``."""
-    tileset_path.unlink(missing_ok=True)
-    if tiles_dir.is_dir():
-        shutil.rmtree(tiles_dir)
+def _hold_stale(
+    tiles_dir: Path, tileset_path: Path, backup_dir: Path
+) -> None:
+    """Move a previous build's artifacts aside instead of deleting them.
+
+    ``backup_dir`` is tool-owned scratch: leftovers from a crashed
+    earlier rebuild are stale by definition and removed first.
+    """
+    if backup_dir.exists():
+        shutil.rmtree(backup_dir)
+    stale = [p for p in (tiles_dir, tileset_path) if p.exists()]
+    if not stale:
+        return
+    backup_dir.mkdir(parents=True)
+    for path in stale:
+        path.rename(backup_dir / path.name)
+
+
+def _restore_stale(out: Path, backup_dir: Path) -> None:
+    """Move a held-aside previous deliverable back into place."""
+    if not backup_dir.is_dir():
+        return
+    for held in backup_dir.iterdir():
+        held.rename(out / held.name)
+    backup_dir.rmdir()
 
 
 def _discard(written: list[Path], tiles_dir: Path) -> None:

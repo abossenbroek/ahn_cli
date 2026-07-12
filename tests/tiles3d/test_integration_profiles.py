@@ -16,15 +16,18 @@ per-module suites do not cover as a unit:
   Real geodesy is used deliberately — self-consistency within one machine
   is the documented determinism boundary (absolute ECEF/geodetic values
   depend on the local PROJ grid), so no golden pinning is needed here.
-* **Size budget** (informational, non-blocking): the geometry byte/pixel
-  cost of the game and heightfield leaves is printed every run against the
-  plan's aspirational ~4 B/px reference. The frozen game encoder does not
-  reach that figure — the regular-grid index stream alone is a structural
-  ~2 B/px and the 16-bit-per-tile quantized positions add ~3.5 B/px, so
-  even a perfect plane floors near ~6 B/px and this smooth scene measures
-  ~9.3 B/px. The one hard assertion is therefore a *regression ceiling*
-  with headroom over that baseline, which catches a genuine size blow-up
-  while leaving the aspirational number as a documented, printed target.
+* **Size budget** (informational print + one hard ceiling): geometry
+  byte/pixel cost is measured through the **real** geodesy pipeline at the
+  256px production leaf. Production leaves measure ~6 (smooth terrain) to
+  ~8 (per-pixel-noise z) B/px — above the plan's optimistic 2-3 estimate /
+  ~4 alarm — because ECEF-rotated quantized positions resist meshopt's
+  byte-plane delta coding and the regular-grid index stream is a structural
+  ~2 B/px. (An affine, axis-aligned geodesy would compress ~2x better, but
+  that is not what production emits.) The one hard assertion is a ceiling on
+  the deterministic worst-case leaf — the conftest-noise 256px single tile
+  — with headroom over its ~8 B/px baseline. Small-tile scenes read ~2x
+  higher (vertex/pixel ratio + short-stream codec overhead — expected
+  geometry-codec scaling), so the budget is judged only at 256px.
 * **Committed Rust-consumer fixtures**: the tiny ``fixtures/rust-consumer``
   tilesets (game + heightfield) the separate Rust runtime repo consumes
   are regenerated here with *pinned* geodesy and byte-compared, so fixture
@@ -38,6 +41,7 @@ from __future__ import annotations
 import hashlib
 import json
 import struct
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -228,35 +232,58 @@ def _glb_json(data: bytes) -> dict[str, Any]:
 _EXT_MESHOPT = "EXT_meshopt_compression"
 
 
-def _game_geometry_bytes_per_pixel(glb: bytes) -> tuple[float, int]:
-    """Return (geometry B/px, vertex count) for a game-profile glb.
+@dataclass(frozen=True)
+class _GameGeometry:
+    """Per-stream compressed geometry cost of one game-profile glb (B/px)."""
 
-    The plan phrases this as "glb minus JPEG bytes ≈ geometry". Realized
-    precisely, geometry *post-meshopt* is the sum of the three geometry
-    bufferViews' ``EXT_meshopt_compression.byteLength`` — the actual
-    compressed stream sizes in the BIN chunk (POSITION / TEXCOORD_0 /
-    indices). Crucially this is NOT ``bufferView.byteLength``, which for a
-    meshopt bufferView is the *decompressed* size and would massively
-    overstate the cost. Pixels are the tile's sampled vertices (one per
-    source pixel at the tile's stride), read from the POSITION accessor
-    count.
+    positions: float
+    uvs: float
+    indices: float
+    total: float
+    vertices: int
+
+
+def _game_geometry_bytes_per_pixel(glb: bytes) -> _GameGeometry:
+    """Return the per-stream compressed geometry cost of a game-profile glb.
+
+    Geometry *post-meshopt* is the sum of the three geometry bufferViews'
+    ``EXT_meshopt_compression.byteLength`` — the actual compressed stream
+    bytes in the BIN chunk. Crucially this is NOT ``bufferView.byteLength``,
+    which for a meshopt bufferView is the *decompressed* size and would
+    massively overstate the cost (a BIN-chunk cross-check confirms the three
+    compressed streams plus the JPEG equal the BIN chunk exactly). Each
+    stream is resolved through its accessor, so the split is robust to
+    bufferView ordering. Pixels are the tile's sampled vertices (one per
+    source pixel at the tile's stride), read from the POSITION accessor.
     """
     document = _glb_json(glb)
-    buffer_views = cast("list[Any]", document["bufferViews"])
-    geometry = sum(
-        int(
-            cast("dict[str, Any]", view["extensions"][_EXT_MESHOPT])[
-                "byteLength"
-            ]
-        )
-        for view in buffer_views
-        if _EXT_MESHOPT in cast("dict[str, Any]", view).get("extensions", {})
-    )
     primitive = cast("dict[str, Any]", document["meshes"][0]["primitives"][0])
-    pos_index = int(primitive["attributes"]["POSITION"])
-    accessor = cast("dict[str, Any]", document["accessors"][pos_index])
-    vertices = int(accessor["count"])
-    return geometry / vertices, vertices
+    accessors = cast("list[Any]", document["accessors"])
+    views = cast("list[Any]", document["bufferViews"])
+
+    def _stream(accessor_index: int) -> int:
+        view_index = int(
+            cast("dict[str, Any]", accessors[accessor_index])["bufferView"]
+        )
+        view = cast("dict[str, Any]", views[view_index])
+        ext = cast("dict[str, Any]", view["extensions"][_EXT_MESHOPT])
+        return int(ext["byteLength"])
+
+    vertices = int(
+        cast(
+            "dict[str, Any]", accessors[primitive["attributes"]["POSITION"]]
+        )["count"]
+    )
+    positions = _stream(int(primitive["attributes"]["POSITION"]))
+    uvs = _stream(int(primitive["attributes"]["TEXCOORD_0"]))
+    indices = _stream(int(primitive["indices"]))
+    return _GameGeometry(
+        positions=positions / vertices,
+        uvs=uvs / vertices,
+        indices=indices / vertices,
+        total=(positions + uvs + indices) / vertices,
+        vertices=vertices,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -337,22 +364,36 @@ def test_double_build_is_deterministic(
 
 
 # ---------------------------------------------------------------------------
-# Size budget (informational; one hard alarm on game leaf geometry).
-# ---------------------------------------------------------------------------
-
-# The plan's aspirational leaf-geometry target. Printed as a reference on
-# every run. NOTE: the frozen game encoder does not reach it — even a
-# perfect plane never drops below ~6 B/px at any tile size, because the
-# regular-grid index stream is a structural ~2 B/px floor and the
-# 16-bit-per-tile quantized positions add ~3.5 B/px. The measured worst
-# leaf on this smooth scene is ~9.3 B/px. See the module docstring and
-# `.superpowers/sdd/task-9-report.md` for the coordinator resolution.
+# Size budget.
+#
+# Measured through the REAL geodesy pipeline (not a pinned affine), because
+# geometry cost is dominated by the position stream and the position stream
+# depends entirely on the geodesy: production ECEF-RTC y-up positions are a
+# rotated/sheared image of the RD grid, so every quantized uint16 channel
+# mixes row/col/height and the low byte-planes resist meshopt's delta coding
+# (~3.6-5.6 B/px). An affine, axis-aligned geodesy (e.g. the byte-freeze
+# pin) would collapse each channel to a near-constant delta and compress ~2x
+# better — but that is not what production emits, so measuring through it
+# would understate the real cost. Numbers below are the honest production
+# figures; the plan's 2-3 B/px estimate / ~4 alarm was optimistic.
+#
+# The hard assertion is on the deterministic worst-case leaf: a
+# conftest-noise (per-pixel white-noise z) 256x256 single tile — the CLI's
+# default production leaf size — measured at ~8 B/px (BIN-cross-checked).
+# The index stream is a structural ~2 B/px (regular-grid triangulation) and
+# positions carry the rest. Small-tile scenes read ~2x higher purely from
+# the vertex/pixel ratio and short-stream codec overhead (geometry-codec
+# scaling, not a regression), so the budget is judged only at 256px.
+# Possible future efficiency item (flagged, not built here): axis-aligned
+# local quantization frames or per-block uint16 indices.
 _LEAF_REFERENCE_BYTES_PER_PIXEL = 4.0
+"""The plan's aspirational leaf-geometry target; printed as a reference."""
 
-# The hard regression alarm: a ceiling with ~40% headroom over the current
-# ~9.3 B/px baseline, so a genuine geometry-size regression trips it while
-# normal run-to-run variation does not.
-_LEAF_REGRESSION_CEILING_BYTES_PER_PIXEL = 13.0
+_LEAF_REGRESSION_CEILING_BYTES_PER_PIXEL = 10.0
+"""Hard ceiling: ~25% over the ~8 B/px verified conftest-noise 256px leaf."""
+
+_PRODUCTION_LEAF_PIXELS = 256
+"""The CLI's default ``tile_pixels`` — the production leaf size."""
 
 
 def _emit(line: str) -> None:
@@ -360,56 +401,109 @@ def _emit(line: str) -> None:
     print(line)  # noqa: T201
 
 
-def test_size_budget_reports_and_guards_game_leaves(
+def _build_single_leaf_glb(
+    tmp_path: Path, ortho: Path, heights: Path
+) -> bytes:
+    """Build a 256x256 single-tile game tileset and return its one glb."""
+    out = tmp_path
+    build_tiles3d(
+        ortho,
+        heights,
+        out,
+        tile_pixels=_PRODUCTION_LEAF_PIXELS,
+        profile=Profile.GAME,
+    )
+    return (out / "tiles" / "0-0-0.glb").read_bytes()
+
+
+def test_size_budget_guards_the_production_leaf(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """Print geometry B/px per profile; alarm if game leaves exceed budget.
+    """Assert the 256px production leaf's geometry stays under the ceiling.
 
-    A 64x64 smooth scene at ``tile_pixels=32`` gives a multi-level tree
-    with real leaf tiles, meaningful for the byte budget yet fast (<10 s).
+    The hard assertion is the conftest-noise (per-pixel white noise z)
+    256x256 single tile — the CLI's default leaf size and the deterministic
+    worst case. Informational prints add the smooth-terrain 256px figure
+    (the representative number) against the plan's ~4 reference, and a small
+    64px scene to show the geometry-codec scaling. All through real geodesy.
     """
-    ortho, heights = _smooth_pair(tmp_path, 64, 64)
-
-    game_out = tmp_path / "game"
-    build_tiles3d(
-        ortho, heights, game_out, tile_pixels=32, profile=Profile.GAME
+    noise_glb = _build_single_leaf_glb(
+        tmp_path / "noise",
+        *_make_pair(
+            tmp_path,
+            _PRODUCTION_LEAF_PIXELS,
+            _PRODUCTION_LEAF_PIXELS,
+            seed=34,
+        ),
     )
-    game_tiles = sorted((game_out / "tiles").glob("*.glb"))
-    leaf_level = max(int(p.name.split("-", 1)[0]) for p in game_tiles)
-    worst_leaf = 0.0
+    noise = _game_geometry_bytes_per_pixel(noise_glb)
+
+    smooth_glb = _build_single_leaf_glb(
+        tmp_path / "smooth",
+        *_smooth_pair(
+            tmp_path, _PRODUCTION_LEAF_PIXELS, _PRODUCTION_LEAF_PIXELS
+        ),
+    )
+    smooth = _game_geometry_bytes_per_pixel(smooth_glb)
+
+    small_out = tmp_path / "small"
+    small_ortho, small_heights = _smooth_pair(tmp_path, 64, 64)
+    build_tiles3d(
+        small_ortho,
+        small_heights,
+        small_out,
+        tile_pixels=32,
+        profile=Profile.GAME,
+    )
+    small_leaf = _game_geometry_bytes_per_pixel(
+        (small_out / "tiles" / "1-1-1.glb").read_bytes()
+    )
+
     with capsys.disabled():
-        _emit("\n[size-budget] game geometry (meshopt bufferViews):")
-        for tile in game_tiles:
-            per_px, vertices = _game_geometry_bytes_per_pixel(
-                tile.read_bytes()
-            )
-            level = int(tile.name.split("-", 1)[0])
-            marker = " (leaf)" if level == leaf_level else ""
-            _emit(f"  {tile.name}: {per_px:.3f} B/px ({vertices} v){marker}")
-            if level == leaf_level:
-                worst_leaf = max(worst_leaf, per_px)
         _emit(
-            f"[size-budget] worst game leaf: {worst_leaf:.3f} B/px "
-            f"(aspirational reference {_LEAF_REFERENCE_BYTES_PER_PIXEL} B/px; "
-            f"regression ceiling {_LEAF_REGRESSION_CEILING_BYTES_PER_PIXEL})"
+            f"\n[size-budget] game geometry, real geodesy "
+            f"(reference {_LEAF_REFERENCE_BYTES_PER_PIXEL} B/px, "
+            f"ceiling {_LEAF_REGRESSION_CEILING_BYTES_PER_PIXEL}):"
         )
+        for label, g in (
+            ("256px production leaf, conftest-noise z", noise),
+            ("256px production leaf, smooth terrain", smooth),
+            ("32px small-tile leaf, smooth terrain", small_leaf),
+        ):
+            _emit(
+                f"  {label}: {g.total:.3f} B/px total "
+                f"(pos {g.positions:.3f} + uv {g.uvs:.3f} + idx "
+                f"{g.indices:.3f}), {g.vertices} v"
+            )
 
-    hf_out = tmp_path / "hf"
-    build_tiles3d(
-        ortho, heights, hf_out, tile_pixels=32, profile=Profile.HEIGHTFIELD
-    )
-    with capsys.disabled():
-        _emit("[size-budget] heightfield geometry (.hf chunk bytes):")
-        for chunk in sorted((hf_out / "tiles").glob("*.hf")):
-            data = chunk.read_bytes()
-            width, height = struct.unpack_from("<II", data, 8)
-            per_px = len(data) / (width * height)
-            _emit(f"  {chunk.name}: {per_px:.3f} B/px ({width}x{height})")
-
-    assert worst_leaf <= _LEAF_REGRESSION_CEILING_BYTES_PER_PIXEL, (
-        f"game leaf geometry {worst_leaf:.3f} B/px exceeds the "
+    assert noise.total <= _LEAF_REGRESSION_CEILING_BYTES_PER_PIXEL, (
+        f"game production-leaf geometry {noise.total:.3f} B/px exceeds the "
         f"{_LEAF_REGRESSION_CEILING_BYTES_PER_PIXEL} B/px regression ceiling"
     )
+
+
+def test_size_budget_reports_heightfield_chunk_cost(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Print the heightfield .hf chunk cost at the 256px production leaf."""
+    ortho, heights = _make_pair(
+        tmp_path, _PRODUCTION_LEAF_PIXELS, _PRODUCTION_LEAF_PIXELS, seed=35
+    )
+    out = tmp_path / "hf"
+    build_tiles3d(
+        ortho,
+        heights,
+        out,
+        tile_pixels=_PRODUCTION_LEAF_PIXELS,
+        profile=Profile.HEIGHTFIELD,
+    )
+    chunk = (out / "tiles" / "0-0-0.hf").read_bytes()
+    width, height = struct.unpack_from("<II", chunk, 8)
+    with capsys.disabled():
+        _emit(
+            f"[size-budget] heightfield .hf chunk: "
+            f"{len(chunk) / (width * height):.3f} B/px ({width}x{height})"
+        )
 
 
 # ---------------------------------------------------------------------------

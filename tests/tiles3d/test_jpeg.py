@@ -51,11 +51,20 @@ def test_encoding_is_deterministic() -> None:
 
 
 def test_output_is_a_baseline_jpeg() -> None:
-    """The bytes start with the JPEG SOI marker and decode as JPEG."""
+    """The frame is baseline sequential (SOF0), never progressive (SOF2).
+
+    Pillow reports ``format == "JPEG"`` for progressive streams too, so a
+    ``JPEG_PROGRESSIVE = True`` regression would slip past a format check.
+    Parsing the marker stream and asserting SOF0 present / SOF2 absent
+    pins the pinned baseline framing.
+    """
     data = encode_jpeg(synth_rgb(8, 8))
     assert data[:2] == b"\xff\xd8"  # SOI
     with Image.open(io.BytesIO(data)) as image:
         assert image.format == "JPEG"
+    markers = _segment_markers(data)
+    assert 0xC0 in markers  # SOF0: baseline sequential
+    assert 0xC2 not in markers  # SOF2: progressive -- must be absent
 
 
 def test_fidelity_floor_passes_for_a_genuine_encode() -> None:
@@ -94,6 +103,23 @@ def test_floor_constant_sits_between_noise_and_a_wrong_image() -> None:
         np.mean(np.abs(rgb.astype(np.int32) - other.astype(np.int32)))
     )
     assert noise_error < JPEG_MAX_MEAN_ABS_ERROR < wrong_error
+
+
+def test_smooth_imagery_round_trips_almost_losslessly() -> None:
+    """A smooth gradient (real-imagery-like) decodes near-losslessly.
+
+    Every other fidelity test uses random noise (JPEG's worst case). Real
+    ortho tiles are smooth, so this documents the near-lossless behaviour
+    the module's docstring claims: a smooth gradient round-trips well under
+    the floor, with a loose stable margin so it is not brittle.
+    """
+    gradient = _gradient_tile(64)
+    decoded = decode_jpeg(encode_jpeg(gradient))
+    mean_abs_error = float(
+        np.mean(np.abs(gradient.astype(np.int32) - decoded.astype(np.int32)))
+    )
+    assert mean_abs_error < 5.0  # ~0.9 in practice; far below the floor
+    assert jpeg_fidelity_ok(gradient, decoded) is True
 
 
 def test_grayscale_input_is_forced_to_three_channels() -> None:
@@ -152,3 +178,43 @@ def test_pillow_version_matches_the_installed_library() -> None:
     version = pillow_version()
     assert isinstance(version, str)
     assert version == PIL.__version__
+
+
+def _gradient_tile(size: int) -> npt.NDArray[np.uint8]:
+    """Build a smooth (h, w, 3) uint8 gradient — real-imagery-like."""
+    ramp = np.linspace(0, 255, size).astype(np.uint8)
+    return np.stack(
+        [
+            np.tile(ramp, (size, 1)),
+            np.tile(ramp[::-1], (size, 1)),
+            np.tile(ramp.reshape(-1, 1), (1, size)),
+        ],
+        axis=2,
+    )
+
+
+def _segment_markers(data: bytes) -> list[int]:
+    """Collect JPEG segment-marker bytes from SOI up to (excluding) SOS.
+
+    Walks the marker stream: standalone markers (SOI/EOI/RST) carry no
+    length, length-prefixed segments are skipped by their big-endian
+    length, and the scan stops at SOS (start of the entropy-coded data).
+    """
+    markers: list[int] = []
+    pos = 2  # past SOI
+    end = len(data)
+    while pos < end and data[pos] == 0xFF:
+        while pos < end and data[pos] == 0xFF:  # skip fill bytes
+            pos += 1
+        if pos >= end:
+            break
+        marker = data[pos]
+        pos += 1
+        markers.append(marker)
+        if marker == 0xD9 or 0xD0 <= marker <= 0xD7:  # EOI / RST: no length
+            continue
+        if marker == 0xDA:  # SOS: entropy data follows -- stop
+            break
+        length = (data[pos] << 8) | data[pos + 1]
+        pos += length
+    return markers

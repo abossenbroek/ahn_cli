@@ -229,7 +229,7 @@ def test_reconcile_rejects_a_cloud_west_of_the_ortho(
     xyz = np.array([[50.0, 101.0, 1.0], [51.0, 102.0, 2.0]])
     cloud = _write_cloud(tmp_path / "west.laz", xyz)
 
-    with pytest.raises(ReconcileError, match="does not overlap"):
+    with pytest.raises(ReconcileError, match="does not cover"):
         reconcile(_request(ortho_path, cloud, tmp_path / "out"))
 
 
@@ -240,5 +240,53 @@ def test_reconcile_rejects_a_cloud_south_of_the_ortho(
     xyz = np.array([[101.0, 50.0, 1.0], [102.0, 51.0, 2.0]])
     cloud = _write_cloud(tmp_path / "south.laz", xyz)
 
-    with pytest.raises(ReconcileError, match="does not overlap"):
+    with pytest.raises(ReconcileError, match="does not cover"):
         reconcile(_request(ortho_path, cloud, tmp_path / "out"))
+
+
+def test_reconcile_rejects_a_cloud_covering_only_half_the_grid(
+    ortho_path: Path, tmp_path: Path
+) -> None:
+    """Partial overlap is refused: every pixel centre must be covered.
+
+    A cloud spanning only the west half of the grid used to pass the old
+    bbox-overlap test; the uncovered east pixels would then be estimated
+    from unrelated points — fabricated data — so it is now a refusal.
+    """
+    xyz = np.array(
+        [
+            [100.0, 100.0, 1.0],
+            [101.4, 103.0, 2.0],
+            [100.7, 101.5, 1.5],
+        ]
+    )
+    cloud = _write_cloud(tmp_path / "half.laz", xyz)
+
+    with pytest.raises(ReconcileError, match="east"):
+        reconcile(_request(ortho_path, cloud, tmp_path / "out"))
+
+
+def test_reconcile_accepts_a_cloud_covering_exactly_the_pixel_centres(
+    ortho_path: Path, tmp_path: Path
+) -> None:
+    """A cloud whose bbox equals the pixel-centre extent is sufficient.
+
+    Pixel centres span [100.25, 102.75] on both axes for the 6x6/0.5 m
+    fixture; a cloud reaching exactly that far covers every target.
+    """
+    xyz = np.array(
+        [
+            [100.25, 100.25, 1.0],
+            [102.75, 100.25, 1.2],
+            [100.25, 102.75, 1.4],
+            [102.75, 102.75, 1.6],
+            [101.5, 101.5, 1.3],
+        ]
+    )
+    cloud = _write_cloud(tmp_path / "exact.laz", xyz)
+
+    stats = reconcile(
+        _request(ortho_path, cloud, tmp_path / "out", (OutputFormat.PT,))
+    )
+
+    assert stats.valid_points == 36

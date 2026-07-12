@@ -150,10 +150,10 @@ def reconcile(
           validated *first*, before the (potentially huge) cloud is loaded,
           so a bad ortho fails in milliseconds.
         - :class:`ReconcileError` if the cleaned cloud is not genuine AHN
-          data to interpolate from: empty, collapsed to a single XY position,
-          or spatially disjoint from the orthophoto extent. Interpolating any
-          of those would fabricate ("infill") elevations, which reconcile
-          never does.
+          data to interpolate from: empty, collapsed to a single XY
+          position, or not covering every pixel centre of the orthophoto
+          grid. Interpolating any of those would fabricate ("infill")
+          elevations, which reconcile never does.
     """
     report = progress if progress is not None else _no_op_progress
     with open_ortho(request.ortho_path) as ortho:
@@ -165,7 +165,7 @@ def reconcile(
             request.exclude_classes,
         )
         _verify_source_coords(coords, request.cloud_path)
-        _verify_cloud_overlaps_grid(coords, ortho.grid, request)
+        _verify_cloud_covers_grid(coords, ortho.grid, request)
         interpolator = build_interpolator(request.method, coords)
         grid = ortho.grid
         width, height = grid.width, grid.height
@@ -235,39 +235,44 @@ def _verify_source_coords(
         raise ReconcileError(msg)
 
 
-def _verify_cloud_overlaps_grid(
+def _verify_cloud_covers_grid(
     coords: npt.NDArray[np.float64],
     grid: PixelGrid,
     request: ReconcileRequest,
 ) -> None:
-    """Hard-verify the cloud and the ortho cover the same ground.
+    """Hard-verify the cloud covers every pixel centre of the ortho grid.
 
-    A cloud whose XY bounding box does not intersect the orthophoto extent
-    shares no terrain with the target grid: every estimated pixel would be
-    extrapolated from unrelated points — fabricated ("infill") data — so
-    reconcile refuses to proceed.
+    The two dimensions must match perfectly: every interpolation target
+    (pixel centre) must lie inside the cloud's XY bounding box. A pixel
+    outside it would be estimated by extrapolating from unrelated points —
+    fabricated ("infill") data — so reconcile refuses to proceed.
 
     Failure modes:
-        - :class:`ReconcileError` if the cloud's XY bbox and the ortho
-          extent are disjoint.
+        - :class:`ReconcileError` if any side of the pixel-centre extent
+          is not covered by the cloud's XY bbox, naming each uncovered
+          side and its shortfall in metres.
     """
     t = grid.transform
-    cols = np.array([0.0, float(grid.width)])
-    rows = np.array([0.0, float(grid.height)])
+    cols = np.array([0.5, grid.width - 0.5])
+    rows = np.array([0.5, grid.height - 0.5])
     xs = t[0] * cols[:, np.newaxis] + t[1] * rows[np.newaxis, :] + t[2]
     ys = t[3] * cols[:, np.newaxis] + t[4] * rows[np.newaxis, :] + t[5]
-    disjoint = (
-        float(coords[:, 0].max()) < float(xs.min())
-        or float(coords[:, 0].min()) > float(xs.max())
-        or float(coords[:, 1].max()) < float(ys.min())
-        or float(coords[:, 1].min()) > float(ys.max())
+    shortfalls = (
+        ("west", float(xs.min()) - float(coords[:, 0].min())),
+        ("east", float(coords[:, 0].max()) - float(xs.max())),
+        ("south", float(ys.min()) - float(coords[:, 1].min())),
+        ("north", float(coords[:, 1].max()) - float(ys.max())),
     )
-    if disjoint:
+    uncovered = [
+        f"{side} by {-gap:.3f} m" for side, gap in shortfalls if gap < 0
+    ]
+    if uncovered:
         msg = (
-            f"point cloud at {request.cloud_path} does not overlap the "
-            f"orthophoto extent of {request.ortho_path}; interpolating "
-            'across disjoint areas would fabricate ("infill") data. Check '
-            "that both inputs cover the same site."
+            f"point cloud at {request.cloud_path} does not cover the "
+            f"orthophoto grid of {request.ortho_path}: uncovered on the "
+            f"{', '.join(uncovered)}; interpolating uncovered pixels "
+            'would fabricate ("infill") data. Check that both inputs '
+            "cover the same site."
         )
         raise ReconcileError(msg)
 

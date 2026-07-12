@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from ahn_cli.tiles3d.mesh import Region
 
 __all__ = [
+    "render_tileset",
     "tile_entry",
     "tileset_document",
     "union_region",
@@ -80,7 +81,11 @@ def tileset_document(
     }
 
 
+def render_tileset(document: dict[str, object]) -> str:
+    """Serialise the tileset document deterministically."""
+    return json.dumps(document, sort_keys=True, indent=2) + "\n"
+
+
 def write_tileset(document: dict[str, object], path: Path) -> None:
     """Write the tileset document deterministically."""
-    rendered = json.dumps(document, sort_keys=True, indent=2)
-    path.write_text(rendered + "\n", encoding="utf-8")
+    path.write_text(render_tileset(document), encoding="utf-8")

@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 
 import ahn_cli.tiles3d.build as build_module
+import ahn_cli.tiles3d.emit as emit_module
 from ahn_cli.tiles3d.build import build_tiles3d
 from ahn_cli.tiles3d.errors import Tiles3dError
 from tests.tiles3d.conftest import (
@@ -115,7 +116,7 @@ def test_build_is_deterministic(tmp_path: Path) -> None:
 def test_failed_build_leaves_nothing_behind(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A mid-build failure removes every partial output."""
+    """A failure during emission writes nothing at all."""
     ortho, heights = _make_inputs(tmp_path, 20, 14)
     out = tmp_path / "out"
     calls = {"count": 0}
@@ -127,11 +128,32 @@ def test_failed_build_leaves_nothing_behind(
             raise Tiles3dError(msg)
         return b"unused"
 
-    monkeypatch.setattr(build_module, "build_glb", explode)
+    monkeypatch.setattr(emit_module, "build_glb", explode)
     with pytest.raises(Tiles3dError, match="injected failure"):
         build_tiles3d(ortho, heights, out, tile_pixels=8)
     assert not (out / "tileset.json").exists()
     assert not (out / "tiles").exists()
+
+
+def test_rejected_verification_removes_every_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A build the verifier rejects removes everything it wrote.
+
+    The tileset writer is patched to emit a compact (but semantically
+    identical) rendering: the byte-identity check refuses it, and the
+    already-written glbs plus the bad tileset must all be removed.
+    """
+    ortho, heights = _make_inputs(tmp_path, 20, 14)
+    out = tmp_path / "out"
+
+    def compact_write(document: dict[str, object], path: Path) -> None:
+        path.write_text(json.dumps(document, sort_keys=True))
+
+    monkeypatch.setattr(build_module, "write_tileset", compact_write)
+    with pytest.raises(Tiles3dError, match="byte-equal"):
+        build_tiles3d(ortho, heights, out, tile_pixels=8)
+    assert list(out.iterdir()) == []
 
 
 def test_unwritable_output_is_a_typed_error(tmp_path: Path) -> None:

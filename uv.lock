@@ -26,6 +26,7 @@ dependencies = [
     { name = "defusedxml" },
     { name = "geopandas" },
     { name = "laspy", extra = ["lazrs"] },
+    { name = "meshoptimizer" },
     { name = "pillow" },
     { name = "polyscope" },
     { name = "pyproj" },
@@ -66,6 +67,7 @@ requires-dist = [
     { name = "defusedxml", specifier = ">=0.7.1" },
     { name = "geopandas", specifier = ">=1.1.0" },
     { name = "laspy", extras = ["lazrs"], specifier = ">=2.6.0" },
+    { name = "meshoptimizer", specifier = "==0.2.30a0" },
     { name = "mlx", marker = "platform_machine == 'arm64' and sys_platform == 'darwin' and extra == 'mlx'", specifier = ">=0.32.0" },
     { name = "pdal", marker = "extra == 'pdal'", specifier = ">=2.5.0" },
     { name = "pillow", specifier = ">=12.3.0" },
@@ -465,6 +467,16 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/f5/c5/a5bf2275c1aa426232ba39bf09ed331c4198e5c1325e756e0e0b6691dccc/lazrs-0.7.0-cp312-cp312-win32.whl", hash = "sha256:1cfa3857dc19acc3fa56e0d481d7114254999c2620b29c9d53fc4358d62d5e0b", size = 408821, upload-time = "2025-06-06T15:58:02.495Z" },
     { url = "https://files.pythonhosted.org/packages/bd/62/e24db76c60d358207b224d9b0063748ae1abbc9cb0a1a35b6e14fca8dff9/lazrs-0.7.0-cp312-cp312-win_amd64.whl", hash = "sha256:b908d90ed3872424f93c0c22f89568f08ec9af9b4fc6811b9978c5f97b018dfc", size = 420615, upload-time = "2025-06-06T15:58:04.405Z" },
 ]
+
+[[package]]
+name = "meshoptimizer"
+version = "0.2.30a0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "numpy", version = "2.3.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/35/b9/23259780df3097b6b70e7091970a689b677bd320b02a63fdf60493902167/meshoptimizer-0.2.30a0.tar.gz", hash = "sha256:36b18b61a95ba992de804b1e91e86be2ba185925e4e2c1481495f8c68a17f5db", size = 98795, upload-time = "2026-02-27T06:39:01.628Z" }
 
 [[package]]
 name = "mlx"

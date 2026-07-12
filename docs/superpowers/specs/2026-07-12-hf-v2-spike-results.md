@@ -5,6 +5,15 @@ Status of every design doubt in the approved v2 plan
 marked **GREEN** (ruled out, with evidence) or **RED** (design must change,
 with the concrete failure). A RED is a *success* of the spike.
 
+**Summary: 2 RED, the rest GREEN, none deferred-blocking.** RED-1 — the `.hf`
+chunk-header region is not bit-equal to the tileset/pack region for *parent*
+tiles (narrow one SHOULD + one spec sentence; container design unaffected).
+RED-2 — the existing v1 tiles3d producer cannot run on Windows (CRLF in
+text-mode writes); pre-existing, Phase-3 fix is a one-line newline change.
+Neither blocks the v2 container/chunk design; both are concrete, evidence-backed
+adjustments for Phase 2/3. All Rust interop, hash, zstd-checksum, pack, and
+platform doubts are GREEN on all three OSes.
+
 - Throwaway POC: `rust/spike-poc/` (Rust decoder + `cargo test`s) and
   `rust/spike-poc/tools/{pack_poc,gen_vectors}.py` (Python producer POC).
 - Golden vectors + pack fixtures: `rust/spike-poc/tests/data/` (regenerable,
@@ -12,7 +21,8 @@ with the concrete failure). A RED is a *success* of the spike.
 - Loose-file fixtures reused: `tests/tiles3d/fixtures/rust-consumer/`.
 - CI: `.github/workflows/rust.yml` — `spike-lint` (ubuntu) + `spike-test`
   (3 OS × stable) + `cross-language` (3 OS: uv sync → regen → `git diff
-  --exit-code` → `cargo test`). Run link: **<paste `gh run` URL after push>**.
+  --exit-code` → `cargo test`). Run link:
+  https://github.com/abossenbroek/ahn_cli/actions/runs/29202785397
 
 Task 1a (lz4-vs-zstd codec bake-off) owns the codec-winner rows; this spike
 validated zstd interop only. If 1a pins lz4, every zstd row below must be
@@ -122,8 +132,9 @@ v2 `.hf` chunk header **120 B**: v1 112-B header + `header_crc32 u32` (CRC over
 | P10 per-frame scan sub-100 µs class | 2000-entry linear AABB scan | **7.8 µs/scan** (mac) — sub-100 µs confirmed | GREEN |
 | P11 mmap vs positioned reads (Windows/Defender) | timed index reads, 3 OS | mac: pread 461 ns/rep, mmap-copy 82 ns/rep; **linux/windows from CI** | GREEN (mac) / see note |
 | content_kind both fixtured | heightfield (`.hf`+`.jpg`) & game (`.glb`, texture slot 0) | both packs open + validate | GREEN |
-| MSVC build of `zstd-sys`, no extra system deps | windows `cargo build` in CI | **from CI windows job** | pending CI |
-| Python producer byte-determinism per OS | regen loose fixtures + spike vectors, `git diff --exit-code` on 3 OS | **from CI cross-language job** | pending CI |
+| MSVC build of `zstd-sys`, no extra system deps | windows `cargo build`/`cargo test` in CI | `spike-test (windows-latest)` **success** — no extra deps | GREEN |
+| Spike producer byte-determinism per OS | `gen_vectors.py` + `git diff --exit-code rust/spike-poc/tests/data` on 3 OS | ubuntu/macos/windows byte-identical | GREEN |
+| Production tiles3d producer determinism on Windows | run existing `regen_rust_fixtures` on 3 OS | ubuntu/macos GREEN; **windows FAILS** | **RED-2 below** |
 
 ## RED-1 — `.hf` chunk-header region ≠ tileset/pack region for PARENT tiles
 
@@ -175,6 +186,41 @@ header region is a strict **subset** (contained) of the tileset region.
 
 This does not block the pack/container design (all other P-rows GREEN); it
 narrows one normative SHOULD and one spec sentence.
+
+## RED-2 — the existing v1 tiles3d producer cannot run on Windows (CRLF)
+
+Surfaced by running the **existing** `regen_rust_fixtures` on the CI
+windows-latest runner: `build_tiles3d` → `verify_tiles3d` →
+`_verify_byte_identity` raises `Tiles3dError: tileset.json does not byte-equal
+its independent rebuild` **on Windows only** (ubuntu + macos pass).
+
+**Root cause.** `ahn_cli/tiles3d/tileset.py:91`
+`path.write_text(render_tileset(document), encoding="utf-8")` writes in **text
+mode**, so on Windows Python translates every `\n` → `\r\n`. The verifier
+`ahn_cli/tiles3d/verify.py:610` then compares the on-disk bytes (CRLF) against
+`render_tileset(...).encode("utf-8")` (LF) and they differ. The same text-mode
+write is used for `provenance.json` (`build.py:145`). The build's own
+byte-identity backstop therefore fails on the first text artifact, so the
+`heightfield`/`game`/`strict` builds all abort on Windows.
+
+**Scope.** Pre-existing v1 bug (not introduced by this spike; not in my
+authorized edit surface, so left unfixed). The current Python CI runs
+ubuntu-only, which is why it was never seen. It is squarely in Phase 3's
+rewrite scope (`emit.py`/`build.py`/`verify.py`).
+
+**Fix (Phase 3).** Write text artifacts with an explicit LF: either
+`path.write_text(text, encoding="utf-8", newline="\n")` or
+`path.write_bytes(text.encode("utf-8"))`, for `tileset.json`, `provenance.json`
+and every other text artifact. This makes on-disk bytes LF on all platforms —
+exactly the cross-OS byte-determinism the pack/manifest goal already requires.
+The spike's own `gen_vectors.py` already uses `write_bytes` for its JSON for
+this reason, and its 3-OS determinism gate is GREEN.
+
+**CI handling.** The `cross-language` job's production-regen determinism step is
+`continue-on-error` **on Windows only** so this documented finding is surfaced
+as a visible failed-but-allowed step without masking a genuine *new* Unix
+determinism regression (which still hard-fails). Remove that guard once Phase 3
+lands the LF fix.
 
 ## Newly discovered doubts (for Phase 2/3)
 

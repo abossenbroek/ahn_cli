@@ -120,8 +120,12 @@ check("P3 header struct <= 128 and records 16/96",
 sparse_keys = [(2, 0, 0, 3), (2, 0, 0, 0), (1, 0, 1, 0), (0, 0, 0, 0),
                (2, 0, 3, 1), (1, 0, 0, 1)]
 py_sorted = sorted(sparse_keys)
-(DATA / "sort_vectors.json").write_text(json.dumps({
-    "input": sparse_keys, "expected_sorted": py_sorted}, indent=2) + "\n")
+# write_bytes (not write_text): text mode would emit CRLF on Windows, breaking
+# the cross-OS byte-determinism the spike is proving. See RED-2 in the results
+# doc for the same bug in the production tiles3d writers.
+(DATA / "sort_vectors.json").write_bytes(
+    (json.dumps({"input": sparse_keys, "expected_sorted": py_sorted}, indent=2)
+     + "\n").encode("utf-8"))
 check("P4 sparse/non-square sort key defined (Rust re-checks)",
       py_sorted[0] == (0, 0, 0, 0) and py_sorted[-1] == (2, 0, 3, 1),
       f"{py_sorted}")
@@ -464,7 +468,8 @@ golden = {
         },
     },
 }
-(DATA / "golden.json").write_text(json.dumps(golden, indent=2) + "\n")
+(DATA / "golden.json").write_bytes(
+    (json.dumps(golden, indent=2) + "\n").encode("utf-8"))
 (DATA / "heightfield.hfp").write_bytes(hf_pack)
 (DATA / "game.hfp").write_bytes(game_pack)
 

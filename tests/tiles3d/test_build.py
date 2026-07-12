@@ -9,7 +9,7 @@ from typing import Any, NoReturn, cast
 import pytest
 
 import ahn_cli.tiles3d.build as build_module
-import ahn_cli.tiles3d.emit as emit_module
+import ahn_cli.tiles3d.encoders as encoders_module
 from ahn_cli.tiles3d.build import build_tiles3d
 from ahn_cli.tiles3d.errors import Tiles3dError
 from tests.tiles3d.conftest import (
@@ -126,7 +126,7 @@ def test_failed_build_leaves_nothing_behind(
             raise Tiles3dError(msg)
         return b"unused"
 
-    monkeypatch.setattr(emit_module, "build_glb", explode)
+    monkeypatch.setattr(encoders_module, "build_glb", explode)
     with pytest.raises(Tiles3dError, match="injected failure"):
         build_tiles3d(ortho, heights, out, tile_pixels=8)
     assert not (out / "tileset.json").exists()

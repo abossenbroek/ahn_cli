@@ -17,10 +17,10 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from ahn_cli.tiles3d.encoders import StrictEncoder
 from ahn_cli.tiles3d.geodesy import Geodesy
-from ahn_cli.tiles3d.gltf import build_glb
 from ahn_cli.tiles3d.mesh import build_tile_mesh
-from ahn_cli.tiles3d.png import encode_png
+from ahn_cli.tiles3d.payload import TilePayload
 from ahn_cli.tiles3d.quadtree import geometric_error
 from ahn_cli.tiles3d.tileset import (
     tile_entry,
@@ -30,6 +30,7 @@ from ahn_cli.tiles3d.tileset import (
 
 if TYPE_CHECKING:
     from ahn_cli.tiles3d.mesh import Region
+    from ahn_cli.tiles3d.payload import TileEncoder
     from ahn_cli.tiles3d.quadtree import TilePlan, TreePlan
     from ahn_cli.tiles3d.sources import TerrainGrid
 
@@ -103,6 +104,7 @@ class _Emitter:
         self._tree = tree
         self._progress = progress
         self._geodesy = Geodesy()
+        self._encoder: TileEncoder = StrictEncoder()
         self._done = 0
         self.glbs: dict[str, bytes] = {}
         self.vertices = 0
@@ -121,9 +123,23 @@ class _Emitter:
                 else union_region(region, child_region)
             )
         mesh = build_tile_mesh(self._terrain, tile, self._geodesy)
-        sampled = self._terrain.rgb[np.ix_(mesh.rows, mesh.cols)]
-        uri = tile_uri(tile)
-        self.glbs[uri] = build_glb(mesh, encode_png(sampled))
+        grid = np.ix_(mesh.rows, mesh.cols)
+        error = geometric_error(tile.stride, pixel_size(self._terrain))
+        payload = TilePayload(
+            level=tile.level,
+            tx=tile.tx,
+            ty=tile.ty,
+            stride=tile.stride,
+            geometric_error=error,
+            mesh=mesh,
+            x=self._terrain.x[grid],
+            y=self._terrain.y[grid],
+            z=self._terrain.z[grid],
+            rgb=self._terrain.rgb[grid],
+        )
+        encoded = self._encoder.encode(payload)
+        uri = f"{TILES_SUBDIR}/{encoded.content_name}"
+        self.glbs[uri] = encoded.content
         self.vertices += int(mesh.positions.shape[0])
         self.triangles += int(mesh.indices.shape[0]) // 3
         self._done += 1
@@ -134,7 +150,6 @@ class _Emitter:
             if region is None
             else union_region(region, mesh.region)
         )
-        error = geometric_error(tile.stride, pixel_size(self._terrain))
         entry = tile_entry(
             region,
             error,

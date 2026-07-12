@@ -22,6 +22,7 @@ from ahn_cli.tiles3d.jpeg import (
     JPEG_SUBSAMPLING,
     decode_jpeg,
     encode_jpeg,
+    is_baseline_jpeg,
     jpeg_fidelity_ok,
     pillow_version,
 )
@@ -178,6 +179,39 @@ def test_pillow_version_matches_the_installed_library() -> None:
     version = pillow_version()
     assert isinstance(version, str)
     assert version == PIL.__version__
+
+
+def test_is_baseline_jpeg_accepts_the_pinned_encode() -> None:
+    """The pinned encoder's output is recognised as baseline sequential."""
+    assert is_baseline_jpeg(encode_jpeg(synth_rgb(8, 8))) is True
+
+
+def test_is_baseline_jpeg_rejects_a_progressive_stream() -> None:
+    """A progressive-framed JPEG (SOF2) is not baseline."""
+    buffer = io.BytesIO()
+    Image.fromarray(synth_rgb(8, 8), mode="RGB").save(
+        buffer, format="JPEG", progressive=True
+    )
+    assert is_baseline_jpeg(buffer.getvalue()) is False
+
+
+def test_is_baseline_jpeg_rejects_a_non_soi_stream() -> None:
+    """A stream that does not start with SOI is refused up front."""
+    assert is_baseline_jpeg(b"not a jpeg at all") is False
+
+
+def test_is_baseline_jpeg_stops_on_a_non_marker_byte() -> None:
+    """The header walk ends when a segment does not begin with 0xFF."""
+    # SOI, an APP0 segment of length 4 (2 payload bytes), then a byte the
+    # walk lands on that is not a marker -- no SOF0 is ever seen.
+    data = b"\xff\xd8\xff\xe0\x00\x04ab\x01\x02\x03\x04"
+    assert is_baseline_jpeg(data) is False
+
+
+def test_is_baseline_jpeg_stops_when_a_segment_overruns() -> None:
+    """The walk ends when a declared segment length overruns the buffer."""
+    data = b"\xff\xd8\xff\xdb\x00\xff"  # DQT claims 255 bytes; buffer ends
+    assert is_baseline_jpeg(data) is False
 
 
 def _gradient_tile(size: int) -> npt.NDArray[np.uint8]:

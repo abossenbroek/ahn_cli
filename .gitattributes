@@ -15,3 +15,7 @@ tests/**/fixtures/*.json !filter !diff !merge text
 # enough that plain git storage is fine.
 tests/reconcile/fixtures/*.tif !filter !diff !merge -text
 tests/reconcile/fixtures/*.laz !filter !diff !merge -text
+# The small (~80 KB) tiles3d Rust-consumer fixtures are likewise kept as normal
+# binary git objects, not LFS: the separate Rust runtime repo consumes them from
+# a plain clone (and CI checks out without LFS), so they must be real bytes.
+tests/tiles3d/fixtures/rust-consumer/** !filter !diff !merge -text

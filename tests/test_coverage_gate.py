@@ -27,7 +27,17 @@ LEGACY_OMIT = (
 )
 
 # Packages later work packages introduce; these MUST stay gated (never omitted).
-FUTURE_GATED = ("domain", "cli", "fetch", "prep", "provenance", "cache")
+FUTURE_GATED = (
+    "domain",
+    "cli",
+    "fetch",
+    "prep",
+    "provenance",
+    "cache",
+    "reconcile",
+    "copc",
+    "tiles3d",
+)
 
 
 def _load_config() -> Coverage:

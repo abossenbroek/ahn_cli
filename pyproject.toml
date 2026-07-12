@@ -19,6 +19,7 @@ dependencies = [
     "typing-extensions>=4.14.1",
     "scipy>=1.11",
     "copclib>=2.6.3",
+    "pyproj>=3.7",
 ]
 
 [project.optional-dependencies]

@@ -1,96 +1,167 @@
-# hf-v2 Task 1b interop spike CI. Runs the throwaway `rust/spike-poc` crate on
-# three OSes and the Python<->Rust cross-language round-trip. `paths:` is left
-# unrestricted for the spike; Phase 4 replaces this with the filtered matrix
-# from the plan.
-name: rust-spike
+# CI for the `ahn-heightfield` Rust crate (the .hf chunk + AHNP pack decoder)
+# and the Python<->Rust cross-language interop proof.
+#
+#   rust-lint                fmt, clippy, cargo-deny, doc          (ubuntu, stable)
+#   rust-test                cargo test                            (3 OS x {stable, 1.77})
+#   fuzz-smoke               cargo-fuzz 120s/target, NON-blocking  (ubuntu, nightly)
+#   cross-language-roundtrip Python producer determinism + Rust    (3 OS, stable)
+#                            decodes the committed fixtures
+name: rust
 
 on:
   push:
-    branches: [hf-v2]
-  workflow_dispatch:
+    branches: [main, hf-v2]
+    paths:
+      - 'rust/**'
+      - 'tests/tiles3d/fixtures/rust-consumer/**'
+      - 'docs/superpowers/specs/2026-07-12-heightfield-chunk-format.md'
+      - 'docs/superpowers/specs/2026-07-12-hfp-pack-format.md'
+      - '.github/workflows/rust.yml'
+  pull_request:
+    paths:
+      - 'rust/**'
+      - 'tests/tiles3d/fixtures/rust-consumer/**'
+      - 'docs/superpowers/specs/2026-07-12-heightfield-chunk-format.md'
+      - 'docs/superpowers/specs/2026-07-12-hfp-pack-format.md'
+      - '.github/workflows/rust.yml'
 
+# git-bash on Windows too, so `git diff`, `cargo +nightly`, and the shell
+# fall-throughs behave identically on all three runners.
 defaults:
   run:
     shell: bash
 
 jobs:
-  # fmt + clippy, cheap, ubuntu only.
-  spike-lint:
+  # fmt + clippy + supply-chain (cargo-deny) + docs. Cheap, ubuntu/stable only.
+  rust-lint:
+    name: rust-lint (ubuntu, stable)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
-      - name: cargo fmt --check
-        working-directory: rust/spike-poc
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: cargo fmt --all --check
+        working-directory: rust
         run: cargo fmt --all --check
-      - name: cargo clippy -D warnings
-        working-directory: rust/spike-poc
+      - name: cargo clippy --all-targets --all-features -D warnings
+        working-directory: rust
         run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: cargo-deny (advisories, licenses, bans, sources)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: rust/Cargo.toml
+      - name: cargo doc --no-deps --all-features (warnings are errors)
+        working-directory: rust
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: cargo doc --no-deps --all-features
 
-  # cargo test on all three OSes, stable. MSVC build of zstd-sys with no extra
-  # system deps is itself one of the doubts — this job is where it is proven.
-  spike-test:
+  # The workspace test suite (unit + integration + doctests, which decode the
+  # committed rust-consumer fixtures) on every shipped OS, at both the pinned
+  # stable and the declared MSRV.
+  rust-test:
+    name: rust-test (${{ matrix.os }}, ${{ matrix.toolchain }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        toolchain: [stable, "1.77"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      # Keep Windows from rewriting the committed text/binary fixtures on
+      # checkout; the crate reads them byte-for-byte.
+      - name: disable autocrlf
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+          key: ${{ matrix.toolchain }}
+      - name: cargo test --all-features
+        working-directory: rust
+        run: cargo test --all-features
+
+  # cargo-fuzz smoke: build each target on nightly and fuzz it for 120s. This
+  # is a best-effort signal, NEVER a merge gate — the whole job is
+  # continue-on-error, and a missing nightly / cargo-fuzz degrades to a notice.
+  fuzz-smoke:
+    name: fuzz-smoke (ubuntu, nightly, non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: install nightly + cargo-fuzz
+        id: setup
+        continue-on-error: true
+        run: |
+          rustup toolchain install nightly --profile minimal
+          cargo +nightly install cargo-fuzz --locked
+      - name: fuzz decode (120s)
+        if: steps.setup.outcome == 'success'
+        working-directory: rust/ahn-heightfield
+        run: cargo +nightly fuzz run decode -- -max_total_time=120
+      - name: fuzz archive_open (120s)
+        if: steps.setup.outcome == 'success'
+        working-directory: rust/ahn-heightfield
+        run: cargo +nightly fuzz run archive_open -- -max_total_time=120
+      - name: notice if nightly/cargo-fuzz unavailable
+        if: steps.setup.outcome != 'success'
+        run: echo "::notice title=fuzz-smoke::nightly toolchain or cargo-fuzz install failed; fuzz smoke skipped"
+
+  # The epic's interop proof. On each OS: the Python producer must regenerate
+  # the committed rust-consumer fixtures byte-for-byte (producer determinism
+  # per platform), then the Rust crate must decode exactly those bytes. Any
+  # per-OS byte divergence is a GENUINE FINDING: the diff is uploaded as an
+  # artifact and the job stays red. Never papered over.
+  cross-language-roundtrip:
+    name: cross-language-roundtrip (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-        # avoid autocrlf mangling the committed text fixtures/data on Windows
       - name: disable autocrlf
         run: git config --global core.autocrlf false
-      - uses: dtolnay/rust-toolchain@stable
-      - name: build (records MSVC zstd-sys build on windows)
-        working-directory: rust/spike-poc
-        run: cargo build --all-features --tests
-      - name: test (verbose, shows [bench] numbers)
-        working-directory: rust/spike-poc
-        run: cargo test --all-features -- --nocapture
-
-  # Python producer byte-determinism per OS + Rust decodes the fixtures.
-  cross-language:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
       - uses: actions/checkout@v4
-      - name: disable autocrlf
-        run: git config --global core.autocrlf false
       - uses: dtolnay/rust-toolchain@stable
-      - name: install uv
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - name: install uv + python 3.12
         uses: astral-sh/setup-uv@v5
         with:
           python-version: "3.12"
-      - name: uv sync
-        run: uv sync
-      # Spike producer determinism (I own this): HARD gate on all three OSes.
-      - name: regenerate spike golden vectors + packs
-        run: uv run python rust/spike-poc/tools/gen_vectors.py
-      - name: assert spike vectors byte-identical to committed (per-OS)
-        run: git diff --exit-code rust/spike-poc/tests/data
-      # Production tiles3d producer determinism. RED-2: the existing v1 writers
-      # use Path.write_text (text mode), so on Windows they emit CRLF and the
-      # build's own byte-identity verifier rejects it — the current tiles3d
-      # build cannot run on Windows. Documented in the spike results doc; the
-      # Phase-3 fix is newline="\n"/write_bytes. Surfaced as a ::warning::
-      # annotation on Windows (visible in the checks summary) but a HARD failure
-      # on any NEW determinism regression on Unix.
-      - name: production tiles3d determinism (RED-2 known-broken on Windows)
+      - name: uv sync --frozen
+        run: uv sync --frozen
+      - name: regenerate rust-consumer fixtures
+        run: uv run python -m tests.tiles3d.regen_rust_fixtures
+      - name: assert fixtures byte-identical (producer determinism, per-OS)
+        run: git diff --exit-code tests/tiles3d/fixtures/rust-consumer
+      # Only on a determinism failure: capture the full byte-level divergence
+      # and the regenerated tree so the finding can be diagnosed off-runner.
+      - name: capture divergence
+        if: failure()
         run: |
-          if uv run python -m tests.tiles3d.regen_rust_fixtures \
-             && git diff --exit-code tests/tiles3d/fixtures/rust-consumer; then
-            echo "production regen deterministic on ${{ matrix.os }}"
-          elif [ "${{ matrix.os }}" = "windows-latest" ]; then
-            echo "::warning title=RED-2::production tiles3d producer is non-deterministic on Windows (CRLF from Path.write_text); see docs/superpowers/specs/2026-07-12-hf-v2-spike-results.md"
-          else
-            echo "::error title=determinism-regression::production regen non-deterministic on ${{ matrix.os }}"
-            exit 1
-          fi
-      - name: Rust decodes every fixture + pack + golden vector
-        working-directory: rust/spike-poc
+          git diff --binary tests/tiles3d/fixtures/rust-consumer > fixture-divergence.diff || true
+          git status --porcelain tests/tiles3d/fixtures/rust-consumer > fixture-status.txt || true
+      - name: upload divergence artifact
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fixture-divergence-${{ matrix.os }}
+          path: |
+            fixture-divergence.diff
+            fixture-status.txt
+            tests/tiles3d/fixtures/rust-consumer/**
+          if-no-files-found: warn
+      - name: Rust decodes every committed fixture + pack
+        working-directory: rust
         run: cargo test --all-features

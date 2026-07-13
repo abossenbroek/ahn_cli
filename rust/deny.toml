@@ -1,0 +1,32 @@
+# cargo-deny policy for the ahn-heightfield workspace (CI: rust-lint job).
+# Checked with `cargo deny --manifest-path rust/Cargo.toml check` — advisories,
+# licenses, and bans. Keep the allow-list tight: every current dependency is
+# MIT or Apache-2.0, with `unicode-ident` additionally pulling Unicode-3.0.
+
+[graph]
+# The decoder builds and is audited on every target we ship to; evaluate the
+# dependency graph for all of them so a platform-only dep can't slip an
+# unreviewed licence past this gate.
+all-features = true
+
+[advisories]
+# RUSTSEC advisory database: fail on any known vulnerability or yanked crate.
+yanked = "deny"
+ignore = []
+
+[licenses]
+# SPDX identifiers permitted for every crate in the graph. All present deps
+# resolve to one of these; a new dep with anything else fails the lint job.
+allow = ["MIT", "Apache-2.0", "Unicode-3.0"]
+confidence-threshold = 0.9
+
+[bans]
+# Duplicate versions are a warning (informational), not a hard failure; a
+# literal `*` version requirement is banned outright.
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+# Only crates.io; no unknown registries or git sources.
+unknown-registry = "deny"
+unknown-git = "deny"

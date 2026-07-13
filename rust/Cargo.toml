@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
 members = ["ahn-heightfield"]
-# spike-poc is a throwaway interop crate (Task 1b) with its own `[workspace]`
-# root; it is removed in Task 4d. Exclude it so it never joins this workspace.
-exclude = ["spike-poc"]
+# The `fuzz` crate carries its own `[workspace]` root so it never joins this
+# workspace's build/test gates; it is reached only via `cargo fuzz`.
+exclude = ["ahn-heightfield/fuzz"]

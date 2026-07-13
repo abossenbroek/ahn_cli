@@ -222,4 +222,4 @@ def test_tiles3d_heightfield_profile_builds_and_writes_provenance(
     assert (out / "tiles" / "0-0-0.jpg").is_file()
     document = json.loads((out / "provenance.json").read_text())
     assert document["profile"] == "heightfield"
-    assert document["quantization"]["height_bits"] == 16
+    assert document["quantization"]["height_bits"] == 12

@@ -1,9 +1,9 @@
 {
   "chunk": {
     "magic": "AHNH",
-    "version": 1,
+    "version": 2,
     "zstandard": "0.23.0",
-    "zstd_level": 19
+    "zstd_level": 3
   },
   "jpeg": {
     "optimize": false,
@@ -14,7 +14,9 @@
   },
   "profile": "heightfield",
   "quantization": {
-    "height_bits": 16,
+    "height_bits": 12,
+    "max_axis_error_m": 0.025,
+    "max_level": 4095,
     "scheme": "per-tile single-axis affine over the NAP height range; round-half-even; dequantization z = level * z_scale + z_offset; a zero-extent (flat) axis uses the epsilon scale."
   }
 }

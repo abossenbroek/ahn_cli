@@ -69,8 +69,10 @@ def test_heightfield_document_records_profile_and_quantization() -> None:
     assert document["profile"] == "heightfield"
     quant = document["quantization"]
     assert isinstance(quant, dict)
-    assert quant["height_bits"] == quantize.UINT16_MAX.bit_length()
-    assert quant["height_bits"] == 16
+    assert quant["height_bits"] == heightfield.MAX_LEVEL.bit_length()
+    assert quant["height_bits"] == 12
+    assert quant["max_level"] == heightfield.MAX_LEVEL
+    assert quant["max_axis_error_m"] == heightfield.MAX_AXIS_ERROR_M
     assert isinstance(quant["scheme"], str)
     assert "NAP height" in quant["scheme"]
 

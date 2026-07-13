@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 import struct
+import zlib
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -41,8 +42,9 @@ if TYPE_CHECKING:
 
     import numpy.typing as npt
 
-_HEADER_FMT = "<4sIII" + "d" * 11 + "Q"
-_F_Z_SCALE, _F_RTC_X, _F_REGION_W, _F_PAYLOAD_LEN = 5, 6, 9, 15
+_PREFIX_FMT = "<4sIII" + "d" * 11 + "Q"
+_HEADER_FMT = _PREFIX_FMT + "II"
+_F_Z_SCALE, _F_RTC_X, _F_REGION_W, _F_PAYLOAD_LEN, _F_PAD = 5, 6, 9, 15, 17
 
 
 @pytest.fixture
@@ -73,28 +75,41 @@ def _texture(site: tuple[Path, Path, Path]) -> Path:
     return site[0] / "tiles" / "2-0-0.jpg"
 
 
+def _rebuild(fields: list[object], frame: bytes) -> bytes:
+    """Repack a header from ``fields`` with a valid crc, then the frame."""
+    prefix = struct.pack(_PREFIX_FMT, *fields[:16])
+    crc = zlib.crc32(prefix) & 0xFFFFFFFF
+    return prefix + struct.pack("<II", crc, fields[_F_PAD]) + frame
+
+
 def _patch_header(path: Path, index: int, value: object) -> None:
-    """Overwrite one header struct field in place, leaving the frame."""
+    """Overwrite one header field in place, re-signing the header CRC.
+
+    The CRC is recomputed so a downstream verifier check (not the decoder's
+    CRC guard) attributes the failure.
+    """
     data = bytearray(path.read_bytes())
     fields = list(struct.unpack(_HEADER_FMT, bytes(data[:HEADER_SIZE])))
     fields[index] = value
-    data[:HEADER_SIZE] = struct.pack(_HEADER_FMT, *fields)
-    path.write_bytes(bytes(data))
+    path.write_bytes(_rebuild(fields, bytes(data[HEADER_SIZE:])))
 
 
 def _repack_levels(
     path: Path, mutate: Callable[[npt.NDArray[np.uint16]], None]
 ) -> None:
-    """Decode, mutate the levels, recompress, fix the declared length."""
+    """Decode, mutate the levels, recompress, fix the length and crc."""
     data = bytearray(path.read_bytes())
     fields = list(struct.unpack(_HEADER_FMT, bytes(data[:HEADER_SIZE])))
     ints = decode_heightfield(bytes(data)).z_ints.copy()
     mutate(ints)
     frame = zstd.ZstdCompressor(
-        level=ZSTD_LEVEL, write_content_size=True, threads=0
+        level=ZSTD_LEVEL,
+        write_content_size=True,
+        write_checksum=True,
+        threads=0,
     ).compress(ints.astype("<u2").tobytes())
     fields[_F_PAYLOAD_LEN] = len(frame)
-    path.write_bytes(struct.pack(_HEADER_FMT, *fields) + frame)
+    path.write_bytes(_rebuild(fields, frame))
 
 
 def test_pristine_heightfield_build_verifies(
@@ -145,7 +160,9 @@ def test_off_by_one_level_fires_requantization(
     """
 
     def bump(ints: npt.NDArray[np.uint16]) -> None:
-        ints[0, 0] = (int(ints[0, 0]) + 1) % 65536
+        # Stay inside the 12-bit range so requantization, not the level-cap
+        # reject, attributes the failure.
+        ints[0, 0] = 1 if int(ints[0, 0]) == 0 else 0
 
     _repack_levels(_chunk(hf_site), bump)
     with pytest.raises(Tiles3dError, match="requantization of the source"):
@@ -182,6 +199,21 @@ def test_dequant_bound_is_enforced(
     with pytest.raises(
         Tiles3dError, match="exceeds the documented quantization error bound"
     ):
+        _verify(hf_site)
+
+
+def test_error_cap_is_enforced(
+    hf_site: tuple[Path, Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bound above the absolute cap is refused.
+
+    The genuine tile's bound is well under 0.025 m, so forcing the cap below
+    it proves the verifier rejects any tile whose ``z_scale / 2`` ever
+    exceeds :data:`~ahn_cli.tiles3d.heightfield.MAX_AXIS_ERROR_M`.
+    """
+    monkeypatch.setattr(verify_hf_module, "MAX_AXIS_ERROR_M", 1e-12)
+    with pytest.raises(Tiles3dError, match="exceeds the .* m absolute cap"):
         _verify(hf_site)
 
 

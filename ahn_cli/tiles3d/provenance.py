@@ -28,6 +28,8 @@ import json
 
 from ahn_cli.tiles3d.heightfield import (
     MAGIC,
+    MAX_AXIS_ERROR_M,
+    MAX_LEVEL,
     VERSION,
     ZSTD_LEVEL,
     zstandard_version,
@@ -129,9 +131,10 @@ def heightfield_provenance_document() -> dict[str, object]:
 
     Contract:
         - ``profile`` is ``"heightfield"``; ``quantization`` records the
-          height-axis bit depth (from
-          :data:`~ahn_cli.tiles3d.quantize.UINT16_MAX`) and the one-line
-          height quantization note; ``jpeg`` records the pinned JPEG
+          12-bit height-axis depth, maximum level and absolute error cap
+          (from :data:`~ahn_cli.tiles3d.heightfield.MAX_LEVEL` and
+          :data:`~ahn_cli.tiles3d.heightfield.MAX_AXIS_ERROR_M`) plus the
+          one-line height quantization note; ``jpeg`` records the pinned JPEG
           constants plus the Pillow version; ``chunk`` records the ``.hf``
           magic, version, the pinned zstd level and the ``zstandard``
           version that fix the payload bytes.
@@ -140,7 +143,9 @@ def heightfield_provenance_document() -> dict[str, object]:
     return {
         "profile": "heightfield",
         "quantization": {
-            "height_bits": UINT16_MAX.bit_length(),
+            "height_bits": MAX_LEVEL.bit_length(),
+            "max_level": MAX_LEVEL,
+            "max_axis_error_m": MAX_AXIS_ERROR_M,
             "scheme": _HEIGHTFIELD_QUANTIZATION_SCHEME,
         },
         "jpeg": _jpeg_block(),

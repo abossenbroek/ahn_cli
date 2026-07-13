@@ -16,9 +16,12 @@ the whole-file byte-identity backstop:
     reloaded terrain (the same mesh + :func:`~ahn_cli.tiles3d.quantize.quantize_axis`
     the builder used).
 3.  **requantization** — the decoded height levels equal an independent
+    12-bit (:data:`~ahn_cli.tiles3d.heightfield.MAX_LEVEL`)
     :func:`~ahn_cli.tiles3d.quantize.quantize_axis` of the genuine source
-    heights bit for bit, and the dequantized heights sit within the exported
-    :func:`~ahn_cli.tiles3d.quantize.axis_error_bound` (zero slack).
+    heights bit for bit, the dequantized heights sit within the exported
+    :func:`~ahn_cli.tiles3d.quantize.axis_error_bound` (zero slack), and that
+    bound is within the absolute
+    :data:`~ahn_cli.tiles3d.heightfield.MAX_AXIS_ERROR_M` cap.
 4.  **JPEG texture** — the sibling ``.jpg`` is baseline sequential,
     byte-equals an independent :func:`~ahn_cli.tiles3d.jpeg.encode_jpeg` of
     the sampled ortho tile, and decodes within
@@ -41,7 +44,11 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from ahn_cli.tiles3d.errors import Tiles3dError
-from ahn_cli.tiles3d.heightfield import decode_heightfield
+from ahn_cli.tiles3d.heightfield import (
+    MAX_AXIS_ERROR_M,
+    MAX_LEVEL,
+    decode_heightfield,
+)
 from ahn_cli.tiles3d.jpeg import (
     decode_jpeg,
     encode_jpeg,
@@ -100,7 +107,7 @@ def verify_heightfield_tile(
     mesh = build_tile_mesh(terrain, tile, geodesy)
     heights = terrain.z[np.ix_(mesh.rows, mesh.cols)]
     grid_height, grid_width = heights.shape
-    quantized = quantize_axis(heights.reshape(-1))
+    quantized = quantize_axis(heights.reshape(-1), MAX_LEVEL)
     decoded = decode_heightfield((out_dir / content_uri).read_bytes())
     _verify_header(
         decoded, quantized, mesh, (grid_width, grid_height), content_uri
@@ -167,6 +174,11 @@ def _verify_requantization(
         error <= bound,
         f"{uri}: a dequantized height exceeds the documented quantization "
         "error bound.",
+    )
+    _require(
+        bound <= MAX_AXIS_ERROR_M,
+        f"{uri}: the heightfield error bound {bound} m exceeds the "
+        f"{MAX_AXIS_ERROR_M} m absolute cap.",
     )
 
 

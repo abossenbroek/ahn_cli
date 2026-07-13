@@ -29,6 +29,28 @@ let height_m = tile.dequantize_at(row, col); // NAP height in metres
 header CRC-32 before trusting any dimension); `Heightfield::decode` additionally
 decompresses and validates the `width * height` `uint16` quantized height plane.
 
+To read a whole `tiles.hfp` pack, open it over any positioned-read backing
+store (a byte slice, an mmap slice, or a `std::fs::File`):
+
+```rust
+use ahn_heightfield::{Archive, TileKey};
+
+// `reader` is anything implementing `ReadAt` — `&[u8]`, a File, an mmap slice.
+let archive = Archive::open(reader)?;
+let root = archive.find(TileKey { level: 0, tx: 0, ty: 0, tz: 0 }).unwrap();
+let tile = archive.decode_tile(root)?;         // decode + entry cross-check
+let height_m = tile.dequantize_at(0, 0);       // NAP height in metres
+for child in archive.children(root) { /* implicit quadtree children */ }
+archive.verify_blobs()?;                        // cold install/repair check
+# Ok::<(), ahn_heightfield::HfError>(())
+```
+
+`Archive::open` performs the full structural / ordering / alignment / CRC
+validation of the header and index but never reads the cold hash section;
+`verify_blobs` is the separate install/repair path that checks `dataset_id`
+and every per-blob SHA-256. `Archive<R>` is `Send + Sync` whenever `R` is, so
+one opened archive serves concurrent tile loads.
+
 ## Sibling texture convention
 
 A `.hf` height chunk carries only geometry. The draped texture is a **baseline
@@ -41,9 +63,9 @@ runtime hands to its own image decoder.
 ## Scope
 
 This is a decode-first library. The chunk layer (`ChunkHeader`, `Heightfield`)
-is implemented; the archive layer's foundational types (`ReadAt`, `TileKey`,
-`BlobSlot`) are in place, with the `Archive` reader and an optional `encode`
-feature arriving in later phases.
+and the archive layer (`Archive` over the `ReadAt` positioned-read trait, plus
+`PackHeader`, `Entry`, `LevelRun`, `TileKey`, `BlobSlot`) are implemented; an
+optional `encode` feature arrives in a later phase.
 
 ## License
 

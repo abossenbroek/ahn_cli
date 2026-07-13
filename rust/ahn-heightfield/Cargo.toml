@@ -16,12 +16,9 @@ categories = ["encoding", "science::geo", "game-development"]
 zstd = "0.13"
 # CRC-32/ISO-HDLC, bit-identical to Python's zlib.crc32.
 crc32fast = "1.4"
-thiserror = "2"
-
-[dev-dependencies]
-# Only the SHA-256 algorithm-conformance test needs this in Phase 4a; the
-# archive layer's blob verification (Task 4b) promotes it to a real dependency.
+# SHA-256 for the archive layer's dataset_id / per-blob verification.
 sha2 = "0.10"
+thiserror = "2"
 
 [package.metadata.docs.rs]
 all-features = true

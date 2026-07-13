@@ -8,6 +8,8 @@
 
 AHN CLI acquires and prepares Dutch elevation data — AHN (Actueel Hoogtebestand Nederland) point clouds, plus matched DSM and orthophoto layers — for a site defined by a city name, a bounding box, or a GeoJSON polygon. It produces deterministic, ready-to-use deliverables: filtered/thinned point clouds, position maps, and — via `reconcile` — a single point cloud coloured from the orthophoto.
 
+> **New to Dutch geodata?** [`docs/overview.md`](docs/overview.md) explains the domain concepts (AHN, orthophotos, NAP, RD New) and the output formats (including the `AHNP` terrain pack) and where the package fits — a good starting point for understanding the broader use.
+
 The CLI is organized as a small pipeline of subcommands rather than one big command:
 
 ```

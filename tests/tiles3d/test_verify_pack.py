@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import hashlib
 import json
 from typing import TYPE_CHECKING, Any, cast
 
@@ -199,6 +200,48 @@ def test_malformed_content_uri_is_refused(packed_site: _Site) -> None:
     )
     _dump_tileset(out, document)
     with pytest.raises(Tiles3dError, match="canonical"):
+        _verify(packed_site)
+
+
+def _repatch_manifest_file(out: Path, name: str) -> None:
+    """Recompute one manifest file record's sha256/size from disk.
+
+    Used after mutating a file the manifest already covers, so a
+    corruption test's failure attributes to the single check it targets
+    rather than a stale (and unrelated) manifest-recompute reject.
+    """
+    data = (out / name).read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
+
+    def _patch(files: dict[str, Any], dataset_id: str) -> str:
+        files[name] = {"sha256": digest, "size": len(data)}
+        return dataset_id
+
+    _rewrite_manifest(out, _patch)
+
+
+def test_content_uri_extension_mismatch_is_refused(
+    packed_site: _Site,
+) -> None:
+    """A uri whose extension is well-formed but wrong for this profile.
+
+    Distinct from :func:`test_malformed_content_uri_is_refused` (which
+    fails ``_URI_PATTERN.fullmatch`` outright): here the regex matches —
+    the uri is otherwise canonical — and only ``match.group(4) !=
+    expected_ext`` fires, e.g. a ``.glb`` uri in a heightfield build (whose
+    canonical extension is ``.hf``) or vice versa. The manifest is
+    repatched so only the witness parse fires.
+    """
+    out, _, _, profile = packed_site
+    wrong_ext = ".hf" if profile is Profile.GAME else ".glb"
+    document = _load_tileset(out)
+    leaf = _leaf(document)
+    leaf["content"]["uri"] = (
+        leaf["content"]["uri"].rsplit(".", 1)[0] + wrong_ext
+    )
+    _dump_tileset(out, document)
+    _repatch_manifest_file(out, "tileset.json")
+    with pytest.raises(Tiles3dError, match="is not the canonical tiles/"):
         _verify(packed_site)
 
 

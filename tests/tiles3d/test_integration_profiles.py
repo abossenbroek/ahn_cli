@@ -544,6 +544,73 @@ def test_size_budget_reports_heightfield_chunk_cost(
         )
 
 
+_HF_PAYLOAD_CEILING_BYTES_PER_PIXEL = 4.0
+"""Generous sanity ceiling: the codec bake-off predicts ~1.3-1.8 B/px on
+real terrain (12-bit quantization + zstd-3); this only alarms on a gross
+regression, not a tight budget."""
+
+
+def test_size_budget_reports_pack_overhead_and_hf_payload(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Print ``tiles.hfp``'s per-tile overhead and the heightfield B/px.
+
+    Builds a multi-tile (21-tile, 3-level) heightfield pack over a smooth
+    256px scene, then prints (a) the total ``tiles.hfp`` size and the
+    per-tile index+hash overhead — expected ~189 B/tile: the 96-byte
+    :data:`~ahn_cli.tiles3d.pack.INDEX_ENTRY_SIZE` entry plus the 64-byte
+    :data:`~ahn_cli.tiles3d.pack.HASH_RECORD_SIZE` hash record plus ~16
+    bytes of blob alignment padding plus the fixed 128-byte header
+    amortised across tiles — and (b) the heightfield payload cost in B/px
+    (12-bit quantization + zstd-3), predicted ~1.3-1.8 B/px on real terrain
+    by the codec bake-off; the conftest-style synthetic scene may read
+    differently, so the number is printed honestly rather than pinned. The
+    one hard assertion is the generous
+    :data:`_HF_PAYLOAD_CEILING_BYTES_PER_PIXEL` sanity ceiling.
+    """
+    ortho, heights = _smooth_pair(tmp_path, 256, 256)
+    out = tmp_path / "hf_overhead"
+    build_tiles3d(
+        ortho, heights, out, tile_pixels=64, profile=Profile.HEIGHTFIELD
+    )
+    pack = read_pack(out / "tiles.hfp")
+    tile_count = len(pack.entries)
+    total_bytes = (out / "tiles.hfp").stat().st_size
+
+    payload_bytes = 0
+    total_pixels = 0
+    blob_bytes = 0
+    for index in range(tile_count):
+        primary = pack.primary_blob(index)
+        texture = pack.texture_blob(index)
+        width, height = struct.unpack_from("<II", primary, 8)
+        payload_bytes += len(primary)
+        total_pixels += width * height
+        blob_bytes += len(primary) + (
+            len(texture) if texture is not None else 0
+        )
+    overhead_per_tile = (total_bytes - blob_bytes) / tile_count
+    payload_bytes_per_pixel = payload_bytes / total_pixels
+
+    with capsys.disabled():
+        _emit(
+            f"\n[size-budget] tiles.hfp pack ({tile_count} tiles, "
+            f"{total_bytes} bytes total): {overhead_per_tile:.1f} B/tile "
+            "index+hash overhead (96 entry + 64 hash + align + amortised "
+            "header)"
+        )
+        _emit(
+            "[size-budget] heightfield payload, 12-bit/zstd-3: "
+            f"{payload_bytes_per_pixel:.3f} B/px "
+            "(reference 1.3-1.8 B/px on real terrain)"
+        )
+
+    assert payload_bytes_per_pixel <= _HF_PAYLOAD_CEILING_BYTES_PER_PIXEL, (
+        f"heightfield payload {payload_bytes_per_pixel:.3f} B/px exceeds "
+        f"the {_HF_PAYLOAD_CEILING_BYTES_PER_PIXEL} B/px sanity ceiling"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Committed Rust-consumer fixtures (pinned geodesy, drift => red).
 # ---------------------------------------------------------------------------

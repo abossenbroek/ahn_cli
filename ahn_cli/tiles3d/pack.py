@@ -106,6 +106,8 @@ _ENTRY_FMT = "<4I7d2Q2I"
 _HASH_FMT = "<32s32s"
 
 _U32_MAX = 0xFFFFFFFF
+_U32_RANGE = 1 << 32
+_U64_RANGE = 1 << 64
 
 _REGION_FIELD_NAMES = (
     "region[0]",
@@ -331,8 +333,37 @@ def _order_entries(entries: Sequence[PackEntry]) -> list[PackEntry]:
         if index > 0 and ordered[index - 1].key.sort_key == key.sort_key:
             msg = f"pack has a duplicate tile key {key}."
             raise Tiles3dError(msg)
+        _require_u32(key.level, f"entry {key} level")
+        _require_u32(key.tx, f"entry {key} tx")
+        _require_u32(key.ty, f"entry {key} ty")
+        _require_u32(key.tz, f"entry {key} tz")
         _check_region(entry.region, entry.geometric_error, key)
     return ordered
+
+
+def _require_u32(value: int, field: str) -> int:
+    """Return ``value`` if it fits an unsigned 32-bit field, else reject.
+
+    A struct-level guard so an out-of-range key or blob size surfaces as a
+    :class:`~ahn_cli.tiles3d.errors.Tiles3dError` (naming the field and
+    value) rather than a raw ``struct.error``.
+    """
+    if not 0 <= value < _U32_RANGE:
+        msg = f"pack {field} {value} is out of range for a 32-bit field."
+        raise Tiles3dError(msg)
+    return value
+
+
+def _require_u64(value: int, field: str) -> int:
+    """Return ``value`` if it fits an unsigned 64-bit field, else reject.
+
+    Guards the computed absolute offsets/sizes the header and index pack as
+    ``uint64`` so an overflow is a typed error, not a ``struct.error``.
+    """
+    if not 0 <= value < _U64_RANGE:
+        msg = f"pack {field} {value} is out of range for a 64-bit field."
+        raise Tiles3dError(msg)
+    return value
 
 
 def _check_region(
@@ -426,6 +457,7 @@ def _stream(
         if not primary:
             msg = f"pack entry {entry.key} has an empty primary blob."
             raise Tiles3dError(msg)
+        _require_u32(len(primary), f"entry {entry.key} primary_size")
         cursor = _align(handle, cursor)
         primary_offset = cursor
         handle.write(primary)
@@ -487,6 +519,7 @@ def _write_texture(
     if not texture:
         msg = f"pack entry {key}: heightfield tile needs a non-empty texture."
         raise Tiles3dError(msg)
+    _require_u32(len(texture), f"entry {key} texture_size")
     cursor = _align(handle, cursor)
     texture_offset = cursor
     handle.write(texture)
@@ -524,8 +557,8 @@ def _pack_entry(
         key.tz,
         *entry.region,
         entry.geometric_error,
-        primary_offset,
-        texture_offset,
+        _require_u64(primary_offset, f"entry {key} primary_offset"),
+        _require_u64(texture_offset, f"entry {key} texture_offset"),
         primary_size,
         texture_size,
     )
@@ -544,13 +577,13 @@ def _pack_header(
         _HEADER_PREFIX_FMT,
         MAGIC,
         FORMAT_VERSION,
-        layout.tile_count,
-        layout.level_count,
+        _require_u32(layout.tile_count, "tile_count"),
+        _require_u32(layout.level_count, "level_count"),
         INDEX_OFFSET,
-        layout.index_size,
-        layout.hash_offset,
-        layout.hash_size,
-        file_size,
+        _require_u64(layout.index_size, "index_size"),
+        _require_u64(layout.hash_offset, "hash_offset"),
+        _require_u64(layout.hash_size, "hash_size"),
+        _require_u64(file_size, "file_size"),
         root_geometric_error,
         dataset_id,
         index_crc32,

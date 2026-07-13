@@ -21,6 +21,8 @@ import pytest
 
 from ahn_cli.tiles3d.errors import Tiles3dError
 from ahn_cli.tiles3d.pack import (
+    _U32_RANGE,  # pyright: ignore[reportPrivateUsage]
+    _U64_RANGE,  # pyright: ignore[reportPrivateUsage]
     BLOB_ALIGNMENT,
     CONTENT_KIND_GAME,
     CONTENT_KIND_HEIGHTFIELD,
@@ -34,6 +36,8 @@ from ahn_cli.tiles3d.pack import (
     NO_TEXTURE_SHA256,
     PackEntry,
     TileKey,
+    _require_u32,  # pyright: ignore[reportPrivateUsage]
+    _require_u64,  # pyright: ignore[reportPrivateUsage]
     read_pack,
     write_pack,
 )
@@ -647,6 +651,98 @@ def test_write_rejects_heightfield_without_texture() -> None:
 
 
 # --------------------------------------------------------------------------
+# Writer input-range guards (Tiles3dError, never struct.error)
+# --------------------------------------------------------------------------
+
+
+class _HugeBytes(bytes):
+    """A ``bytes`` whose ``__len__`` reports a >u32 size without allocating.
+
+    Lets the blob-size guard be exercised without a real 4 GiB buffer: the
+    guard runs on ``len(...)`` before the blob is ever written or hashed.
+    """
+
+    __slots__ = ()
+
+    def __len__(self) -> int:
+        return _U32_RANGE
+
+
+@pytest.mark.parametrize(
+    ("field", "key"),
+    [
+        ("level", TileKey(_U32_RANGE, 0, 0)),
+        ("tx", TileKey(0, -1, 0)),
+        ("tx", TileKey(0, _U32_RANGE, 0)),
+        ("ty", TileKey(0, 0, _U32_RANGE)),
+    ],
+)
+def test_write_rejects_out_of_range_key_field(
+    field: str, key: TileKey
+) -> None:
+    """An out-of-range key field is a Tiles3dError naming the field/value."""
+    entries = [PackEntry(key, (0.0, 0.0, 1.0, 1.0, 0.0, 1.0), 0.0)]
+    with pytest.raises(Tiles3dError, match=rf"{field} .* out of range"):
+        _write_one(entries, lambda _k: (b"x", b"y"), CONTENT_KIND_HEIGHTFIELD)
+
+
+def test_write_rejects_oversized_primary_blob() -> None:
+    """A primary blob larger than u32 is a Tiles3dError, not a struct.error."""
+    entries = [
+        PackEntry(TileKey(0, 0, 0), (0.0, 0.0, 1.0, 1.0, 0.0, 1.0), 0.0)
+    ]
+    with pytest.raises(Tiles3dError, match="primary_size .* out of range"):
+        _write_one(
+            entries,
+            lambda _k: (_HugeBytes(), b"y"),
+            CONTENT_KIND_HEIGHTFIELD,
+        )
+
+
+def test_write_rejects_oversized_texture_blob() -> None:
+    """A texture blob larger than u32 is a Tiles3dError, not a struct.error."""
+    entries = [
+        PackEntry(TileKey(0, 0, 0), (0.0, 0.0, 1.0, 1.0, 0.0, 1.0), 0.0)
+    ]
+    with pytest.raises(Tiles3dError, match="texture_size .* out of range"):
+        _write_one(
+            entries,
+            lambda _k: (b"hf", _HugeBytes()),
+            CONTENT_KIND_HEIGHTFIELD,
+        )
+
+
+@pytest.mark.parametrize(
+    ("guard", "bad", "width"),
+    [
+        (_require_u32, _U32_RANGE, "32-bit"),
+        (_require_u32, -1, "32-bit"),
+        (_require_u64, _U64_RANGE, "64-bit"),
+        (_require_u64, -1, "64-bit"),
+    ],
+)
+def test_range_guard_rejects_out_of_range(
+    guard: Callable[[int, str], int], bad: int, width: str
+) -> None:
+    """The u32/u64 guards reject out-of-range values (offset overflow path).
+
+    The computed absolute offsets/sizes the header and index pack cannot
+    overflow from any allocatable input, so the guard's rejecting branch is
+    exercised here directly; every real write exercises its accepting path.
+    """
+    with pytest.raises(
+        Tiles3dError, match=rf"out of range for a {width} field"
+    ):
+        guard(bad, "offset")
+
+
+def test_range_guard_accepts_in_range() -> None:
+    """The guards return an in-range value unchanged."""
+    assert _require_u32(5, "x") == 5
+    assert _require_u64(5, "x") == 5
+
+
+# --------------------------------------------------------------------------
 # Reader rejects — header
 # --------------------------------------------------------------------------
 
@@ -1038,7 +1134,10 @@ def test_reject_game_non_zero_texture_sha() -> None:
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("keep", [0, 64, 127, 128, 150, 300, -1])
+# keep=500 lands inside the hash section [448, 640); keep=700 lands mid-blob
+# in the blob region [640, 739) of the golden fixture — the spec's explicitly
+# named mid-hash and mid-blob truncation cases.
+@pytest.mark.parametrize("keep", [0, 64, 127, 128, 150, 300, 500, 700, -1])
 def test_reject_truncation_matrix(keep: int) -> None:
     """Truncation at any point (short header through last byte) is refused."""
     data = _write_hf()

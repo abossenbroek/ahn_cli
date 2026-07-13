@@ -27,7 +27,7 @@ from ahn_cli.tiles3d.heightfield import (
     ZSTD_LEVEL,
     decode_heightfield,
 )
-from ahn_cli.tiles3d.pack import TileKey
+from ahn_cli.tiles3d.pack import TileKey, read_pack
 from ahn_cli.tiles3d.profile import Profile
 from ahn_cli.tiles3d.verify import verify_tiles3d
 from tests.tiles3d.conftest import (
@@ -48,9 +48,13 @@ if TYPE_CHECKING:
 _PREFIX_FMT = "<4sIII" + "d" * 11 + "Q"
 _HEADER_FMT = _PREFIX_FMT + "II"
 _F_Z_SCALE, _F_RTC_X, _F_REGION_W, _F_PAYLOAD_LEN, _F_PAD = 5, 6, 9, 15, 17
+_F_REGION_MIN, _F_REGION_MAX = 13, 14
 
 _LEAF_KEY = TileKey(2, 0, 0)
 """The leaf tile whose blobs the corruption tests target inside the pack."""
+
+_ROOT_KEY = TileKey(0, 0, 0)
+"""The root (parent) tile, used where the check needs a non-leaf chunk."""
 
 
 @pytest.fixture
@@ -172,13 +176,92 @@ def test_wrong_rtc_centre_is_refused(
 def test_wrong_region_is_refused(
     hf_site: tuple[Path, Path, Path],
 ) -> None:
-    """A region that is not the tile's EPSG:4979 region is caught."""
-    chunk = _chunk_bytes(hf_site)
-    decoded = decode_heightfield(chunk)
-    _repack_chunk(
-        hf_site, _patch_header(chunk, _F_REGION_W, decoded.region[0] - 0.001)
+    """A chunk region that is not the tile's EPSG:4979 region is caught.
+
+    Raises a *parent* chunk's min-height to a value still inside its
+    enclosing pack-index range, so the chunk↔entry cross-check passes
+    (horizontal bit-equal, height contained) and the failure attributes to
+    :func:`verify_heightfield_tile`'s chunk-vs-source region comparison — not
+    the cross-check, which runs first.
+    """
+    chunk = pack_blob(hf_site[0] / "tiles.hfp", _ROOT_KEY)[0]
+    low, high = decode_heightfield(chunk).region[4:6]
+    patched = _patch_header(chunk, _F_REGION_MIN, low + (high - low) * 0.25)
+    repack_one(
+        hf_site[0] / "tiles.hfp",
+        _ROOT_KEY,
+        lambda _primary, texture: (patched, texture),
     )
     with pytest.raises(Tiles3dError, match="region does not equal"):
+        _verify(hf_site)
+
+
+def _root_entry_region(site: tuple[Path, Path, Path]) -> tuple[float, ...]:
+    """Return the root tile's enclosing pack-index region."""
+    pack = read_pack(site[0] / "tiles.hfp")
+    entry = next(
+        e for e in pack.entries if (e.level, e.tx, e.ty) == (0, 0, 0)
+    )
+    return entry.region
+
+
+def test_chunk_horizontal_region_flip_fires_cross_check(
+    hf_site: tuple[Path, Path, Path],
+) -> None:
+    """A chunk-header horizontal flip fails the chunk↔entry cross-check.
+
+    Runs before the chunk-vs-source check, so a west-longitude flip in the
+    leaf chunk attributes to the cross-check's horizontal bit-equality, not
+    to :func:`verify_heightfield_tile`.
+    """
+    chunk = _chunk_bytes(hf_site)
+    west = decode_heightfield(chunk).region[0]
+    _repack_chunk(hf_site, _patch_header(chunk, _F_REGION_W, west - 0.001))
+    with pytest.raises(
+        Tiles3dError, match="chunk horizontal region does not bit-equal"
+    ):
+        _verify(hf_site)
+
+
+def test_parent_chunk_height_escaping_entry_is_refused(
+    hf_site: tuple[Path, Path, Path],
+) -> None:
+    """A parent chunk whose height range escapes the entry range is caught.
+
+    Raising the root chunk's max-height above its *enclosing* pack-index
+    range breaks the cross-check's containment rule (horizontal stays equal),
+    the wrong-tile-under-right-key guard the pack spec assigns the verifier.
+    """
+    enclosing_max = _root_entry_region(hf_site)[5]
+    chunk = pack_blob(hf_site[0] / "tiles.hfp", _ROOT_KEY)[0]
+    patched = _patch_header(chunk, _F_REGION_MAX, enclosing_max + 1.0)
+    repack_one(
+        hf_site[0] / "tiles.hfp",
+        _ROOT_KEY,
+        lambda _primary, texture: (patched, texture),
+    )
+    with pytest.raises(
+        Tiles3dError, match="chunk height range is not contained"
+    ):
+        _verify(hf_site)
+
+
+def test_leaf_chunk_height_not_bit_equal_is_refused(
+    hf_site: tuple[Path, Path, Path],
+) -> None:
+    """A leaf chunk height that is contained but not bit-equal is caught.
+
+    For a leaf the chunk region must bit-equal the enclosing entry region in
+    all six doubles; a min-height nudged inward stays contained (so the
+    containment rule passes) yet trips the stronger leaf equality.
+    """
+    chunk = _chunk_bytes(hf_site)
+    low, high = decode_heightfield(chunk).region[4:6]
+    patched = _patch_header(chunk, _F_REGION_MIN, low + (high - low) * 0.25)
+    _repack_chunk(hf_site, patched)
+    with pytest.raises(
+        Tiles3dError, match="leaf heightfield chunk region does not bit-equal"
+    ):
         _verify(hf_site)
 
 

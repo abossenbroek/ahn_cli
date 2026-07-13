@@ -107,6 +107,54 @@ def repack_one(
     )
 
 
+def rewrite_pack(
+    hfp_path: Path,
+    mutate: Callable[[list[PackEntry]], list[PackEntry]],
+    *,
+    root_geometric_error: float | None = None,
+) -> None:
+    """Rewrite ``tiles.hfp`` with mutated index entries, blobs preserved.
+
+    Reads the pack, hands the reconstructed :class:`PackEntry` list to
+    ``mutate`` (which returns the replacement list — e.g. one entry's region
+    or geometric error altered), and repacks through the real
+    :func:`write_pack` so the container stays integrity-valid (CRCs, hash
+    section, ``dataset_id`` recomputed). Lets a corruption test drive the
+    verifier's *index*-level checks — the two-encodings witness and the
+    chunk↔entry cross-check — rather than a container reject. ``dataset_id``
+    naturally changes with the index; pass ``root_geometric_error`` to also
+    override the header field.
+    """
+    pack = read_pack(hfp_path)
+    entries = [
+        PackEntry(
+            key=TileKey(entry.level, entry.tx, entry.ty, entry.tz),
+            region=entry.region,
+            geometric_error=entry.geometric_error,
+        )
+        for entry in pack.entries
+    ]
+    blobs = {
+        TileKey(entry.level, entry.tx, entry.ty, entry.tz): (
+            pack.primary_blob(index),
+            pack.texture_blob(index),
+        )
+        for index, entry in enumerate(pack.entries)
+    }
+    header_error = (
+        pack.header.root_geometric_error
+        if root_geometric_error is None
+        else root_geometric_error
+    )
+    write_pack(
+        hfp_path,
+        mutate(entries),
+        lambda key: blobs[key],
+        root_geometric_error=header_error,
+        content_kind=pack.header.content_kind,
+    )
+
+
 MINX = 100.0
 MAXY = 103.0
 RES = 0.5

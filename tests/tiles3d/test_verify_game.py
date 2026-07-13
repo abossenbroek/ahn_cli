@@ -8,6 +8,7 @@ independently of the whole-file byte-identity backstop.
 
 from __future__ import annotations
 
+import dataclasses
 import io
 import json
 import struct
@@ -30,6 +31,7 @@ from tests.tiles3d.conftest import (
     make_ortho,
     pack_blob,
     repack_one,
+    rewrite_pack,
     synth_rgb,
     write_exr,
 )
@@ -269,7 +271,13 @@ def test_non_dict_stream_extensions_is_refused(
 def test_shrunken_region_fails_dequantized_containment(
     game_site: tuple[Path, Path, Path],
 ) -> None:
-    """A stored region crushed below the geometry fails containment."""
+    """A stored region crushed below the geometry fails containment.
+
+    Crushes the leaf's height range identically in the tileset *and* the pack
+    index, so the two-encodings witness still sees them agree and the failure
+    attributes to the game verifier's dequantized-vertex containment rather
+    than to the witness.
+    """
     out = game_site[0]
     document = cast(
         "dict[str, Any]", json.loads((out / "tileset.json").read_text())
@@ -277,9 +285,21 @@ def test_shrunken_region_fails_dequantized_containment(
     leaf = document["root"]["children"][0]["children"][0]
     region = leaf["boundingVolume"]["region"]
     region[5] = region[4] + 1e-9  # crush the height range
+    crushed = tuple(float(v) for v in region)
     (out / "tileset.json").write_text(
         json.dumps(document, sort_keys=True, indent=2) + "\n"
     )
+
+    def crush(entries: list[Any]) -> list[Any]:
+        return [
+            dataclasses.replace(entry, region=crushed)
+            if (entry.key.level, entry.key.tx, entry.key.ty)
+            == (_LEAF_KEY.level, _LEAF_KEY.tx, _LEAF_KEY.ty)
+            else entry
+            for entry in entries
+        ]
+
+    rewrite_pack(out / "tiles.hfp", crush)
     with pytest.raises(
         Tiles3dError, match="lies outside an enclosing region"
     ):

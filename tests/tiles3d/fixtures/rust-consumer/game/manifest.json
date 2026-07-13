@@ -1,0 +1,18 @@
+{
+  "algorithm": "sha256",
+  "dataset_id": "68c7b96de55132765cc04528231a8130be1eb2f6b786b1433f69dca2fc80c6e8",
+  "files": {
+    "provenance.json": {
+      "sha256": "06e0a0da40f62681145763b0b1f06dc814b01099d5340905e94b2872ab4b9b3d",
+      "size": 776
+    },
+    "tiles.hfp": {
+      "sha256": "57103c0c58ed10ffde072a258b49bb6e3d320303e904f86dea40c98a2f231ef3",
+      "size": 17380
+    },
+    "tileset.json": {
+      "sha256": "a539e123893d46cb7914fa599e2f2b2ff1010d28fc67d5b772b910a8b18a8f04",
+      "size": 1797
+    }
+  }
+}

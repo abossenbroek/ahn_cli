@@ -47,3 +47,27 @@ check: lint typos typecheck test format-check
 .PHONY: run
 run:
 	uv run ahn_cli $(ARGS)
+
+# --- Rust crate (ahn-heightfield) -------------------------------------------
+# Mirror the .github/workflows/rust.yml gates. Kept separate from `check`: CI
+# runs the Python and Rust workflows independently, so `make check` stays
+# Python-only. `rust-lint` needs cargo-deny installed (`cargo install --locked
+# cargo-deny`), matching the CI lint job.
+
+.PHONY: rust-fmt
+rust-fmt:
+	cd rust && cargo fmt --all
+
+.PHONY: rust-lint
+rust-lint:
+	cd rust && cargo fmt --all --check
+	cd rust && cargo clippy --all-targets --all-features -- -D warnings
+	cd rust && cargo deny check
+	cd rust && RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
+
+.PHONY: rust-test
+rust-test:
+	cd rust && cargo test --all-features
+
+.PHONY: rust-check
+rust-check: rust-lint rust-test

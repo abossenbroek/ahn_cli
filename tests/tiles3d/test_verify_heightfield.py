@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import io
 import struct
-from typing import TYPE_CHECKING
+import zlib
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import pytest
@@ -26,11 +27,14 @@ from ahn_cli.tiles3d.heightfield import (
     ZSTD_LEVEL,
     decode_heightfield,
 )
+from ahn_cli.tiles3d.pack import TileKey, read_pack
 from ahn_cli.tiles3d.profile import Profile
 from ahn_cli.tiles3d.verify import verify_tiles3d
 from tests.tiles3d.conftest import (
     grid_for_ortho,
     make_ortho,
+    pack_blob,
+    repack_one,
     synth_rgb,
     write_exr,
 )
@@ -41,8 +45,16 @@ if TYPE_CHECKING:
 
     import numpy.typing as npt
 
-_HEADER_FMT = "<4sIII" + "d" * 11 + "Q"
-_F_Z_SCALE, _F_RTC_X, _F_REGION_W, _F_PAYLOAD_LEN = 5, 6, 9, 15
+_PREFIX_FMT = "<4sIII" + "d" * 11 + "Q"
+_HEADER_FMT = _PREFIX_FMT + "II"
+_F_Z_SCALE, _F_RTC_X, _F_REGION_W, _F_PAYLOAD_LEN, _F_PAD = 5, 6, 9, 15, 17
+_F_REGION_MIN, _F_REGION_MAX = 13, 14
+
+_LEAF_KEY = TileKey(2, 0, 0)
+"""The leaf tile whose blobs the corruption tests target inside the pack."""
+
+_ROOT_KEY = TileKey(0, 0, 0)
+"""The root (parent) tile, used where the check needs a non-leaf chunk."""
 
 
 @pytest.fixture
@@ -65,36 +77,67 @@ def _verify(site: tuple[Path, Path, Path]) -> None:
     )
 
 
-def _chunk(site: tuple[Path, Path, Path]) -> Path:
-    return site[0] / "tiles" / "2-0-0.hf"
+def _chunk_bytes(site: tuple[Path, Path, Path]) -> bytes:
+    """Return the leaf tile's pristine ``.hf`` bytes from the pack."""
+    return pack_blob(site[0] / "tiles.hfp", _LEAF_KEY)[0]
 
 
-def _texture(site: tuple[Path, Path, Path]) -> Path:
-    return site[0] / "tiles" / "2-0-0.jpg"
+def _texture_bytes(site: tuple[Path, Path, Path]) -> bytes:
+    """Return the leaf tile's pristine ``.jpg`` texture bytes from the pack."""
+    return cast("bytes", pack_blob(site[0] / "tiles.hfp", _LEAF_KEY)[1])
 
 
-def _patch_header(path: Path, index: int, value: object) -> None:
-    """Overwrite one header struct field in place, leaving the frame."""
-    data = bytearray(path.read_bytes())
-    fields = list(struct.unpack(_HEADER_FMT, bytes(data[:HEADER_SIZE])))
+def _repack_chunk(site: tuple[Path, Path, Path], chunk: bytes) -> None:
+    """Repack ``tiles.hfp`` with the leaf tile's ``.hf`` replaced."""
+    repack_one(
+        site[0] / "tiles.hfp",
+        _LEAF_KEY,
+        lambda _primary, texture: (chunk, texture),
+    )
+
+
+def _repack_texture(site: tuple[Path, Path, Path], texture: bytes) -> None:
+    """Repack ``tiles.hfp`` with the leaf tile's ``.jpg`` texture replaced."""
+    repack_one(
+        site[0] / "tiles.hfp",
+        _LEAF_KEY,
+        lambda primary, _texture: (primary, texture),
+    )
+
+
+def _rebuild(fields: list[object], frame: bytes) -> bytes:
+    """Repack a header from ``fields`` with a valid crc, then the frame."""
+    prefix = struct.pack(_PREFIX_FMT, *fields[:16])
+    crc = zlib.crc32(prefix) & 0xFFFFFFFF
+    return prefix + struct.pack("<II", crc, fields[_F_PAD]) + frame
+
+
+def _patch_header(chunk: bytes, index: int, value: object) -> bytes:
+    """Return ``chunk`` with one header field overwritten, CRC re-signed.
+
+    The CRC is recomputed so a downstream verifier check (not the decoder's
+    CRC guard) attributes the failure.
+    """
+    fields = list(struct.unpack(_HEADER_FMT, chunk[:HEADER_SIZE]))
     fields[index] = value
-    data[:HEADER_SIZE] = struct.pack(_HEADER_FMT, *fields)
-    path.write_bytes(bytes(data))
+    return _rebuild(fields, chunk[HEADER_SIZE:])
 
 
 def _repack_levels(
-    path: Path, mutate: Callable[[npt.NDArray[np.uint16]], None]
-) -> None:
-    """Decode, mutate the levels, recompress, fix the declared length."""
-    data = bytearray(path.read_bytes())
-    fields = list(struct.unpack(_HEADER_FMT, bytes(data[:HEADER_SIZE])))
-    ints = decode_heightfield(bytes(data)).z_ints.copy()
+    chunk: bytes, mutate: Callable[[npt.NDArray[np.uint16]], None]
+) -> bytes:
+    """Decode, mutate the levels, recompress, fix the length and crc."""
+    fields = list(struct.unpack(_HEADER_FMT, chunk[:HEADER_SIZE]))
+    ints = decode_heightfield(chunk).z_ints.copy()
     mutate(ints)
     frame = zstd.ZstdCompressor(
-        level=ZSTD_LEVEL, write_content_size=True, threads=0
+        level=ZSTD_LEVEL,
+        write_content_size=True,
+        write_checksum=True,
+        threads=0,
     ).compress(ints.astype("<u2").tobytes())
     fields[_F_PAYLOAD_LEN] = len(frame)
-    path.write_bytes(struct.pack(_HEADER_FMT, *fields) + frame)
+    return _rebuild(fields, frame)
 
 
 def test_pristine_heightfield_build_verifies(
@@ -108,8 +151,11 @@ def test_wrong_z_scale_is_refused(
     hf_site: tuple[Path, Path, Path],
 ) -> None:
     """A z_scale that is not the recomputed quantizer scale is caught."""
-    decoded = decode_heightfield(_chunk(hf_site).read_bytes())
-    _patch_header(_chunk(hf_site), _F_Z_SCALE, decoded.z_scale * 2.0)
+    chunk = _chunk_bytes(hf_site)
+    decoded = decode_heightfield(chunk)
+    _repack_chunk(
+        hf_site, _patch_header(chunk, _F_Z_SCALE, decoded.z_scale * 2.0)
+    )
     with pytest.raises(Tiles3dError, match="z_offset/z_scale"):
         _verify(hf_site)
 
@@ -118,8 +164,11 @@ def test_wrong_rtc_centre_is_refused(
     hf_site: tuple[Path, Path, Path],
 ) -> None:
     """An rtc_centre that is not the tile's RTC anchor is caught."""
-    decoded = decode_heightfield(_chunk(hf_site).read_bytes())
-    _patch_header(_chunk(hf_site), _F_RTC_X, decoded.rtc_centre[0] + 1.0)
+    chunk = _chunk_bytes(hf_site)
+    decoded = decode_heightfield(chunk)
+    _repack_chunk(
+        hf_site, _patch_header(chunk, _F_RTC_X, decoded.rtc_centre[0] + 1.0)
+    )
     with pytest.raises(Tiles3dError, match="rtc_centre"):
         _verify(hf_site)
 
@@ -127,10 +176,92 @@ def test_wrong_rtc_centre_is_refused(
 def test_wrong_region_is_refused(
     hf_site: tuple[Path, Path, Path],
 ) -> None:
-    """A region that is not the tile's EPSG:4979 region is caught."""
-    decoded = decode_heightfield(_chunk(hf_site).read_bytes())
-    _patch_header(_chunk(hf_site), _F_REGION_W, decoded.region[0] - 0.001)
+    """A chunk region that is not the tile's EPSG:4979 region is caught.
+
+    Raises a *parent* chunk's min-height to a value still inside its
+    enclosing pack-index range, so the chunk↔entry cross-check passes
+    (horizontal bit-equal, height contained) and the failure attributes to
+    :func:`verify_heightfield_tile`'s chunk-vs-source region comparison — not
+    the cross-check, which runs first.
+    """
+    chunk = pack_blob(hf_site[0] / "tiles.hfp", _ROOT_KEY)[0]
+    low, high = decode_heightfield(chunk).region[4:6]
+    patched = _patch_header(chunk, _F_REGION_MIN, low + (high - low) * 0.25)
+    repack_one(
+        hf_site[0] / "tiles.hfp",
+        _ROOT_KEY,
+        lambda _primary, texture: (patched, texture),
+    )
     with pytest.raises(Tiles3dError, match="region does not equal"):
+        _verify(hf_site)
+
+
+def _root_entry_region(site: tuple[Path, Path, Path]) -> tuple[float, ...]:
+    """Return the root tile's enclosing pack-index region."""
+    pack = read_pack(site[0] / "tiles.hfp")
+    entry = next(
+        e for e in pack.entries if (e.level, e.tx, e.ty) == (0, 0, 0)
+    )
+    return entry.region
+
+
+def test_chunk_horizontal_region_flip_fires_cross_check(
+    hf_site: tuple[Path, Path, Path],
+) -> None:
+    """A chunk-header horizontal flip fails the chunk↔entry cross-check.
+
+    Runs before the chunk-vs-source check, so a west-longitude flip in the
+    leaf chunk attributes to the cross-check's horizontal bit-equality, not
+    to :func:`verify_heightfield_tile`.
+    """
+    chunk = _chunk_bytes(hf_site)
+    west = decode_heightfield(chunk).region[0]
+    _repack_chunk(hf_site, _patch_header(chunk, _F_REGION_W, west - 0.001))
+    with pytest.raises(
+        Tiles3dError, match="chunk horizontal region does not bit-equal"
+    ):
+        _verify(hf_site)
+
+
+def test_parent_chunk_height_escaping_entry_is_refused(
+    hf_site: tuple[Path, Path, Path],
+) -> None:
+    """A parent chunk whose height range escapes the entry range is caught.
+
+    Raising the root chunk's max-height above its *enclosing* pack-index
+    range breaks the cross-check's containment rule (horizontal stays equal),
+    the wrong-tile-under-right-key guard the pack spec assigns the verifier.
+    """
+    enclosing_max = _root_entry_region(hf_site)[5]
+    chunk = pack_blob(hf_site[0] / "tiles.hfp", _ROOT_KEY)[0]
+    patched = _patch_header(chunk, _F_REGION_MAX, enclosing_max + 1.0)
+    repack_one(
+        hf_site[0] / "tiles.hfp",
+        _ROOT_KEY,
+        lambda _primary, texture: (patched, texture),
+    )
+    with pytest.raises(
+        Tiles3dError, match="chunk height range is not contained"
+    ):
+        _verify(hf_site)
+
+
+def test_leaf_chunk_height_not_bit_equal_is_refused(
+    hf_site: tuple[Path, Path, Path],
+) -> None:
+    """A leaf chunk height that is contained but not bit-equal is caught.
+
+    For a leaf the chunk region must bit-equal the enclosing entry region in
+    all six doubles; a min-height nudged inward stays contained (so the
+    containment rule passes) yet trips the stronger leaf equality.
+    """
+    chunk = _chunk_bytes(hf_site)
+    low, high = decode_heightfield(chunk).region[4:6]
+    patched = _patch_header(chunk, _F_REGION_MIN, low + (high - low) * 0.25)
+    _repack_chunk(hf_site, patched)
+    with pytest.raises(
+        Tiles3dError, match="leaf heightfield chunk region does not bit-equal"
+    ):
         _verify(hf_site)
 
 
@@ -145,9 +276,11 @@ def test_off_by_one_level_fires_requantization(
     """
 
     def bump(ints: npt.NDArray[np.uint16]) -> None:
-        ints[0, 0] = (int(ints[0, 0]) + 1) % 65536
+        # Stay inside the 12-bit range so requantization, not the level-cap
+        # reject, attributes the failure.
+        ints[0, 0] = 1 if int(ints[0, 0]) == 0 else 0
 
-    _repack_levels(_chunk(hf_site), bump)
+    _repack_chunk(hf_site, _repack_levels(_chunk_bytes(hf_site), bump))
     with pytest.raises(Tiles3dError, match="requantization of the source"):
         _verify(hf_site)
 
@@ -156,10 +289,9 @@ def test_corrupt_zstd_frame_is_refused(
     hf_site: tuple[Path, Path, Path],
 ) -> None:
     """A flipped byte in the zstd frame is caught at decode."""
-    path = _chunk(hf_site)
-    data = bytearray(path.read_bytes())
+    data = bytearray(_chunk_bytes(hf_site))
     data[HEADER_SIZE] ^= 0xFF  # break the zstd frame magic
-    path.write_bytes(bytes(data))
+    _repack_chunk(hf_site, bytes(data))
     with pytest.raises(Tiles3dError, match="not a valid zstd frame"):
         _verify(hf_site)
 
@@ -185,12 +317,18 @@ def test_dequant_bound_is_enforced(
         _verify(hf_site)
 
 
-def test_missing_texture_is_refused(
+def test_error_cap_is_enforced(
     hf_site: tuple[Path, Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A deleted sibling JPEG is caught by the link check."""
-    _texture(hf_site).unlink()
-    with pytest.raises(Tiles3dError, match="missing texture file"):
+    """A bound above the absolute cap is refused.
+
+    The genuine tile's bound is well under 0.025 m, so forcing the cap below
+    it proves the verifier rejects any tile whose ``z_scale / 2`` ever
+    exceeds :data:`~ahn_cli.tiles3d.heightfield.MAX_AXIS_ERROR_M`.
+    """
+    monkeypatch.setattr(verify_hf_module, "MAX_AXIS_ERROR_M", 1e-12)
+    with pytest.raises(Tiles3dError, match="exceeds the .* m absolute cap"):
         _verify(hf_site)
 
 
@@ -198,14 +336,13 @@ def test_progressive_jpeg_texture_is_refused(
     hf_site: tuple[Path, Path, Path],
 ) -> None:
     """A progressive-framed sibling texture fails the baseline check."""
-    path = _texture(hf_site)
-    with Image.open(io.BytesIO(path.read_bytes())) as image:
+    with Image.open(io.BytesIO(_texture_bytes(hf_site))) as image:
         rgb = np.array(image.convert("RGB"))
     buffer = io.BytesIO()
     Image.fromarray(rgb, mode="RGB").save(
         buffer, format="JPEG", progressive=True
     )
-    path.write_bytes(buffer.getvalue())
+    _repack_texture(hf_site, buffer.getvalue())
     with pytest.raises(Tiles3dError, match="baseline sequential JPEG"):
         _verify(hf_site)
 
@@ -214,22 +351,12 @@ def test_jpeg_recompressed_at_a_different_quality_is_refused(
     hf_site: tuple[Path, Path, Path],
 ) -> None:
     """A texture re-encoded at another quality fails JPEG byte-equality."""
-    path = _texture(hf_site)
-    with Image.open(io.BytesIO(path.read_bytes())) as image:
+    with Image.open(io.BytesIO(_texture_bytes(hf_site))) as image:
         rgb = np.array(image.convert("RGB"))
     buffer = io.BytesIO()
     Image.fromarray(rgb, mode="RGB").save(buffer, format="JPEG", quality=60)
-    path.write_bytes(buffer.getvalue())
+    _repack_texture(hf_site, buffer.getvalue())
     with pytest.raises(Tiles3dError, match="does not byte-equal"):
-        _verify(hf_site)
-
-
-def test_orphan_tile_file_is_refused(
-    hf_site: tuple[Path, Path, Path],
-) -> None:
-    """An extra unreferenced file in tiles/ is caught."""
-    (hf_site[0] / "tiles" / "stray.bin").write_bytes(b"junk")
-    with pytest.raises(Tiles3dError, match="not referenced by tileset.json"):
         _verify(hf_site)
 
 

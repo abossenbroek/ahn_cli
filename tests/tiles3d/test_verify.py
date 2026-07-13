@@ -7,6 +7,7 @@ one check guards, and asserts that check's message.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import struct
 from typing import TYPE_CHECKING, Any, cast
@@ -16,6 +17,8 @@ import pytest
 import ahn_cli.tiles3d.verify as verify_module
 from ahn_cli.tiles3d.build import build_tiles3d
 from ahn_cli.tiles3d.errors import Tiles3dError
+from ahn_cli.tiles3d.manifest import FileDigest, render_manifest
+from ahn_cli.tiles3d.pack import read_pack
 from ahn_cli.tiles3d.png import encode_png
 from ahn_cli.tiles3d.profile import Profile
 from ahn_cli.tiles3d.quadtree import TreePlan, plan_quadtree
@@ -538,9 +541,27 @@ def test_game_build_passes_the_game_verifier(
 def test_game_provenance_corruption_is_refused(
     game_site: tuple[Path, Path, Path],
 ) -> None:
-    """A tampered provenance.json fails the game byte-identity backstop."""
+    """A tampered provenance.json fails the game byte-identity backstop.
+
+    The manifest is rewritten to describe the tampered provenance (so the
+    manifest-recompute check, which runs earlier, still passes) — proving the
+    byte-identity backstop rejects a provenance that drifts from the source
+    rebuild even when the deliverable is internally self-consistent.
+    """
     out, ortho, heights = game_site
-    (out / "provenance.json").write_text("{}\n")
+    tampered = b"{}\n"
+    (out / "provenance.json").write_bytes(tampered)
+    dataset_id = read_pack(out / "tiles.hfp").header.dataset_id.hex()
+    files = {
+        name: FileDigest(
+            sha256=hashlib.sha256(data).hexdigest(), size=len(data)
+        )
+        for name in ("tileset.json", "provenance.json", "tiles.hfp")
+        for data in ((out / name).read_bytes(),)
+    }
+    (out / "manifest.json").write_bytes(
+        render_manifest(files, dataset_id).encode("utf-8")
+    )
     with pytest.raises(
         Tiles3dError, match="provenance.json does not byte-equal"
     ):

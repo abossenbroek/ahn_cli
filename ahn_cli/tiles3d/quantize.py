@@ -191,17 +191,24 @@ class QuantizedAxis:
     offset: float
 
 
-def quantize_axis(values: npt.NDArray[np.floating]) -> QuantizedAxis:
+def quantize_axis(
+    values: npt.NDArray[np.floating], max_level: int = UINT16_MAX
+) -> QuantizedAxis:
     """Quantize one axis of values to ``uint16`` (the position scheme, 1-D).
 
     Contract:
         - ``values``: a ``(n,)`` float array (``n >= 1``), all finite. Uses
           exactly the per-axis affine of :func:`quantize_positions`:
-          ``offset = min``, ``scale = extent / 65535`` (or
+          ``offset = min``, ``scale = extent / max_level`` (or
           :data:`EPSILON_SCALE` when the extent is 0), and
           ``ints = round_half_even((v - offset) / scale)`` clamped to
-          ``[0, 65535]`` — so a value quantized here matches the same value
-          quantized as one column of :func:`quantize_positions`.
+          ``[0, max_level]``.
+        - ``max_level`` is the largest quantization level, defaulting to
+          :data:`UINT16_MAX` — the 16-bit range the position/UV paths use, so
+          a value quantized here at the default matches the same value
+          quantized as one column of :func:`quantize_positions`. The
+          heightfield profile passes its own 12-bit maximum (``4095``); the
+          levels are still stored in the same 2-byte ``uint16`` container.
 
     Failure modes:
         - Raises :class:`~ahn_cli.tiles3d.errors.Tiles3dError` if ``values``
@@ -210,8 +217,8 @@ def quantize_axis(values: npt.NDArray[np.floating]) -> QuantizedAxis:
     data = _finite_1d(values, "axis")
     lo = float(data.min())
     extent = float(data.max()) - lo
-    scale = extent / UINT16_MAX if extent > 0.0 else EPSILON_SCALE
-    ints = np.clip(np.rint((data - lo) / scale), 0, UINT16_MAX).astype(
+    scale = extent / max_level if extent > 0.0 else EPSILON_SCALE
+    ints = np.clip(np.rint((data - lo) / scale), 0, max_level).astype(
         np.uint16,
     )
     return QuantizedAxis(ints=ints, scale=scale, offset=lo)

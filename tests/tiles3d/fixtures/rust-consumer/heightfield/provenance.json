@@ -1,9 +1,9 @@
 {
   "chunk": {
     "magic": "AHNH",
-    "version": 1,
+    "version": 2,
     "zstandard": "0.23.0",
-    "zstd_level": 19
+    "zstd_level": 3
   },
   "jpeg": {
     "optimize": false,
@@ -12,9 +12,22 @@
     "quality": 85,
     "subsampling": 2
   },
+  "pack": {
+    "alignment": 16,
+    "dataset_id": "08ed3cdde8cdce1125b05a02e8f2aef21df1f00a467b9e8d370068f731c8d2e8",
+    "format_version": 1,
+    "hash_algorithm": "sha256",
+    "magic": "AHNP"
+  },
+  "producer": {
+    "platform": "fixture-platform",
+    "python": "fixture-python"
+  },
   "profile": "heightfield",
   "quantization": {
-    "height_bits": 16,
+    "height_bits": 12,
+    "max_axis_error_m": 0.025,
+    "max_level": 4095,
     "scheme": "per-tile single-axis affine over the NAP height range; round-half-even; dequantization z = level * z_scale + z_offset; a zero-extent (flat) axis uses the epsilon scale."
   }
 }

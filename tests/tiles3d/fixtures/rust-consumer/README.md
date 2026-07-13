@@ -7,17 +7,28 @@ byte-stable input to test its `.glb` / `.hf` / `.jpg` readers against.
 
 ## What's here
 
-- `game/` — a `--profile game` tileset: `tileset.json`, five
-  `KHR_mesh_quantization` + `EXT_meshopt_compression` glb tiles with
-  embedded baseline JPEG textures, and the deterministic `provenance.json`.
-- `heightfield/` — a `--profile heightfield` tileset: `tileset.json`, five
-  `.hf` height chunks (see
-  `docs/superpowers/specs/2026-07-12-heightfield-chunk-format.md` — the
-  normative byte layout the Rust decoder codes against), five sibling
-  baseline `.jpg` textures, and `provenance.json`.
+Both lossy profiles now write a single **`AHNP` pack** (`tiles.hfp`) that
+bundles every content blob plus the binary scene index — the pack *is* the
+runtime's scene (see
+`docs/specs/2026-07-12-hfp-pack-format.md`, the normative byte
+layout the Rust `Archive` decoder codes against). The `tileset.json`,
+`provenance.json` and `manifest.json` files are demoted to deterministic
+debug / provenance / integrity sidecars; there is **no loose `tiles/`
+directory**.
+
+- `game/` — a `--profile game` deliverable: `tiles.hfp` (five
+  `KHR_mesh_quantization` + `EXT_meshopt_compression` glb blobs with
+  embedded baseline JPEG textures, `content_kind = 1`), `tileset.json`,
+  `provenance.json` (with the `pack` + `producer` blocks), `manifest.json`.
+- `heightfield/` — a `--profile heightfield` deliverable: `tiles.hfp` (five
+  `.hf` height chunks — see
+  `docs/specs/2026-07-12-heightfield-chunk-format.md` — each with
+  a sibling baseline `.jpg` texture blob, `content_kind = 0`),
+  `tileset.json`, `provenance.json`, `manifest.json`.
 
 Both are the byte-freeze scene: a 12×12 synthetic ortho/EXR pair at
-`tile_pixels=8`, which yields a two-level quadtree (one root + four leaves).
+`tile_pixels=8`, which yields a two-level quadtree (one root + four leaves =
+five packed tiles).
 
 ## Provenance and the pinned-geodesy caveat
 
@@ -33,6 +44,13 @@ transforms are exact inverses — so the game profile's quantization-bound
 containment verifier passes. **Absolute ECEF/geodetic coordinates in these
 fixtures are therefore synthetic**, not real Dutch positions; only the
 container framing, codec streams, and format layout are representative.
+
+The `provenance.json` `producer` record (host platform / Python version) is
+likewise **pinned** to fixed strings (`pin_producer`), because it otherwise
+varies across the CI matrix (3.10/3.11/3.12, differing OSes) and would make
+`provenance.json` — and, through the digest it carries, `manifest.json` —
+machine-specific. Real builds record the real host; only these committed
+fixtures use the pin.
 
 ## Regeneration
 

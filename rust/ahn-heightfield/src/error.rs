@@ -12,9 +12,10 @@ use crate::archive::BlobSlot;
 
 /// Which of the two wire formats a shared reject came from.
 ///
-/// Interpolates as `"chunk"` / `"pack"` in [`HfError`] messages.
+/// Interpolates as `"chunk"` / `"pack"` in [`HfError`] messages. A closed,
+/// permanent two-variant tag — the crate decodes exactly these two formats by
+/// design — so it is deliberately not `#[non_exhaustive]`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[non_exhaustive]
 pub enum Format {
     /// The `.hf` heightfield chunk format (magic `AHNH`).
     Chunk,
@@ -370,7 +371,7 @@ pub enum HfError {
         index: usize,
     },
     /// `dataset_id` did not equal SHA-256 of the hash section.
-    #[error("pack dataset_id mismatch")]
+    #[error("pack dataset_id mismatch: expected {expected:02x?}, computed {computed:02x?}")]
     DatasetIdMismatch {
         /// The `dataset_id` stored in the header.
         expected: [u8; 32],

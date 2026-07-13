@@ -252,7 +252,7 @@ impl TryFrom<&[u8]> for ChunkHeader {
 /// A behavioural type: it holds the cross-field invariant `levels.len() ==
 /// width * height` (enforced at decode) and exposes computed accessors, so its
 /// fields are private.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Heightfield {
     header: ChunkHeader,
     levels: Vec<u16>,

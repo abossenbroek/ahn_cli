@@ -20,6 +20,14 @@ decoding from an unaligned slice or an mmap is bit-identical.
 
 ### MSRV policy
 
+The **MSRV** (Minimum Supported Rust Version) is the oldest Rust toolchain
+this crate promises to compile on — a compatibility contract for consumers
+who pin an older `rustc` (common in CI, enterprises, and Linux distributions).
+Cargo reads the `rust-version` field and refuses to build on anything older
+with a clear error rather than a confusing compiler failure. Raising an MSRV
+can break such consumers, so it is a deliberate, documented change, not an
+incidental one.
+
 `rust-version = "1.77"` in `Cargo.toml` is enforced in CI on all three
 shipped OSes (`.github/workflows/rust.yml`'s `rust-test` matrix builds and
 tests at both `stable` and pinned `1.77`, on Ubuntu, macOS and Windows) — a

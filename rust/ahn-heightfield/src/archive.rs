@@ -11,7 +11,7 @@
 //! cursor-independent and safe to run concurrently.
 //!
 //! The normative byte layout is
-//! `docs/superpowers/specs/2026-07-12-hfp-pack-format.md`.
+//! `docs/specs/2026-07-12-hfp-pack-format.md`.
 
 use std::cmp::Ordering;
 use std::io;

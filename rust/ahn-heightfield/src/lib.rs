@@ -7,9 +7,9 @@
 //! normative specifications, not against the Python source:
 //!
 //! - the `.hf` chunk format —
-//!   `docs/superpowers/specs/2026-07-12-heightfield-chunk-format.md`
+//!   `docs/specs/2026-07-12-heightfield-chunk-format.md`
 //! - the `AHNP` pack format —
-//!   `docs/superpowers/specs/2026-07-12-hfp-pack-format.md`
+//!   `docs/specs/2026-07-12-hfp-pack-format.md`
 //!
 //! The API is two layers. The **chunk layer** ([`ChunkHeader`],
 //! [`Heightfield`]) decodes a single `.hf` height chunk. The **archive layer**

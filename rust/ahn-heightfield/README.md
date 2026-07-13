@@ -6,9 +6,9 @@ pack container. It reads the artifacts produced by the `ahn_cli` Python tool's
 two normative specifications, not against the Python source:
 
 - the `.hf` chunk format —
-  [`docs/superpowers/specs/2026-07-12-heightfield-chunk-format.md`](../../docs/superpowers/specs/2026-07-12-heightfield-chunk-format.md)
+  [`docs/specs/2026-07-12-heightfield-chunk-format.md`](../../docs/specs/2026-07-12-heightfield-chunk-format.md)
 - the `AHNP` pack format —
-  [`docs/superpowers/specs/2026-07-12-hfp-pack-format.md`](../../docs/superpowers/specs/2026-07-12-hfp-pack-format.md)
+  [`docs/specs/2026-07-12-hfp-pack-format.md`](../../docs/specs/2026-07-12-hfp-pack-format.md)
 
 The crate is `#![forbid(unsafe_code)]`; every multi-byte field is read with
 explicit little-endian byte reads (no `repr(C)` / `bytemuck` casts), so

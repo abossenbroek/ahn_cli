@@ -5,7 +5,7 @@ chunk instead of a glTF: a fixed 120-byte little-endian header followed by
 one zstandard frame of the tile's quantized elevation plane. This module
 is the only place that knows the ``.hf`` byte layout; the normative
 specification (version 2) the Rust runtime decoder codes against lives in
-``docs/superpowers/specs/2026-07-12-heightfield-chunk-format.md`` and this
+``docs/specs/2026-07-12-heightfield-chunk-format.md`` and this
 codec mirrors it exactly.
 
 **Coordinate contract (load-bearing).** The stored plane is the *quantized

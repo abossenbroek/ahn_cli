@@ -7,7 +7,7 @@
 //! decompresses and validates the plane.
 //!
 //! The normative byte layout is
-//! `docs/superpowers/specs/2026-07-12-heightfield-chunk-format.md`.
+//! `docs/specs/2026-07-12-heightfield-chunk-format.md`.
 
 use crate::error::{Format, HfError};
 

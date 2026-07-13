@@ -3,7 +3,7 @@ r"""Deterministic ``manifest.json`` codec (integrity sidecar).
 Both lossy profiles write a ``manifest.json`` alongside the pack: a
 byte-oriented integrity witness over every loose file plus ``tiles.hfp``,
 tying them to the pack's ``dataset_id``. The normative shape lives in
-``docs/superpowers/specs/2026-07-12-hfp-pack-format.md`` (*manifest.json
+``docs/specs/2026-07-12-hfp-pack-format.md`` (*manifest.json
 shape*); this module is the only place that knows it.
 
 **Determinism.** The rendered bytes are UTF-8, ``sort_keys``, 2-space

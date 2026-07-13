@@ -7,8 +7,20 @@
 //! one variant each rather than eight near-duplicates.
 
 use std::fmt;
+use std::fmt::Write as _;
 
 use crate::archive::BlobSlot;
+
+/// Formats a 32-byte digest as 64 contiguous lowercase hex characters, the
+/// same rendering `dataset_id` uses everywhere else in the format (e.g. the
+/// pack `manifest.json`), rather than a bracketed byte list.
+fn hex32(bytes: &[u8; 32]) -> String {
+    let mut s = String::with_capacity(64);
+    for b in bytes {
+        let _ = write!(s, "{b:02x}");
+    }
+    s
+}
 
 /// Which of the two wire formats a shared reject came from.
 ///
@@ -371,11 +383,39 @@ pub enum HfError {
         index: usize,
     },
     /// `dataset_id` did not equal SHA-256 of the hash section.
-    #[error("pack dataset_id mismatch: expected {expected:02x?}, computed {computed:02x?}")]
+    #[error(
+        "pack dataset_id mismatch: expected {}, computed {}",
+        hex32(expected),
+        hex32(computed)
+    )]
     DatasetIdMismatch {
         /// The `dataset_id` stored in the header.
         expected: [u8; 32],
         /// The digest computed over the hash section.
         computed: [u8; 32],
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dataset_id_mismatch_display_is_contiguous_hex() {
+        let err = HfError::DatasetIdMismatch {
+            expected: [0xab; 32],
+            computed: [0x01; 32],
+        };
+        let msg = err.to_string();
+        assert_eq!(
+            msg,
+            format!(
+                "pack dataset_id mismatch: expected {}, computed {}",
+                "ab".repeat(32),
+                "01".repeat(32),
+            ),
+        );
+        // Not the bracketed Debug-list rendering.
+        assert!(!msg.contains('['));
+    }
 }

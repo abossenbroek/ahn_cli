@@ -725,7 +725,12 @@ def copc_command(cloud: Path, out: Path, workdir: Path | None) -> None:
     "out",
     required=True,
     type=click.Path(file_okay=False, path_type=Path),
-    help="Directory receiving tileset.json and the tiles/ glbs.",
+    help=(
+        "Directory receiving the tileset: 'strict' writes tileset.json "
+        "and the tiles/ glbs; 'game'/'heightfield' write a packed "
+        "tiles.hfp plus tileset.json, provenance.json and manifest.json "
+        "sidecars."
+    ),
 )
 @click.option(
     "--profile",

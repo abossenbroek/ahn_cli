@@ -194,13 +194,19 @@ ahn_cli tiles3d --ortho data/delft/ortho/ortho.tif --heights data/delft/reconcil
 
 `--profile` selects the on-disk representation:
 
-- `strict` (default) — lossless float32 glTF with embedded PNG textures; writes no sidecar.
-- `game` — the compact runtime profile: quantized (`KHR_mesh_quantization`) geometry, `EXT_meshopt_compression` streams and baseline JPEG textures, plus a deterministic `provenance.json` recording the pinned quantization/JPEG/encoder settings.
-- `heightfield` — the vendor Approach-C profile: each tile is a self-describing `.hf` chunk (fixed header + zstd-framed `uint16` NAP-height plane; format spec in `docs/superpowers/specs/2026-07-12-heightfield-chunk-format.md`) with a sibling baseline JPEG, plus a `provenance.json`; the tileset stays valid 3D Tiles but `.hf` is a vendor content type the generic validator does not recognize.
+- `strict` (default) — lossless float32 glTF with embedded PNG textures, written as a loose `tileset.json` + `tiles/` directory; writes no other sidecar.
+- `game` — the compact runtime profile: quantized (`KHR_mesh_quantization`) geometry, `EXT_meshopt_compression` streams and baseline JPEG textures.
+- `heightfield` — the vendor Approach-C profile: each tile is a self-describing `.hf` chunk (120-byte header + a zstd level-3, checksummed frame of 12-bit-quantized `uint16` NAP-height levels, 25mm absolute-error cap; format spec in `docs/superpowers/specs/2026-07-12-heightfield-chunk-format.md`) with a sibling baseline JPEG.
+
+Both `game` and `heightfield` bundle every tile's blobs into a single binary `tiles.hfp` **AHNP pack** — a self-describing scene index that is the runtime's only input besides its own blobs (format spec `docs/superpowers/specs/2026-07-12-hfp-pack-format.md`) — plus a demoted `tileset.json` debug/interop sidecar, a deterministic `provenance.json` (pinned quantization/JPEG/encoder/zstd settings and the pack's content-version `dataset_id`), and a `manifest.json` integrity sidecar hashing every loose file plus the pack. `.hf`/`tiles.hfp` are vendor content types the generic OGC validator does not recognize, so a `heightfield` tileset is validated by `ahn_cli`'s own post-write verifier rather than the generic one.
 
 ```bash
 ahn_cli tiles3d --ortho data/delft/ortho/ortho.tif --heights data/delft/reconciled/reconciled.exr --out data/delft/tiles3d --profile game
 ```
+
+### Rust consumer crate
+
+`rust/ahn-heightfield` is a `#![forbid(unsafe_code)]` Rust decoder for both the `.hf` chunk and the `AHNP` pack, coding against the two normative specs above rather than the Python source: a chunk layer (`Heightfield::decode`) and an archive layer (`Archive::open` over any positioned-read backing store) plus an optional, off-by-default `encode` feature for the chunk layer. MSRV is `1.77`, enforced in CI (`.github/workflows/rust.yml`) across Ubuntu/macOS/Windows at both `stable` and `1.77`, alongside a 3-OS Python↔Rust cross-language round-trip against committed fixtures; run the same gates locally with `make rust-check`. See `rust/ahn-heightfield/README.md` for the full API and its MSRV policy.
 
 ## AHN classification classes
 

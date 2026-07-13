@@ -18,6 +18,20 @@ decoding from an unaligned slice or an mmap is bit-identical.
 - **MSRV:** Rust `1.77` (the encoder's `f64::round_ties_even`, the spec's
   normative round-half-even quantization rounding, stabilized in 1.77).
 
+### MSRV policy
+
+`rust-version = "1.77"` in `Cargo.toml` is enforced in CI on all three
+shipped OSes (`.github/workflows/rust.yml`'s `rust-test` matrix builds and
+tests at both `stable` and pinned `1.77`, on Ubuntu, macOS and Windows) — a
+transitive dependency bump that raises the effective MSRV fails that job.
+Transitive build-dependency drift is additionally capped at the manifest
+level: `jobserver` (pulled in via `cc` → `zstd-sys`) declares a higher
+`rust-version` from `0.1.35` onward, so `Cargo.toml` carries an explicit
+`jobserver = ">=0.1.30, <0.1.35"` constraint (the "phantom pin") alongside
+the committed `Cargo.lock`. This means a consumer building on Rust 1.77
+resolves a working dependency set by construction, not only because our own
+lockfile happens to pin one.
+
 ## Features
 
 | Feature  | Default | What it adds                                                                 |

@@ -26,6 +26,11 @@ crc32fast = "1.4"
 # SHA-256 for the archive layer's dataset_id / per-blob verification.
 sha2 = "0.10"
 thiserror = "2"
+# Not called directly — a resolver constraint that ships with the manifest.
+# jobserver 0.1.35 (pulled transitively via cc -> zstd-sys) declares
+# rust-version 1.85, which breaks our declared 1.77 MSRV; cap it below that so
+# downstream 1.77 consumers resolve a compatible version too, not just our lock.
+jobserver = ">=0.1.30, <0.1.35"
 
 [package.metadata.docs.rs]
 all-features = true

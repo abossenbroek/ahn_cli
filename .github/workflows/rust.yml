@@ -13,6 +13,8 @@ on:
     branches: [main, hf-v2]
     paths:
       - 'rust/**'
+      - 'ahn_cli/tiles3d/**'
+      - 'tests/tiles3d/regen_rust_fixtures.py'
       - 'tests/tiles3d/fixtures/rust-consumer/**'
       - 'docs/superpowers/specs/2026-07-12-heightfield-chunk-format.md'
       - 'docs/superpowers/specs/2026-07-12-hfp-pack-format.md'
@@ -20,6 +22,8 @@ on:
   pull_request:
     paths:
       - 'rust/**'
+      - 'ahn_cli/tiles3d/**'
+      - 'tests/tiles3d/regen_rust_fixtures.py'
       - 'tests/tiles3d/fixtures/rust-consumer/**'
       - 'docs/superpowers/specs/2026-07-12-heightfield-chunk-format.md'
       - 'docs/superpowers/specs/2026-07-12-hfp-pack-format.md'

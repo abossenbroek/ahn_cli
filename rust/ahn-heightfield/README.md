@@ -14,7 +14,7 @@ The crate is `#![forbid(unsafe_code)]`; every multi-byte field is read with
 explicit little-endian byte reads (no `repr(C)` / `bytemuck` casts), so
 decoding from an unaligned slice or an mmap is bit-identical.
 
-- **License:** `MIT OR Apache-2.0`
+- **License:** `MIT`
 - **MSRV:** Rust `1.77` (the encoder's `f64::round_ties_even`, the spec's
   normative round-half-even quantization rounding, stabilized in 1.77).
 
@@ -156,5 +156,5 @@ read-only: the normative pack producer is the Python tool.
 
 ## License
 
-Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
-[MIT license](LICENSE-MIT) at your option.
+Licensed under the [MIT license](LICENSE-MIT), matching the parent `ahn_cli`
+project.

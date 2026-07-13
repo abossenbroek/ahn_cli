@@ -4,7 +4,7 @@
 
 mod common;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::fs::File;
 use std::io;
 use std::sync::Arc;
@@ -147,6 +147,42 @@ fn open_never_reads_the_hash_section_but_verify_blobs_does() {
         touched_hash_section(&spy.reads.borrow()),
         "verify_blobs must read the hash section",
     );
+}
+
+// ---- a failing reader propagates as HfError::Io ---------------------------
+
+/// A `ReadAt` that serves the first `remaining_ok` reads from `data`, then
+/// injects an I/O error on every subsequent read. Mirrors the `SpyReader`
+/// wrapping pattern, but proves `HfError::Io` propagates from a reader that
+/// fails partway through `open` — not only on the very first read.
+struct FaultReader<'a> {
+    data: &'a [u8],
+    remaining_ok: Cell<usize>,
+}
+
+impl ReadAt for FaultReader<'_> {
+    fn read_at(&self, buf: &mut [u8], offset: u64) -> io::Result<usize> {
+        if self.remaining_ok.get() == 0 {
+            return Err(io::Error::other("injected read fault"));
+        }
+        self.remaining_ok.set(self.remaining_ok.get() - 1);
+        self.data.read_at(buf, offset)
+    }
+}
+
+#[test]
+fn open_propagates_a_reader_io_error() {
+    let bytes = common::read_pack("heightfield");
+    // The header read succeeds; the next positioned read (the file_size probe)
+    // fails, so the error surfaces from a deeper path than the first read.
+    let reader = FaultReader {
+        data: &bytes,
+        remaining_ok: Cell::new(1),
+    };
+    match Archive::open(reader) {
+        Ok(_) => panic!("a failing reader must not open"),
+        Err(err) => assert!(matches!(err, HfError::Io(_))),
+    }
 }
 
 // ---- verify_blobs failure paths -------------------------------------------

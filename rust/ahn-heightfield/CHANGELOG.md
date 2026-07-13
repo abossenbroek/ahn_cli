@@ -29,6 +29,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `MAX_QUANTIZED_LEVEL`, `ABSOLUTE_ERROR_CAP_M`; `PACK_MAGIC`,
   `PACK_FORMAT_VERSION`, `PACK_HEADER_LEN`, `PACK_DIR_ENTRY_LEN`,
   `PACK_INDEX_ENTRY_LEN`, `PACK_HASH_ENTRY_LEN`, `PACK_BLOB_ALIGN`).
+- Optional `encode` feature (off by default, no extra dependencies): the `.hf`
+  chunk encoder `encode_chunk` / `quantize_levels` / `ChunkFields`. Follows every
+  producer rule (12-bit round-half-even quantization, epsilon scale, 25 mm
+  absolute-error-cap refusal, one-shot zstd level-3 frame with content checksum,
+  signed `header_crc32`); held to semantic round-trip equality, not byte parity
+  with the Python producer.
+- Runnable examples (`dump_header`, `decode_to_pgm`, `list_archive`) against the
+  committed fixtures.
+- Two `cargo-fuzz` targets (`decode`, `archive_open`) in an isolated `fuzz/`
+  workspace, with corpora seeded from the fixtures plus reject-case variants.
 
 ### Changed
 

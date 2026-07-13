@@ -21,6 +21,11 @@
 //! `repr(C)`/`bytemuck` casts), so decoding from an unaligned slice or an mmap
 //! is bit-identical, and the crate is `#![forbid(unsafe_code)]`.
 //!
+//! An optional, off-by-default `encode` feature adds a `.hf` chunk **encoder**
+//! (`encode_chunk`, `quantize_levels`, `ChunkFields`) held to semantic
+//! round-trip equality with the decoder — not byte parity with the Python
+//! producer. It changes nothing about the default decode-only API.
+//!
 //! # Examples
 //!
 //! Open a pack, decode its root tile, and read a dequantized NAP height:
@@ -43,6 +48,8 @@
 
 mod archive;
 mod chunk;
+#[cfg(feature = "encode")]
+mod encode;
 mod error;
 
 pub use archive::{
@@ -54,4 +61,6 @@ pub use chunk::{
     ChunkHeader, Heightfield, ABSOLUTE_ERROR_CAP_M, CHUNK_HEADER_LEN, CHUNK_MAGIC, CHUNK_VERSION,
     MAX_QUANTIZED_LEVEL,
 };
+#[cfg(feature = "encode")]
+pub use encode::{encode_chunk, quantize_levels, ChunkFields};
 pub use error::{Format, HfError};

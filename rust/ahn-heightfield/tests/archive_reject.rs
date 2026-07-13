@@ -322,6 +322,34 @@ fn level_out_of_directory() {
 }
 
 #[test]
+fn level_in_range_but_entry_outside_its_directory_run() {
+    // The *second* `LevelOutOfDirectory` sub-condition: an entry whose `level`
+    // is in `[0, level_count)` but whose array position falls outside that
+    // level's directory run (`i < start || i >= end`). Reached by tampering the
+    // directory alone (entries untouched, so the sort check still passes and
+    // `level < level_count`), keeping run continuity + sum valid.
+    //
+    // level 0 = entry 0; level 1 = entries 1,2. Shift the run boundary so
+    // level 1's run becomes [2,3): entry 1 (level 1) then sits before its run.
+    let mut p = common::build_game_pack(
+        &[(0, 0, 0), (1, 0, 0), (1, 1, 1)],
+        &[vec![1u8; 8], vec![2u8; 8], vec![3u8; 8]],
+    );
+    p[132..136].copy_from_slice(&2u32.to_le_bytes()); // directory[0].entry_count 1 -> 2
+    p[144..148].copy_from_slice(&2u32.to_le_bytes()); // directory[1].first_entry 1 -> 2
+    p[148..152].copy_from_slice(&1u32.to_le_bytes()); // directory[1].entry_count 2 -> 1
+    common::resign_pack(&mut p);
+    assert!(matches!(
+        open_err(&p),
+        HfError::LevelOutOfDirectory {
+            index: 1,
+            level: 1,
+            level_count: 2,
+        }
+    ));
+}
+
+#[test]
 fn not_aligned_primary() {
     let mut p = hf();
     let e0 = common::entry_offset(&p, 0);

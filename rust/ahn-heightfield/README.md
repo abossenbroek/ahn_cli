@@ -14,6 +14,23 @@ The crate is `#![forbid(unsafe_code)]`; every multi-byte field is read with
 explicit little-endian byte reads (no `repr(C)` / `bytemuck` casts), so
 decoding from an unaligned slice or an mmap is bit-identical.
 
+- **License:** `MIT OR Apache-2.0`
+- **MSRV:** Rust `1.77` (the encoder's `f64::round_ties_even`, the spec's
+  normative round-half-even quantization rounding, stabilized in 1.77).
+
+## Features
+
+| Feature  | Default | What it adds                                                                 |
+|----------|:-------:|------------------------------------------------------------------------------|
+| *(none)* | ✔       | The decoder: the chunk layer (`ChunkHeader`, `Heightfield`) and the archive layer (`Archive`, `ReadAt`, `PackHeader`, `Entry`, …). |
+| `encode` |         | The `.hf` chunk **encoder** (`encode_chunk`, `quantize_levels`, `ChunkFields`). Adds no dependencies. |
+
+The `encode` feature is off by default and does not change the default API or
+behaviour. It is held to **semantic round-trip** equality (`decode(encode(x))`
+reproduces the identical levels and header fields), **not** byte parity with the
+Python producer — both specs scope byte-for-byte determinism to the Python
+producer alone.
+
 ## Quickstart
 
 ```rust
@@ -51,21 +68,77 @@ validation of the header and index but never reads the cold hash section;
 and every per-blob SHA-256. `Archive<R>` is `Send + Sync` whenever `R` is, so
 one opened archive serves concurrent tile loads.
 
+## Encoding (`encode` feature)
+
+With `--features encode`, the crate can also **write** a `.hf` chunk: it
+quantizes a plane of source NAP heights (12-bit, round-half-even, epsilon scale
+for a flat tile), refuses a tile past the 25 mm absolute-error cap, and emits one
+zstandard frame (level 3, content checksum) under a CRC-signed header.
+
+```rust
+use ahn_heightfield::{encode_chunk, ChunkFields, Heightfield};
+
+let heights = [0.0, 0.5, 1.0, 1.5]; // width*height source NAP heights, row-major
+let bytes = encode_chunk(ChunkFields {
+    width: 2,
+    height: 2,
+    rtc_centre: [0.0, 0.0, 0.0],
+    region: [0.1, 0.2, 0.3, 0.4, 0.0, 1.5],
+    heights: &heights,
+})?;
+let tile = Heightfield::decode(&bytes)?; // round-trips its own output
+# Ok::<(), ahn_heightfield::HfError>(())
+```
+
 ## Sibling texture convention
 
 A `.hf` height chunk carries only geometry. The draped texture is a **baseline
 sequential JPEG** stored alongside it: for a loose tile `<level>-<tx>-<ty>.hf`
 the texture is `<level>-<tx>-<ty>.jpg` (same base name); inside an `AHNP` pack
 the `.hf` blob is the entry's *primary* blob and the `.jpg` is its *texture*
-blob. This crate decodes the `.hf` geometry; the JPEG is an opaque blob a
-runtime hands to its own image decoder.
+blob. A `game` pack (`content_kind == 1`) instead carries a single `.glb`
+primary blob per tile with its texture embedded and **no** separate texture
+blob. This crate decodes the `.hf` geometry; the JPEG and the `.glb` are opaque
+blobs a runtime hands to its own image / glTF decoder.
+
+## Examples
+
+Runnable against the committed fixtures (paths resolve relative to the crate, so
+no argument is needed):
+
+```bash
+cargo run --example dump_header      # parse a .hf header and print its fields
+cargo run --example decode_to_pgm    # decode a .hf and write a greyscale PGM
+cargo run --example list_archive     # open a tiles.hfp and list its entries
+```
+
+Each accepts an optional path argument to point at your own artifact.
+
+## Fuzzing
+
+Two [`cargo-fuzz`](https://github.com/rust-fuzz/cargo-fuzz) targets live in
+`fuzz/` (their own isolated workspace): `decode` (the `.hf` chunk layer) and
+`archive_open` (the `AHNP` reader, including `verify_blobs` and per-tile decode).
+Both assert the decoder never panics on arbitrary bytes. Fuzzing is **not** part
+of `cargo test`; running it needs a nightly toolchain:
+
+```bash
+cargo install cargo-fuzz
+cargo +nightly fuzz run decode
+cargo +nightly fuzz run archive_open
+```
+
+On a stable toolchain the fuzz crate still `cargo check`s (`cd fuzz && cargo
+check`). The corpora are seeded from the committed fixtures plus truncated and
+bad-magic reject variants.
 
 ## Scope
 
 This is a decode-first library. The chunk layer (`ChunkHeader`, `Heightfield`)
 and the archive layer (`Archive` over the `ReadAt` positioned-read trait, plus
-`PackHeader`, `Entry`, `LevelRun`, `TileKey`, `BlobSlot`) are implemented; an
-optional `encode` feature arrives in a later phase.
+`PackHeader`, `Entry`, `LevelRun`, `TileKey`, `BlobSlot`) are implemented, plus
+the optional `encode` feature's `.hf` chunk encoder. The pack (`AHNP`) side is
+read-only: the normative pack producer is the Python tool.
 
 ## License
 

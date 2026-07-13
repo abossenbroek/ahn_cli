@@ -172,7 +172,9 @@ game written in Rust can consume the output directly.
 - **3D / web geospatial** — standards-compliant 3D Tiles and COPC for existing viewers.
 - **Game / simulation developers** — the `AHNP` pack + the Rust crate give a streamable,
   integrity-checked terrain format with genuine survey-grade elevation and photographic
-  texture, no GIS stack required at runtime.
+  texture, no GIS stack required at runtime. See
+  [`docs/bevy-integration.md`](bevy-integration.md) for a Bevy + `bevy_pointcloud`
+  walkthrough (decode a pack, build a mesh, stream by LOD, co-locate the point cloud).
 - **Researchers** — a reproducible acquisition-to-deliverable pipeline with a provenance
   record at every step, over an authoritative national dataset.
 

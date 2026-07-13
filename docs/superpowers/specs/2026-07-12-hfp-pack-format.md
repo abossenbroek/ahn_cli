@@ -317,6 +317,9 @@ length:
 - blob offsets not strictly ascending in index order, blob ranges
   overlapping, or any range extending past `file_size` or starting before
   the blob region;
+- bytes present after the last blob — the read cursor at the end of the
+  blob scan does not equal `file_size` (a conforming pack ends exactly at
+  its final blob, so any trailing bytes or trailing gap is rejected);
 - non-zero inter-blob padding;
 - for `content_kind = 1`: any entry with `texture_offset != 0` or
   `texture_size != 0`; for `content_kind = 0`: any entry with

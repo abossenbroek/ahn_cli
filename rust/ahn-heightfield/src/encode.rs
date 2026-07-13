@@ -43,10 +43,10 @@ const CRC_SPAN: usize = CHUNK_HEADER_LEN - 8;
 /// `z_scale`) is derived from `heights` by [`quantize_levels`]; the caller
 /// supplies only the grid dimensions and the geometry metadata.
 ///
-/// All `heights` values must be finite: the encoder has no reject variant for a
-/// non-finite source sample (the decoder never needs one, as heights become
-/// `uint16` levels), so a non-finite height is a caller contract violation, not
-/// a returned error. The header floats (`rtc_centre`, `region`) *are* validated.
+/// Every `heights` value must be finite: a non-finite sample would poison the
+/// quantizer, so [`encode_chunk`] rejects it with [`HfError::NonFiniteSourceHeight`]
+/// (naming the offending row/col). The header floats (`rtc_centre`, `region`)
+/// are likewise validated.
 #[derive(Debug, Clone, Copy)]
 pub struct ChunkFields<'a> {
     /// Vertex-grid column count (must be non-zero).
@@ -147,6 +147,7 @@ pub fn quantize_levels(heights: &[f64]) -> (f64, f64, Vec<u16>) {
 /// Returns [`HfError::ZeroDimension`] if `width == 0` or `height == 0`;
 /// [`HfError::PlaneLengthMismatch`] if `heights.len() != width * height`;
 /// [`HfError::NonFiniteHeaderField`] if any `rtc_centre` or `region` value is
+/// non-finite; [`HfError::NonFiniteSourceHeight`] if any `heights` sample is
 /// non-finite; [`HfError::ErrorCapExceeded`] if the derived `z_scale / 2`
 /// exceeds the [`ABSOLUTE_ERROR_CAP_M`] cap; or [`HfError::Io`] if the
 /// zstandard encoder fails.
@@ -203,6 +204,20 @@ pub fn encode_chunk(fields: ChunkFields<'_>) -> Result<Vec<u8>, HfError> {
     ] {
         if !value.is_finite() {
             return Err(HfError::NonFiniteHeaderField { field, value });
+        }
+    }
+    // Reject any non-finite source sample: a `NaN`/`Inf` would poison the
+    // quantizer's min/max and derive a non-finite `z_scale`. `width` is
+    // non-zero and `heights.len() == width * height`, so the row/col split is
+    // in range for every index.
+    for (i, &value) in heights.iter().enumerate() {
+        if !value.is_finite() {
+            let i = i as u32;
+            return Err(HfError::NonFiniteSourceHeight {
+                row: i / width,
+                col: i % width,
+                value,
+            });
         }
     }
 

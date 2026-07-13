@@ -35,6 +35,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   absolute-error-cap refusal, one-shot zstd level-3 frame with content checksum,
   signed `header_crc32`); held to semantic round-trip equality, not byte parity
   with the Python producer.
+- `HfError::NonFiniteSourceHeight` — raised by `encode_chunk` when a source
+  height sample is `NaN`/infinite (names the offending row/col).
 - Runnable examples (`dump_header`, `decode_to_pgm`, `list_archive`) against the
   committed fixtures.
 - Two `cargo-fuzz` targets (`decode`, `archive_open`) in an isolated `fuzz/`

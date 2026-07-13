@@ -190,6 +190,27 @@ fn rejects_a_non_finite_header_float() {
     ));
 }
 
+#[test]
+fn rejects_a_non_finite_source_height() {
+    // An infinite sample at (row 1, col 0) of a 2x2 grid is rejected with its
+    // position and value, rather than poisoning the quantizer.
+    let err = encode_chunk(ChunkFields {
+        width: 2,
+        height: 2,
+        rtc_centre: [0.0, 0.0, 0.0],
+        region: [0.1, 0.2, 0.3, 0.4, 0.0, 1.0],
+        heights: &[0.0, 1.0, f64::INFINITY, 2.0],
+    })
+    .unwrap_err();
+    match err {
+        HfError::NonFiniteSourceHeight { row, col, value } => {
+            assert_eq!((row, col), (1, 0));
+            assert!(value.is_infinite());
+        }
+        other => panic!("expected NonFiniteSourceHeight, got {other:?}"),
+    }
+}
+
 // ---- cross-language sanity: real fixture-derived source values ------------
 
 #[test]

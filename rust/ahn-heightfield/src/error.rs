@@ -175,6 +175,18 @@ pub enum HfError {
         /// The exported bound `z_scale / 2`, in metres.
         bound_m: f64,
     },
+    /// A source height sample handed to the encoder is `NaN` or infinite. Raised
+    /// only by the `encode` feature's `encode_chunk`; the decoder never produces
+    /// it, since decoded heights are dequantized from `uint16` levels.
+    #[error("source height at (row {row}, col {col}) is not finite: {value}")]
+    NonFiniteSourceHeight {
+        /// Row of the offending sample.
+        row: u32,
+        /// Column of the offending sample.
+        col: u32,
+        /// The non-finite value.
+        value: f64,
+    },
 
     // ---- pack-only -------------------------------------------------------
     /// `content_kind` is not `0` (heightfield) or `1` (game).

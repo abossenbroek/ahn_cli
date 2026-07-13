@@ -33,22 +33,31 @@ then removes everything it wrote.
 
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 import math
 import struct
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
 from ahn_cli.tiles3d.emit import (
+    MANIFEST_NAME,
+    TILES_HFP_NAME,
     TILES_SUBDIR,
     TILESET_NAME,
     compute_build,
+    compute_packed_build,
     texture_uri,
     tile_uri,
 )
 from ahn_cli.tiles3d.errors import Tiles3dError
 from ahn_cli.tiles3d.geodesy import Geodesy
+from ahn_cli.tiles3d.manifest import FileDigest, render_manifest
+from ahn_cli.tiles3d.pack import Pack, read_pack, write_pack
 from ahn_cli.tiles3d.png import decode_png
 from ahn_cli.tiles3d.profile import Profile
 from ahn_cli.tiles3d.provenance import PROVENANCE_NAME, render_provenance
@@ -59,8 +68,6 @@ from ahn_cli.tiles3d.verify_game import verify_game_tile
 from ahn_cli.tiles3d.verify_heightfield import verify_heightfield_tile
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     import numpy.typing as npt
 
     from ahn_cli.tiles3d.emit import ComputedBuild
@@ -125,8 +132,59 @@ def verify_tiles3d(
         tile_uri(t, profile): texture_uri(t, profile) for t in tiles
     }
     expected_textures = {u for u in texture_by_uri.values() if u is not None}
-    _verify_links(out_dir, flat, tiles_by_uri, expected_textures)
     geodesy = Geodesy()
+    if profile is Profile.STRICT:
+        _verify_tile_content(
+            out_dir,
+            flat,
+            tiles_by_uri,
+            texture_by_uri,
+            expected_textures,
+            terrain,
+            geodesy,
+            profile,
+        )
+        computed = compute_build(terrain, tree, encoder=profile.encoder())
+        _verify_byte_identity(out_dir, computed)
+        return
+    # Packed lossy profiles: read the content from the AHNP pack (fully
+    # validating the container), materialise it to a scratch tiles/ layout so
+    # the per-tile checks re-read from disk exactly as the strict path does,
+    # then byte-compare the whole packed deliverable against a rebuild.
+    pack = read_pack(out_dir / TILES_HFP_NAME)
+    with TemporaryDirectory() as scratch:
+        content_root = Path(scratch)
+        _materialise_pack(pack, content_root, profile)
+        _verify_tile_content(
+            content_root,
+            flat,
+            tiles_by_uri,
+            texture_by_uri,
+            expected_textures,
+            terrain,
+            geodesy,
+            profile,
+        )
+    _verify_packed_byte_identity(out_dir, terrain, tree, profile)
+
+
+def _verify_tile_content(
+    content_root: Path,
+    flat: _Flat,
+    tiles_by_uri: dict[str, TilePlan],
+    texture_by_uri: dict[str, str | None],
+    expected_textures: set[str],
+    terrain: TerrainGrid,
+    geodesy: Geodesy,
+    profile: Profile,
+) -> None:
+    """Run the link + per-tile checks against ``content_root``'s tiles/.
+
+    ``content_root`` is ``out_dir`` for the strict profile's loose tiles and
+    a scratch directory holding the pack's materialised blobs for the lossy
+    profiles; the per-tile verifiers are identical either way.
+    """
+    _verify_links(content_root, flat, tiles_by_uri, expected_textures)
     for entry, enclosing_regions in flat:
         uri = _entry_uri(entry)
         tile = tiles_by_uri[uri]
@@ -134,13 +192,13 @@ def verify_tiles3d(
             # This profile always writes a sibling texture (never None).
             texture = cast("str", texture_by_uri[uri])
             verify_heightfield_tile(
-                out_dir, uri, texture, terrain, tile, geodesy
+                content_root, uri, texture, terrain, tile, geodesy
             )
             _verify_containment(
                 terrain, tile, enclosing_regions, geodesy, uri
             )
         else:
-            gltf, binary = _parse_glb((out_dir / uri).read_bytes(), uri)
+            gltf, binary = _parse_glb((content_root / uri).read_bytes(), uri)
             if profile is Profile.STRICT:
                 _verify_gltf(gltf, binary, uri)
                 _verify_texture(gltf, binary, terrain, tile, uri)
@@ -157,8 +215,79 @@ def verify_tiles3d(
                     geodesy,
                     uri,
                 )
-    computed = compute_build(terrain, tree, encoder=profile.encoder())
-    _verify_byte_identity(out_dir, computed, profile)
+
+
+def _materialise_pack(
+    pack: Pack, content_root: Path, profile: Profile
+) -> None:
+    """Write every pack blob to ``content_root/tiles/`` under its uri name.
+
+    Restores the loose ``tiles/<level>-<tx>-<ty>.<ext>`` layout (plus the
+    heightfield ``.jpg`` siblings) from the validated pack so the untouched
+    per-tile verifiers can re-read each tile from disk.
+    """
+    tiles_dir = content_root / TILES_SUBDIR
+    tiles_dir.mkdir()
+    content_suffix = profile.content_suffix()
+    texture_suffix = profile.texture_suffix()
+    for index, entry in enumerate(pack.entries):
+        base = f"{entry.level}-{entry.tx}-{entry.ty}"
+        (tiles_dir / f"{base}{content_suffix}").write_bytes(
+            pack.primary_blob(index)
+        )
+        if texture_suffix is not None:
+            texture = pack.texture_blob(index)
+            # content_kind = 0 (heightfield) always carries a texture blob.
+            (tiles_dir / f"{base}{texture_suffix}").write_bytes(
+                cast("bytes", texture)
+            )
+
+
+def _verify_packed_byte_identity(
+    out_dir: Path, terrain: TerrainGrid, tree: TreePlan, profile: Profile
+) -> None:
+    """Byte-compare the packed deliverable against an independent rebuild.
+
+    Rebuilds ``tiles.hfp`` (in memory), the ``tileset.json`` sidecar, the
+    ``provenance.json`` (with the rebuilt pack's ``dataset_id``) and the
+    ``manifest.json`` from the re-verified sources, and demands each of the
+    four on-disk files match byte for byte.
+    """
+    packed = compute_packed_build(terrain, tree, profile=profile)
+    buffer = io.BytesIO()
+    dataset_id = write_pack(
+        buffer,
+        packed.entries,
+        packed.blob_source,
+        root_geometric_error=packed.root_geometric_error,
+        content_kind=packed.content_kind,
+    )
+    pack_bytes = buffer.getvalue()
+    tileset_bytes = render_tileset(packed.document).encode("utf-8")
+    provenance = render_provenance(profile, dataset_id=dataset_id.hex())
+    provenance_bytes = cast("str", provenance).encode("utf-8")
+    members = {
+        TILESET_NAME: tileset_bytes,
+        PROVENANCE_NAME: provenance_bytes,
+        TILES_HFP_NAME: pack_bytes,
+    }
+    files = {
+        name: FileDigest(
+            sha256=hashlib.sha256(data).hexdigest(), size=len(data)
+        )
+        for name, data in members.items()
+    }
+    manifest_bytes = render_manifest(files, dataset_id.hex()).encode("utf-8")
+    for name, expected in (
+        (TILES_HFP_NAME, pack_bytes),
+        (TILESET_NAME, tileset_bytes),
+        (PROVENANCE_NAME, provenance_bytes),
+        (MANIFEST_NAME, manifest_bytes),
+    ):
+        _require(
+            (out_dir / name).read_bytes() == expected,
+            f"{name} does not byte-equal its independent rebuild.",
+        )
 
 
 def _walk(tile: TilePlan) -> list[TilePlan]:
@@ -588,21 +717,14 @@ def _points_within(
     )
 
 
-def _verify_byte_identity(
-    out_dir: Path, computed: ComputedBuild, profile: Profile
-) -> None:
-    """Verify every artifact byte-equals its independent rebuild.
+def _verify_byte_identity(out_dir: Path, computed: ComputedBuild) -> None:
+    """Verify the strict deliverable byte-equals its independent rebuild.
 
-    Covers every tile content file and every sibling texture file (the
-    heightfield profile's ``.jpg`` set), plus — under the lossy profiles —
-    ``provenance.json``, recomputed in-process from the pinned settings.
+    The strict profile embeds its texture in each glb and writes no sidecar,
+    so this covers every ``.glb`` plus ``tileset.json``; the packed lossy
+    profiles have their own backstop (:func:`_verify_packed_byte_identity`).
     """
     for uri, expected in computed.glbs.items():
-        _require(
-            (out_dir / uri).read_bytes() == expected,
-            f"{uri} does not byte-equal its independent rebuild.",
-        )
-    for uri, expected in computed.textures.items():
         _require(
             (out_dir / uri).read_bytes() == expected,
             f"{uri} does not byte-equal its independent rebuild.",
@@ -612,10 +734,3 @@ def _verify_byte_identity(
         == render_tileset(computed.document).encode("utf-8"),
         "tileset.json does not byte-equal its independent rebuild.",
     )
-    provenance = render_provenance(profile)
-    if provenance is not None:
-        _require(
-            (out_dir / PROVENANCE_NAME).read_bytes()
-            == provenance.encode("utf-8"),
-            "provenance.json does not byte-equal its independent rebuild.",
-        )

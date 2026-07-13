@@ -12,6 +12,17 @@
     "quality": 85,
     "subsampling": 2
   },
+  "pack": {
+    "alignment": 16,
+    "dataset_id": "08ed3cdde8cdce1125b05a02e8f2aef21df1f00a467b9e8d370068f731c8d2e8",
+    "format_version": 1,
+    "hash_algorithm": "sha256",
+    "magic": "AHNP"
+  },
+  "producer": {
+    "platform": "fixture-platform",
+    "python": "fixture-python"
+  },
   "profile": "heightfield",
   "quantization": {
     "height_bits": 12,

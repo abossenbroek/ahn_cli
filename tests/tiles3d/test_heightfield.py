@@ -30,6 +30,7 @@ from ahn_cli.tiles3d.heightfield import (
     zstandard_version,
 )
 from ahn_cli.tiles3d.mesh import build_tile_mesh
+from ahn_cli.tiles3d.pack import read_pack
 from ahn_cli.tiles3d.payload import TilePayload
 from ahn_cli.tiles3d.profile import Profile
 from ahn_cli.tiles3d.quadtree import geometric_error, plan_quadtree
@@ -350,17 +351,16 @@ def test_heightfield_geometry_is_far_smaller_than_game(
     heights = write_exr(tmp_path / "r.exr", grid_for_ortho(rgb))
     pixels = 32 * 32
 
-    def total(profile: Profile, suffix: str) -> int:
+    def total(profile: Profile) -> int:
         out = tmp_path / profile.value
         build_tiles3d(ortho, heights, out, tile_pixels=16, profile=profile)
-        return sum(
-            p.stat().st_size
-            for p in (out / "tiles").iterdir()
-            if p.suffix == suffix
-        )
+        # The per-tile geometry lives in the pack's primary blobs (.hf chunk
+        # for heightfield, .glb for game); the texture is a separate concern.
+        pack = read_pack(out / "tiles.hfp")
+        return sum(entry.primary_size for entry in pack.entries)
 
-    hf_bpp = total(Profile.HEIGHTFIELD, ".hf") / pixels
-    glb_bpp = total(Profile.GAME, ".glb") / pixels
+    hf_bpp = total(Profile.HEIGHTFIELD) / pixels
+    glb_bpp = total(Profile.GAME) / pixels
     print(  # noqa: T201 -- benchmark record
         f"geometry B/px: heightfield={hf_bpp:.3f} game-glb={glb_bpp:.3f}"
     )

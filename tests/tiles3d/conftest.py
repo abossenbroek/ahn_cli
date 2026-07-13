@@ -14,9 +14,11 @@ import rasterio
 from rasterio.transform import from_bounds
 
 from ahn_cli.reconcile.writers import OutputFormat, write_reconciled
+from ahn_cli.tiles3d.pack import PackEntry, TileKey, read_pack, write_pack
 from ahn_cli.tiles3d.sources import TerrainGrid
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
     import numpy.typing as npt
@@ -51,6 +53,58 @@ def corrupt(path: Path, offset: int, new_bytes: bytes) -> None:
     data = bytearray(path.read_bytes())
     data[offset : offset + len(new_bytes)] = new_bytes
     path.write_bytes(bytes(data))
+
+
+def pack_blob(hfp_path: Path, key: TileKey) -> tuple[bytes, bytes | None]:
+    """Return one tile's ``(primary, texture)`` blobs from a packed build."""
+    pack = read_pack(hfp_path)
+    for index, entry in enumerate(pack.entries):
+        if TileKey(entry.level, entry.tx, entry.ty, entry.tz) == key:
+            return pack.primary_blob(index), pack.texture_blob(index)
+    msg = f"tile {key} is not in the pack"
+    raise AssertionError(msg)
+
+
+def repack_one(
+    hfp_path: Path,
+    key: TileKey,
+    corrupt_blobs: Callable[
+        [bytes, bytes | None], tuple[bytes, bytes | None]
+    ],
+) -> None:
+    """Rewrite ``tiles.hfp`` with one tile's blobs replaced.
+
+    The replacement is packed through the real :func:`write_pack`, so the
+    container stays integrity-valid (offsets, CRCs, hash section, dataset_id
+    all recomputed): a per-tile *semantic* verifier — not the pack reader's
+    checksum — is what a corruption test then exercises. The corruption
+    callback receives the tile's pristine ``(primary, texture)`` and returns
+    the replacement pair.
+    """
+    pack = read_pack(hfp_path)
+    entries = [
+        PackEntry(
+            key=TileKey(entry.level, entry.tx, entry.ty, entry.tz),
+            region=entry.region,
+            geometric_error=entry.geometric_error,
+        )
+        for entry in pack.entries
+    ]
+    blobs: dict[TileKey, tuple[bytes, bytes | None]] = {}
+    for index, entry in enumerate(pack.entries):
+        entry_key = TileKey(entry.level, entry.tx, entry.ty, entry.tz)
+        primary = pack.primary_blob(index)
+        texture = pack.texture_blob(index)
+        if entry_key == key:
+            primary, texture = corrupt_blobs(primary, texture)
+        blobs[entry_key] = (primary, texture)
+    write_pack(
+        hfp_path,
+        entries,
+        lambda k: blobs[k],
+        root_geometric_error=pack.header.root_geometric_error,
+        content_kind=pack.header.content_kind,
+    )
 
 
 MINX = 100.0

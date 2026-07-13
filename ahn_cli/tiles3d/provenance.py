@@ -25,9 +25,13 @@ them in-process and demands byte identity.
 from __future__ import annotations
 
 import json
+import platform
 
+from ahn_cli.tiles3d.errors import Tiles3dError
 from ahn_cli.tiles3d.heightfield import (
     MAGIC,
+    MAX_AXIS_ERROR_M,
+    MAX_LEVEL,
     VERSION,
     ZSTD_LEVEL,
     zstandard_version,
@@ -39,7 +43,10 @@ from ahn_cli.tiles3d.jpeg import (
     JPEG_SUBSAMPLING,
     pillow_version,
 )
+from ahn_cli.tiles3d.manifest import ALGORITHM
 from ahn_cli.tiles3d.meshopt import meshoptimizer_version
+from ahn_cli.tiles3d.pack import BLOB_ALIGNMENT, FORMAT_VERSION
+from ahn_cli.tiles3d.pack import MAGIC as PACK_MAGIC
 from ahn_cli.tiles3d.profile import Profile
 from ahn_cli.tiles3d.quantize import UINT16_MAX
 
@@ -47,6 +54,8 @@ __all__ = [
     "PROVENANCE_NAME",
     "game_provenance_document",
     "heightfield_provenance_document",
+    "producer_platform",
+    "producer_python",
     "render_game_provenance",
     "render_heightfield_provenance",
     "render_provenance",
@@ -54,6 +63,23 @@ __all__ = [
 
 PROVENANCE_NAME = "provenance.json"
 """Output-relative name of the lossy profiles' provenance sidecar."""
+
+
+def producer_platform() -> str:
+    """Return the producing machine's platform string (deterministic per host).
+
+    Recorded in the ``producer`` block because the pinned Pillow /
+    libjpeg-turbo build — and therefore the JPEG bytes the pack carries — is a
+    property of the producing platform. The fixture-generation path pins this
+    (like geodesy) so the committed cross-machine fixtures stay byte-stable.
+    """
+    return platform.platform()
+
+
+def producer_python() -> str:
+    """Return the producing interpreter's version (deterministic per host)."""
+    return platform.python_version()
+
 
 _QUANTIZATION_SCHEME = (
     "per-tile per-axis affine over the tile's actual data extents; "
@@ -81,7 +107,32 @@ def _jpeg_block() -> dict[str, object]:
     }
 
 
-def game_provenance_document() -> dict[str, object]:
+def _pack_block(dataset_id: str) -> dict[str, object]:
+    """Return the ``AHNP`` pack block: container pins + content version.
+
+    Every field is sourced from :mod:`ahn_cli.tiles3d.pack` (and the shared
+    hash algorithm from :mod:`ahn_cli.tiles3d.manifest`) so the record cannot
+    drift from the container the build actually wrote; ``dataset_id`` is the
+    pack's content-derived Merkle root (64 lowercase hex characters).
+    """
+    return {
+        "magic": PACK_MAGIC.decode("ascii"),
+        "format_version": FORMAT_VERSION,
+        "alignment": BLOB_ALIGNMENT,
+        "hash_algorithm": ALGORITHM,
+        "dataset_id": dataset_id,
+    }
+
+
+def _producer_block() -> dict[str, object]:
+    """Return the producing host's platform / interpreter (no timestamps)."""
+    return {
+        "platform": producer_platform(),
+        "python": producer_python(),
+    }
+
+
+def game_provenance_document(dataset_id: str) -> dict[str, object]:
     """Return the game profile's provenance document (pre-serialisation).
 
     Contract:
@@ -89,9 +140,12 @@ def game_provenance_document() -> dict[str, object]:
           bit depth (from :data:`~ahn_cli.tiles3d.quantize.UINT16_MAX`), the
           normalized-uint16 UV scheme and the one-line quantization note;
           ``jpeg`` records the pinned JPEG constants plus the Pillow
-          version; ``encoders`` records the meshopt version.
-        - Pure and deterministic given the pinned library versions — no
-          timestamps or environment reads beyond the version helpers.
+          version; ``encoders`` records the meshopt version; ``pack`` records
+          the ``AHNP`` container pins and ``dataset_id``; ``producer`` records
+          the producing host.
+        - Pure and deterministic given the pinned library versions and the
+          host — no timestamps or environment reads beyond the version /
+          producer helpers.
     """
     return {
         "profile": "game",
@@ -100,47 +154,50 @@ def game_provenance_document() -> dict[str, object]:
             "uv": "normalized-uint16",
             "scheme": _QUANTIZATION_SCHEME,
         },
-        "jpeg": {
-            "quality": JPEG_QUALITY,
-            "subsampling": JPEG_SUBSAMPLING,
-            "progressive": JPEG_PROGRESSIVE,
-            "optimize": JPEG_OPTIMIZE,
-            "pillow": pillow_version(),
-        },
+        "jpeg": _jpeg_block(),
         "encoders": {"meshoptimizer": meshoptimizer_version()},
+        "pack": _pack_block(dataset_id),
+        "producer": _producer_block(),
     }
 
 
-def render_game_provenance() -> str:
+def render_game_provenance(dataset_id: str) -> str:
     """Serialise the game provenance deterministically (sorted keys).
 
     Contract:
         - Returns sorted-key, two-space-indented JSON with a trailing
-          newline; byte-identical for identical pinned versions.
+          newline; byte-identical for identical pinned versions, host and
+          ``dataset_id``.
     """
     return (
-        json.dumps(game_provenance_document(), sort_keys=True, indent=2)
+        json.dumps(
+            game_provenance_document(dataset_id), sort_keys=True, indent=2
+        )
         + "\n"
     )
 
 
-def heightfield_provenance_document() -> dict[str, object]:
+def heightfield_provenance_document(dataset_id: str) -> dict[str, object]:
     """Return the heightfield profile's provenance document.
 
     Contract:
         - ``profile`` is ``"heightfield"``; ``quantization`` records the
-          height-axis bit depth (from
-          :data:`~ahn_cli.tiles3d.quantize.UINT16_MAX`) and the one-line
-          height quantization note; ``jpeg`` records the pinned JPEG
+          12-bit height-axis depth, maximum level and absolute error cap
+          (from :data:`~ahn_cli.tiles3d.heightfield.MAX_LEVEL` and
+          :data:`~ahn_cli.tiles3d.heightfield.MAX_AXIS_ERROR_M`) plus the
+          one-line height quantization note; ``jpeg`` records the pinned JPEG
           constants plus the Pillow version; ``chunk`` records the ``.hf``
           magic, version, the pinned zstd level and the ``zstandard``
-          version that fix the payload bytes.
-        - Pure and deterministic given the pinned library versions.
+          version that fix the payload bytes; ``pack`` records the ``AHNP``
+          container pins and ``dataset_id``; ``producer`` records the host.
+        - Pure and deterministic given the pinned library versions and host.
     """
     return {
         "profile": "heightfield",
         "quantization": {
-            "height_bits": UINT16_MAX.bit_length(),
+            "height_bits": MAX_LEVEL.bit_length(),
+            "max_level": MAX_LEVEL,
+            "max_axis_error_m": MAX_AXIS_ERROR_M,
             "scheme": _HEIGHTFIELD_QUANTIZATION_SCHEME,
         },
         "jpeg": _jpeg_block(),
@@ -150,36 +207,59 @@ def heightfield_provenance_document() -> dict[str, object]:
             "zstd_level": ZSTD_LEVEL,
             "zstandard": zstandard_version(),
         },
+        "pack": _pack_block(dataset_id),
+        "producer": _producer_block(),
     }
 
 
-def render_heightfield_provenance() -> str:
+def render_heightfield_provenance(dataset_id: str) -> str:
     """Serialise the heightfield provenance deterministically (sorted keys).
 
     Contract:
         - Returns sorted-key, two-space-indented JSON with a trailing
-          newline; byte-identical for identical pinned versions.
+          newline; byte-identical for identical pinned versions, host and
+          ``dataset_id``.
     """
     return (
         json.dumps(
-            heightfield_provenance_document(), sort_keys=True, indent=2
+            heightfield_provenance_document(dataset_id),
+            sort_keys=True,
+            indent=2,
         )
         + "\n"
     )
 
 
-def render_provenance(profile: Profile) -> str | None:
+def render_provenance(
+    profile: Profile, *, dataset_id: str | None = None
+) -> str | None:
     """Return ``profile``'s provenance JSON, or ``None`` if it writes none.
 
     Contract:
         - The lossy ``game`` and ``heightfield`` profiles return their
-          deterministic sidecar text; the byte-frozen ``strict`` profile
-          returns ``None`` (it writes no sidecar). The build writes exactly
-          this and the verifier recomputes it for the byte-identity check.
+          deterministic sidecar text (embedding ``dataset_id``, which is
+          required for them); the byte-frozen ``strict`` profile returns
+          ``None`` (it writes no sidecar and ignores ``dataset_id``). The
+          build writes exactly this and the verifier recomputes it for the
+          byte-identity check.
     """
-    renderers = {
-        Profile.GAME: render_game_provenance,
-        Profile.HEIGHTFIELD: render_heightfield_provenance,
-    }
-    renderer = renderers.get(profile)
-    return renderer() if renderer is not None else None
+    if profile is Profile.GAME:
+        return render_game_provenance(
+            _require_dataset_id(dataset_id, profile)
+        )
+    if profile is Profile.HEIGHTFIELD:
+        return render_heightfield_provenance(
+            _require_dataset_id(dataset_id, profile)
+        )
+    return None
+
+
+def _require_dataset_id(dataset_id: str | None, profile: Profile) -> str:
+    """Return ``dataset_id`` or raise: the lossy profiles need the pack root."""
+    if dataset_id is None:
+        msg = (
+            f"the {profile.value} profile's provenance needs the pack "
+            "dataset_id."
+        )
+        raise Tiles3dError(msg)
+    return dataset_id

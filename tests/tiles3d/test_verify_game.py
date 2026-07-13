@@ -8,6 +8,7 @@ independently of the whole-file byte-identity backstop.
 
 from __future__ import annotations
 
+import dataclasses
 import io
 import json
 import struct
@@ -22,14 +23,21 @@ import ahn_cli.tiles3d.verify_game as verify_game_module
 from ahn_cli.tiles3d.build import build_tiles3d
 from ahn_cli.tiles3d.errors import Tiles3dError
 from ahn_cli.tiles3d.meshopt import decode_positions, encode_positions
+from ahn_cli.tiles3d.pack import TileKey
 from ahn_cli.tiles3d.profile import Profile
 from ahn_cli.tiles3d.verify import verify_tiles3d
 from tests.tiles3d.conftest import (
     grid_for_ortho,
     make_ortho,
+    pack_blob,
+    repack_one,
+    rewrite_pack,
     synth_rgb,
     write_exr,
 )
+
+_LEAF_KEY = TileKey(2, 0, 0)
+"""The leaf tile whose glb the corruption tests target inside the pack."""
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -56,8 +64,18 @@ def _verify(site: tuple[Path, Path, Path]) -> None:
     verify_tiles3d(out, ortho, heights, tile_pixels=8, profile=Profile.GAME)
 
 
-def _leaf(site: tuple[Path, Path, Path]) -> Path:
-    return site[0] / "tiles" / "2-0-0.glb"
+def _leaf_glb(site: tuple[Path, Path, Path]) -> bytes:
+    """Return the leaf tile's pristine glb bytes from the pack."""
+    return pack_blob(site[0] / "tiles.hfp", _LEAF_KEY)[0]
+
+
+def _repack_leaf(site: tuple[Path, Path, Path], glb: bytes) -> None:
+    """Repack ``tiles.hfp`` with the leaf tile's glb replaced by ``glb``."""
+    repack_one(
+        site[0] / "tiles.hfp",
+        _LEAF_KEY,
+        lambda _primary, _texture: (glb, None),
+    )
 
 
 def _split_glb(data: bytes) -> tuple[dict[str, Any], bytes]:
@@ -129,13 +147,12 @@ def test_meshopt_stream_bit_flip_is_refused(
     game_site: tuple[Path, Path, Path],
 ) -> None:
     """A flipped byte in the TEXCOORD_0 meshopt stream is caught."""
-    path = _leaf(game_site)
-    document, binary = _split_glb(path.read_bytes())
+    document, binary = _split_glb(_leaf_glb(game_site))
     ext = _ext(document, 1)  # TEXCOORD_0 stream: not the POSITION stream
     flip = int(ext["byteOffset"]) + int(ext["byteLength"]) // 2
     data = bytearray(binary)
     data[flip] ^= 0xFF
-    path.write_bytes(_join_glb(document, bytes(data)))
+    _repack_leaf(game_site, _join_glb(document, bytes(data)))
     with pytest.raises(
         Tiles3dError, match=r"TEXCOORD_0 meshopt stream|decode"
     ):
@@ -151,15 +168,16 @@ def test_off_by_one_quantized_int_fires_requantization(
     accessor extremes are left untouched, so only the requantization
     family — not the byte-identity backstop — attributes the failure.
     """
-    path = _leaf(game_site)
-    document, binary = _split_glb(path.read_bytes())
+    document, binary = _split_glb(_leaf_glb(game_site))
     sections = _sections(document, binary)
     count = int(_ext(document, 0)["count"])
     ints = decode_positions(sections[0], count).copy()
     middle = count // 2
     ints[middle, 0] = (int(ints[middle, 0]) + 1) % 65536  # off-by-one
     sections[0] = encode_positions(ints).data
-    path.write_bytes(_join_glb(document, _rebuild_bin(document, sections)))
+    _repack_leaf(
+        game_site, _join_glb(document, _rebuild_bin(document, sections))
+    )
     with pytest.raises(
         Tiles3dError, match="does not equal the independent requantization"
     ):
@@ -170,15 +188,16 @@ def test_jpeg_recompressed_at_a_different_quality_is_refused(
     game_site: tuple[Path, Path, Path],
 ) -> None:
     """A texture re-encoded at another quality fails JPEG byte-equality."""
-    path = _leaf(game_site)
-    document, binary = _split_glb(path.read_bytes())
+    document, binary = _split_glb(_leaf_glb(game_site))
     sections = _sections(document, binary)
     with Image.open(io.BytesIO(sections[3])) as image:
         rgb = np.array(image.convert("RGB"))
     buffer = io.BytesIO()
     Image.fromarray(rgb, mode="RGB").save(buffer, format="JPEG", quality=60)
     sections[3] = buffer.getvalue()
-    path.write_bytes(_join_glb(document, _rebuild_bin(document, sections)))
+    _repack_leaf(
+        game_site, _join_glb(document, _rebuild_bin(document, sections))
+    )
     with pytest.raises(Tiles3dError, match="does not byte-equal"):
         _verify(game_site)
 
@@ -187,8 +206,7 @@ def test_progressive_jpeg_is_refused(
     game_site: tuple[Path, Path, Path],
 ) -> None:
     """A progressive-framed texture fails the baseline JPEG check."""
-    path = _leaf(game_site)
-    document, binary = _split_glb(path.read_bytes())
+    document, binary = _split_glb(_leaf_glb(game_site))
     sections = _sections(document, binary)
     with Image.open(io.BytesIO(sections[3])) as image:
         rgb = np.array(image.convert("RGB"))
@@ -197,7 +215,9 @@ def test_progressive_jpeg_is_refused(
         buffer, format="JPEG", progressive=True
     )
     sections[3] = buffer.getvalue()
-    path.write_bytes(_join_glb(document, _rebuild_bin(document, sections)))
+    _repack_leaf(
+        game_site, _join_glb(document, _rebuild_bin(document, sections))
+    )
     with pytest.raises(Tiles3dError, match="baseline sequential JPEG"):
         _verify(game_site)
 
@@ -206,10 +226,9 @@ def test_dropped_extension_declaration_is_refused(
     game_site: tuple[Path, Path, Path],
 ) -> None:
     """Dropping EXT_meshopt_compression from extensionsRequired is caught."""
-    path = _leaf(game_site)
-    document, binary = _split_glb(path.read_bytes())
+    document, binary = _split_glb(_leaf_glb(game_site))
     document["extensionsRequired"] = ["KHR_mesh_quantization"]
-    path.write_bytes(_join_glb(document, binary))
+    _repack_leaf(game_site, _join_glb(document, binary))
     with pytest.raises(
         Tiles3dError, match="extensionsUsed/extensionsRequired"
     ):
@@ -220,10 +239,9 @@ def test_wrong_node_scale_is_refused(
     game_site: tuple[Path, Path, Path],
 ) -> None:
     """A node scale that is not the dequant fold is caught."""
-    path = _leaf(game_site)
-    document, binary = _split_glb(path.read_bytes())
+    document, binary = _split_glb(_leaf_glb(game_site))
     document["nodes"][0]["scale"][0] *= 2.0
-    path.write_bytes(_join_glb(document, binary))
+    _repack_leaf(game_site, _join_glb(document, binary))
     with pytest.raises(Tiles3dError, match="dequantization fold"):
         _verify(game_site)
 
@@ -232,10 +250,9 @@ def test_fallback_buffer_with_a_uri_is_refused(
     game_site: tuple[Path, Path, Path],
 ) -> None:
     """A fallback buffer given a uri is caught."""
-    path = _leaf(game_site)
-    document, binary = _split_glb(path.read_bytes())
+    document, binary = _split_glb(_leaf_glb(game_site))
     document["buffers"][1]["uri"] = "leak.bin"
-    path.write_bytes(_join_glb(document, binary))
+    _repack_leaf(game_site, _join_glb(document, binary))
     with pytest.raises(Tiles3dError, match="fallback buffer"):
         _verify(game_site)
 
@@ -244,10 +261,9 @@ def test_non_dict_stream_extensions_is_refused(
     game_site: tuple[Path, Path, Path],
 ) -> None:
     """A stream bufferView whose extensions is not an object is caught."""
-    path = _leaf(game_site)
-    document, binary = _split_glb(path.read_bytes())
+    document, binary = _split_glb(_leaf_glb(game_site))
     document["bufferViews"][0]["extensions"] = []
-    path.write_bytes(_join_glb(document, binary))
+    _repack_leaf(game_site, _join_glb(document, binary))
     with pytest.raises(Tiles3dError, match="bufferView 0 framing"):
         _verify(game_site)
 
@@ -255,7 +271,13 @@ def test_non_dict_stream_extensions_is_refused(
 def test_shrunken_region_fails_dequantized_containment(
     game_site: tuple[Path, Path, Path],
 ) -> None:
-    """A stored region crushed below the geometry fails containment."""
+    """A stored region crushed below the geometry fails containment.
+
+    Crushes the leaf's height range identically in the tileset *and* the pack
+    index, so the two-encodings witness still sees them agree and the failure
+    attributes to the game verifier's dequantized-vertex containment rather
+    than to the witness.
+    """
     out = game_site[0]
     document = cast(
         "dict[str, Any]", json.loads((out / "tileset.json").read_text())
@@ -263,9 +285,21 @@ def test_shrunken_region_fails_dequantized_containment(
     leaf = document["root"]["children"][0]["children"][0]
     region = leaf["boundingVolume"]["region"]
     region[5] = region[4] + 1e-9  # crush the height range
+    crushed = tuple(float(v) for v in region)
     (out / "tileset.json").write_text(
         json.dumps(document, sort_keys=True, indent=2) + "\n"
     )
+
+    def crush(entries: list[Any]) -> list[Any]:
+        return [
+            dataclasses.replace(entry, region=crushed)
+            if (entry.key.level, entry.key.tx, entry.key.ty)
+            == (_LEAF_KEY.level, _LEAF_KEY.tx, _LEAF_KEY.ty)
+            else entry
+            for entry in entries
+        ]
+
+    rewrite_pack(out / "tiles.hfp", crush)
     with pytest.raises(
         Tiles3dError, match="lies outside an enclosing region"
     ):

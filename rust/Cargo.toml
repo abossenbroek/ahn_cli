@@ -1,0 +1,6 @@
+[workspace]
+resolver = "2"
+members = ["ahn-heightfield"]
+# The `fuzz` crate carries its own `[workspace]` root so it never joins this
+# workspace's build/test gates; it is reached only via `cargo fuzz`.
+exclude = ["ahn-heightfield/fuzz"]

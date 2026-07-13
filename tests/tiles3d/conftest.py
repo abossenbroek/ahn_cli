@@ -14,9 +14,11 @@ import rasterio
 from rasterio.transform import from_bounds
 
 from ahn_cli.reconcile.writers import OutputFormat, write_reconciled
+from ahn_cli.tiles3d.pack import PackEntry, TileKey, read_pack, write_pack
 from ahn_cli.tiles3d.sources import TerrainGrid
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
     import numpy.typing as npt
@@ -51,6 +53,106 @@ def corrupt(path: Path, offset: int, new_bytes: bytes) -> None:
     data = bytearray(path.read_bytes())
     data[offset : offset + len(new_bytes)] = new_bytes
     path.write_bytes(bytes(data))
+
+
+def pack_blob(hfp_path: Path, key: TileKey) -> tuple[bytes, bytes | None]:
+    """Return one tile's ``(primary, texture)`` blobs from a packed build."""
+    pack = read_pack(hfp_path)
+    for index, entry in enumerate(pack.entries):
+        if TileKey(entry.level, entry.tx, entry.ty, entry.tz) == key:
+            return pack.primary_blob(index), pack.texture_blob(index)
+    msg = f"tile {key} is not in the pack"
+    raise AssertionError(msg)
+
+
+def repack_one(
+    hfp_path: Path,
+    key: TileKey,
+    corrupt_blobs: Callable[
+        [bytes, bytes | None], tuple[bytes, bytes | None]
+    ],
+) -> None:
+    """Rewrite ``tiles.hfp`` with one tile's blobs replaced.
+
+    The replacement is packed through the real :func:`write_pack`, so the
+    container stays integrity-valid (offsets, CRCs, hash section, dataset_id
+    all recomputed): a per-tile *semantic* verifier — not the pack reader's
+    checksum — is what a corruption test then exercises. The corruption
+    callback receives the tile's pristine ``(primary, texture)`` and returns
+    the replacement pair.
+    """
+    pack = read_pack(hfp_path)
+    entries = [
+        PackEntry(
+            key=TileKey(entry.level, entry.tx, entry.ty, entry.tz),
+            region=entry.region,
+            geometric_error=entry.geometric_error,
+        )
+        for entry in pack.entries
+    ]
+    blobs: dict[TileKey, tuple[bytes, bytes | None]] = {}
+    for index, entry in enumerate(pack.entries):
+        entry_key = TileKey(entry.level, entry.tx, entry.ty, entry.tz)
+        primary = pack.primary_blob(index)
+        texture = pack.texture_blob(index)
+        if entry_key == key:
+            primary, texture = corrupt_blobs(primary, texture)
+        blobs[entry_key] = (primary, texture)
+    write_pack(
+        hfp_path,
+        entries,
+        lambda k: blobs[k],
+        root_geometric_error=pack.header.root_geometric_error,
+        content_kind=pack.header.content_kind,
+    )
+
+
+def rewrite_pack(
+    hfp_path: Path,
+    mutate: Callable[[list[PackEntry]], list[PackEntry]],
+    *,
+    root_geometric_error: float | None = None,
+) -> None:
+    """Rewrite ``tiles.hfp`` with mutated index entries, blobs preserved.
+
+    Reads the pack, hands the reconstructed :class:`PackEntry` list to
+    ``mutate`` (which returns the replacement list — e.g. one entry's region
+    or geometric error altered), and repacks through the real
+    :func:`write_pack` so the container stays integrity-valid (CRCs, hash
+    section, ``dataset_id`` recomputed). Lets a corruption test drive the
+    verifier's *index*-level checks — the two-encodings witness and the
+    chunk↔entry cross-check — rather than a container reject. ``dataset_id``
+    naturally changes with the index; pass ``root_geometric_error`` to also
+    override the header field.
+    """
+    pack = read_pack(hfp_path)
+    entries = [
+        PackEntry(
+            key=TileKey(entry.level, entry.tx, entry.ty, entry.tz),
+            region=entry.region,
+            geometric_error=entry.geometric_error,
+        )
+        for entry in pack.entries
+    ]
+    blobs = {
+        TileKey(entry.level, entry.tx, entry.ty, entry.tz): (
+            pack.primary_blob(index),
+            pack.texture_blob(index),
+        )
+        for index, entry in enumerate(pack.entries)
+    }
+    header_error = (
+        pack.header.root_geometric_error
+        if root_geometric_error is None
+        else root_geometric_error
+    )
+    write_pack(
+        hfp_path,
+        mutate(entries),
+        lambda key: blobs[key],
+        root_geometric_error=header_error,
+        content_kind=pack.header.content_kind,
+    )
 
 
 MINX = 100.0

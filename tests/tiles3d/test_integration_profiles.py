@@ -50,8 +50,10 @@ import pytest
 from click.testing import CliRunner
 
 from ahn_cli.cli import cli
+from ahn_cli.tiles3d import provenance as provenance_module
 from ahn_cli.tiles3d.build import build_tiles3d
 from ahn_cli.tiles3d.geodesy import Geodesy
+from ahn_cli.tiles3d.pack import TileKey, read_pack
 from ahn_cli.tiles3d.profile import Profile
 from tests.tiles3d.conftest import (
     grid_for_ortho,
@@ -157,6 +159,30 @@ def pin_geodesy(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     monkeypatch.setattr(
         Geodesy, "to_geodetic_from_ecef", fake_to_geodetic_from_ecef
+    )
+
+
+# ---------------------------------------------------------------------------
+# Pinned producer (machine-stable committed fixtures).
+#
+# provenance.json records the producing host's platform/python, which vary
+# across the CI matrix (3.10/3.11/3.12, differing OSes). The committed
+# fixtures byte-compare provenance.json (and, through it, manifest.json), so
+# the producer record is pinned to fixed strings exactly as geodesy is — real
+# builds still record the real host; only the fixtures use the pin.
+# ---------------------------------------------------------------------------
+
+FIXTURE_PLATFORM = "fixture-platform"
+FIXTURE_PYTHON = "fixture-python"
+
+
+def pin_producer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the provenance producer record to fixed, machine-stable strings."""
+    monkeypatch.setattr(
+        provenance_module, "producer_platform", lambda: FIXTURE_PLATFORM
+    )
+    monkeypatch.setattr(
+        provenance_module, "producer_python", lambda: FIXTURE_PYTHON
     )
 
 
@@ -309,6 +335,15 @@ def _run_cli(out: Path, ortho: Path, heights: Path, profile: str):  # noqa: ANN2
     )
 
 
+_PACKED_FILE_SET = {
+    "tileset.json",
+    "tiles.hfp",
+    "provenance.json",
+    "manifest.json",
+}
+"""The complete packed lossy deliverable file set (no loose tiles/)."""
+
+
 def test_cli_game_end_to_end(tmp_path: Path) -> None:
     """A synthetic site builds green under ``--profile game`` via the CLI."""
     ortho, heights = _make_pair(tmp_path, 6, 6, seed=31)
@@ -316,11 +351,8 @@ def test_cli_game_end_to_end(tmp_path: Path) -> None:
     result = _run_cli(out, ortho, heights, "game")
     assert result.exit_code == 0, result.output
     assert "verified. profile=game." in result.output
-    assert _file_set(out) == {
-        "tileset.json",
-        "tiles/0-0-0.glb",
-        "provenance.json",
-    }
+    assert _file_set(out) == _PACKED_FILE_SET
+    assert read_pack(out / "tiles.hfp").header.content_kind == 1
 
 
 def test_cli_heightfield_end_to_end(tmp_path: Path) -> None:
@@ -330,12 +362,8 @@ def test_cli_heightfield_end_to_end(tmp_path: Path) -> None:
     result = _run_cli(out, ortho, heights, "heightfield")
     assert result.exit_code == 0, result.output
     assert "verified. profile=heightfield." in result.output
-    assert _file_set(out) == {
-        "tileset.json",
-        "tiles/0-0-0.hf",
-        "tiles/0-0-0.jpg",
-        "provenance.json",
-    }
+    assert _file_set(out) == _PACKED_FILE_SET
+    assert read_pack(out / "tiles.hfp").header.content_kind == 0
 
 
 # ---------------------------------------------------------------------------
@@ -401,10 +429,20 @@ def _emit(line: str) -> None:
     print(line)  # noqa: T201
 
 
+def _pack_primary(out: Path, key: TileKey) -> bytes:
+    """Return one tile's primary blob bytes from a packed build's tiles.hfp."""
+    pack = read_pack(out / "tiles.hfp")
+    for index, entry in enumerate(pack.entries):
+        if TileKey(entry.level, entry.tx, entry.ty, entry.tz) == key:
+            return pack.primary_blob(index)
+    msg = f"tile {key} is not in the pack"
+    raise AssertionError(msg)
+
+
 def _build_single_leaf_glb(
     tmp_path: Path, ortho: Path, heights: Path
 ) -> bytes:
-    """Build a 256x256 single-tile game tileset and return its one glb."""
+    """Build a 256x256 single-tile game tileset and return its packed glb."""
     out = tmp_path
     build_tiles3d(
         ortho,
@@ -413,7 +451,7 @@ def _build_single_leaf_glb(
         tile_pixels=_PRODUCTION_LEAF_PIXELS,
         profile=Profile.GAME,
     )
-    return (out / "tiles" / "0-0-0.glb").read_bytes()
+    return _pack_primary(out, TileKey(0, 0, 0))
 
 
 def test_size_budget_guards_the_production_leaf(
@@ -456,7 +494,7 @@ def test_size_budget_guards_the_production_leaf(
         profile=Profile.GAME,
     )
     small_leaf = _game_geometry_bytes_per_pixel(
-        (small_out / "tiles" / "1-1-1.glb").read_bytes()
+        _pack_primary(small_out, TileKey(1, 1, 1))
     )
 
     with capsys.disabled():
@@ -497,13 +535,80 @@ def test_size_budget_reports_heightfield_chunk_cost(
         tile_pixels=_PRODUCTION_LEAF_PIXELS,
         profile=Profile.HEIGHTFIELD,
     )
-    chunk = (out / "tiles" / "0-0-0.hf").read_bytes()
+    chunk = _pack_primary(out, TileKey(0, 0, 0))
     width, height = struct.unpack_from("<II", chunk, 8)
     with capsys.disabled():
         _emit(
             f"[size-budget] heightfield .hf chunk: "
             f"{len(chunk) / (width * height):.3f} B/px ({width}x{height})"
         )
+
+
+_HF_PAYLOAD_CEILING_BYTES_PER_PIXEL = 4.0
+"""Generous sanity ceiling: the codec bake-off predicts ~1.3-1.8 B/px on
+real terrain (12-bit quantization + zstd-3); this only alarms on a gross
+regression, not a tight budget."""
+
+
+def test_size_budget_reports_pack_overhead_and_hf_payload(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Print ``tiles.hfp``'s per-tile overhead and the heightfield B/px.
+
+    Builds a multi-tile (21-tile, 3-level) heightfield pack over a smooth
+    256px scene, then prints (a) the total ``tiles.hfp`` size and the
+    per-tile index+hash overhead — expected ~189 B/tile: the 96-byte
+    :data:`~ahn_cli.tiles3d.pack.INDEX_ENTRY_SIZE` entry plus the 64-byte
+    :data:`~ahn_cli.tiles3d.pack.HASH_RECORD_SIZE` hash record plus ~16
+    bytes of blob alignment padding plus the fixed 128-byte header
+    amortised across tiles — and (b) the heightfield payload cost in B/px
+    (12-bit quantization + zstd-3), predicted ~1.3-1.8 B/px on real terrain
+    by the codec bake-off; the conftest-style synthetic scene may read
+    differently, so the number is printed honestly rather than pinned. The
+    one hard assertion is the generous
+    :data:`_HF_PAYLOAD_CEILING_BYTES_PER_PIXEL` sanity ceiling.
+    """
+    ortho, heights = _smooth_pair(tmp_path, 256, 256)
+    out = tmp_path / "hf_overhead"
+    build_tiles3d(
+        ortho, heights, out, tile_pixels=64, profile=Profile.HEIGHTFIELD
+    )
+    pack = read_pack(out / "tiles.hfp")
+    tile_count = len(pack.entries)
+    total_bytes = (out / "tiles.hfp").stat().st_size
+
+    payload_bytes = 0
+    total_pixels = 0
+    blob_bytes = 0
+    for index in range(tile_count):
+        primary = pack.primary_blob(index)
+        texture = pack.texture_blob(index)
+        width, height = struct.unpack_from("<II", primary, 8)
+        payload_bytes += len(primary)
+        total_pixels += width * height
+        blob_bytes += len(primary) + (
+            len(texture) if texture is not None else 0
+        )
+    overhead_per_tile = (total_bytes - blob_bytes) / tile_count
+    payload_bytes_per_pixel = payload_bytes / total_pixels
+
+    with capsys.disabled():
+        _emit(
+            f"\n[size-budget] tiles.hfp pack ({tile_count} tiles, "
+            f"{total_bytes} bytes total): {overhead_per_tile:.1f} B/tile "
+            "index+hash overhead (96 entry + 64 hash + align + amortised "
+            "header)"
+        )
+        _emit(
+            "[size-budget] heightfield payload, 12-bit/zstd-3: "
+            f"{payload_bytes_per_pixel:.3f} B/px "
+            "(reference 1.3-1.8 B/px on real terrain)"
+        )
+
+    assert payload_bytes_per_pixel <= _HF_PAYLOAD_CEILING_BYTES_PER_PIXEL, (
+        f"heightfield payload {payload_bytes_per_pixel:.3f} B/px exceeds "
+        f"the {_HF_PAYLOAD_CEILING_BYTES_PER_PIXEL} B/px sanity ceiling"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -547,6 +652,7 @@ def test_committed_fixtures_are_not_stale(
         "`uv run python -m tests.tiles3d.regen_rust_fixtures`"
     )
     pin_geodesy(monkeypatch)
+    pin_producer(monkeypatch)
     out = tmp_path / "out"
     build_fixture(tmp_path, out, FIXTURE_PROFILES[name])
     assert _digests(out) == _digests(committed)

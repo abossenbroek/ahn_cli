@@ -10,6 +10,7 @@ from click.testing import CliRunner, Result
 import ahn_cli.cli.app as app_module
 from ahn_cli.cli import cli
 from ahn_cli.tiles3d import jpeg, meshopt, quantize
+from ahn_cli.tiles3d.pack import read_pack
 from tests.tiles3d.conftest import (
     grid_for_ortho,
     make_ortho,
@@ -129,31 +130,36 @@ def _run(out: Path, ortho: Path, heights: Path, *profile: str) -> Result:
 
 
 def test_tiles3d_game_profile_writes_provenance(tmp_path: Path) -> None:
-    """`--profile game` builds, echoes the profile, writes provenance.json."""
+    """`--profile game` builds, echoes the profile, writes the packed set."""
     ortho, heights = _inputs(tmp_path)
     out = tmp_path / "game"
     result = _run(out, ortho, heights, "--profile", "game")
     assert result.exit_code == 0, result.output
     assert "verified. profile=game." in result.output
     assert (out / "tileset.json").is_file()
-    assert (out / "tiles" / "0-0-0.glb").is_file()
+    # Packed layout: content lives in tiles.hfp, not loose tiles/.
+    assert (out / "tiles.hfp").is_file()
+    assert not (out / "tiles").exists()
+    dataset_id = read_pack(out / "tiles.hfp").header.dataset_id.hex()
     document = json.loads((out / "provenance.json").read_text())
-    assert document == {
-        "profile": "game",
-        "quantization": {
-            "position_bits": 16,
-            "uv": "normalized-uint16",
-            "scheme": document["quantization"]["scheme"],
-        },
-        "jpeg": {
-            "quality": jpeg.JPEG_QUALITY,
-            "subsampling": jpeg.JPEG_SUBSAMPLING,
-            "progressive": jpeg.JPEG_PROGRESSIVE,
-            "optimize": jpeg.JPEG_OPTIMIZE,
-            "pillow": jpeg.pillow_version(),
-        },
-        "encoders": {"meshoptimizer": meshopt.meshoptimizer_version()},
+    assert document["profile"] == "game"
+    assert document["quantization"] == {
+        "position_bits": 16,
+        "uv": "normalized-uint16",
+        "scheme": document["quantization"]["scheme"],
     }
+    assert document["jpeg"] == {
+        "quality": jpeg.JPEG_QUALITY,
+        "subsampling": jpeg.JPEG_SUBSAMPLING,
+        "progressive": jpeg.JPEG_PROGRESSIVE,
+        "optimize": jpeg.JPEG_OPTIMIZE,
+        "pillow": jpeg.pillow_version(),
+    }
+    assert document["encoders"] == {
+        "meshoptimizer": meshopt.meshoptimizer_version()
+    }
+    assert document["pack"]["dataset_id"] == dataset_id
+    assert set(document["producer"]) == {"platform", "python"}
     assert quantize.UINT16_MAX.bit_length() == 16
 
 
@@ -218,8 +224,12 @@ def test_tiles3d_heightfield_profile_builds_and_writes_provenance(
     assert result.exit_code == 0, result.output
     assert "verified. profile=heightfield." in result.output
     assert (out / "tileset.json").is_file()
-    assert (out / "tiles" / "0-0-0.hf").is_file()
-    assert (out / "tiles" / "0-0-0.jpg").is_file()
+    assert (out / "tiles.hfp").is_file()
+    assert not (out / "tiles").exists()
+    pack = read_pack(out / "tiles.hfp")
+    assert pack.header.content_kind == 0
+    assert all(entry.texture_size > 0 for entry in pack.entries)
     document = json.loads((out / "provenance.json").read_text())
     assert document["profile"] == "heightfield"
-    assert document["quantization"]["height_bits"] == 16
+    assert document["quantization"]["height_bits"] == 12
+    assert document["pack"]["dataset_id"] == pack.header.dataset_id.hex()

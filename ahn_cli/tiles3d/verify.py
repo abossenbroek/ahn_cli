@@ -24,8 +24,33 @@ it against both the OGC 3D Tiles 1.1 / glTF 2.0 rules and an
 7.  containment: every sampled vertex's EPSG:4979 coordinate inside
     the tile's stored region and every ancestor's stored region.
 8.  coverage: the recomputed leaf spans cover every grid pixel.
-9.  byte identity: every glb and tileset.json byte-equal to a full
-    independent rebuild from the (re-verified) sources.
+9.  byte identity: for the strict profile every glb and tileset.json;
+    for the packed lossy profiles the whole ``tiles.hfp`` pack plus
+    ``tileset.json``, ``provenance.json`` and ``manifest.json`` — each
+    byte-equal to a full independent rebuild from the (re-verified) sources.
+
+For the packed profiles the per-tile checks read each tile's content from
+the pack (via :func:`~ahn_cli.tiles3d.pack.read_pack`, which fully
+validates the container) materialised to a scratch ``tiles/`` directory, so
+the strict/game/heightfield per-tile verifiers are identical either way.
+On top of the container-level rejects ``read_pack`` already enforces, the
+packed profiles add three **deep pack checks**, all run before the
+byte-identity backstop:
+
+- the **two-encodings witness** — the pack index and the ``tileset.json``
+  sidecar are two encodings of one scene, and must agree bit-for-bit where
+  they overlap: a one-to-one, onto URI(canonical parse)↔key mapping, each
+  tile's six-double ``region`` and ``geometricError`` (f64 bit patterns,
+  after JSON round-trip) bit-equal, and the pack header's
+  ``root_geometric_error`` bit-equal to the tileset's top-level
+  ``geometricError``;
+- the **chunk↔entry semantic cross-check** (heightfield only) — each ``.hf``
+  chunk header's ``region`` is horizontally bit-equal to its pack index
+  entry region and height-contained within it (leaves bit-equal in all six),
+  the wrong-tile-under-right-key guard the pack spec assigns the verifier;
+- **manifest recompute** — ``manifest.json`` byte-equals a recomputation of
+  the on-disk artifacts' SHA-256 digests + sizes tied to the pack's
+  ``dataset_id``.
 
 Any violation raises :class:`Tiles3dError`; the build orchestrator
 then removes everything it wrote.
@@ -33,22 +58,33 @@ then removes everything it wrote.
 
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 import math
+import re
 import struct
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 
 from ahn_cli.tiles3d.emit import (
+    MANIFEST_NAME,
+    TILES_HFP_NAME,
     TILES_SUBDIR,
     TILESET_NAME,
     compute_build,
+    compute_packed_build,
     texture_uri,
     tile_uri,
 )
 from ahn_cli.tiles3d.errors import Tiles3dError
 from ahn_cli.tiles3d.geodesy import Geodesy
+from ahn_cli.tiles3d.heightfield import decode_heightfield
+from ahn_cli.tiles3d.manifest import FileDigest, render_manifest
+from ahn_cli.tiles3d.pack import Pack, read_pack, write_pack
 from ahn_cli.tiles3d.png import decode_png
 from ahn_cli.tiles3d.profile import Profile
 from ahn_cli.tiles3d.provenance import PROVENANCE_NAME, render_provenance
@@ -59,7 +95,7 @@ from ahn_cli.tiles3d.verify_game import verify_game_tile
 from ahn_cli.tiles3d.verify_heightfield import verify_heightfield_tile
 
 if TYPE_CHECKING:
-    from pathlib import Path
+    from collections.abc import Sequence
 
     import numpy.typing as npt
 
@@ -74,6 +110,14 @@ _CHUNK_JSON = 0x4E4F534A
 _CHUNK_BIN = 0x004E4942
 _REGION_LENGTH = 6
 _TRIANGLE = 3
+_HORIZONTAL = 4
+
+_TileKey = tuple[int, int, int]
+_URI_PATTERN = re.compile(
+    r"tiles/(0|[1-9][0-9]*)-(0|[1-9][0-9]*)-(0|[1-9][0-9]*)\.(.+)"
+)
+"""Strict canonical ``tiles/<level>-<tx>-<ty>.<ext>`` parse: base-10 with no
+leading zeros (a bare ``0`` where zero), used by the two-encodings witness."""
 
 _TOP_KEYS = {"asset", "geometricError", "root"}
 _ASSET = {"generator": "ahn_cli tiles3d", "version": "1.1"}
@@ -100,10 +144,11 @@ def verify_tiles3d(
         - Returns only when every check in the module docstring holds,
           all from fresh disk reads.
         - ``profile`` selects the encoder for the independent rebuild so
-          the byte-identity backstop reproduces the same on-disk bytes;
-          under either lossy profile (game or heightfield) that backstop
-          also covers ``provenance.json``. Each profile runs its own
-          per-tile checks before the backstop: the strict profile's
+          the byte-identity backstop reproduces the same on-disk bytes:
+          for strict every ``.glb`` + ``tileset.json``; for the packed lossy
+          profiles the whole ``tiles.hfp`` pack plus ``tileset.json``,
+          ``provenance.json`` and ``manifest.json``. Each profile runs its
+          own per-tile checks before the backstop: the strict profile's
           float32/PNG glTF/texture/containment checks; the game profile's
           four quantized/meshopt/JPEG families plus dequantized-vertex
           containment (:func:`~ahn_cli.tiles3d.verify_game.verify_game_tile`);
@@ -125,8 +170,67 @@ def verify_tiles3d(
         tile_uri(t, profile): texture_uri(t, profile) for t in tiles
     }
     expected_textures = {u for u in texture_by_uri.values() if u is not None}
-    _verify_links(out_dir, flat, tiles_by_uri, expected_textures)
     geodesy = Geodesy()
+    if profile is Profile.STRICT:
+        _verify_tile_content(
+            out_dir,
+            flat,
+            tiles_by_uri,
+            texture_by_uri,
+            expected_textures,
+            terrain,
+            geodesy,
+            profile,
+        )
+        computed = compute_build(terrain, tree, encoder=profile.encoder())
+        _verify_byte_identity(out_dir, computed)
+        return
+    # Packed lossy profiles: read the content from the AHNP pack (fully
+    # validating the container), cross-check the two encodings and the .hf
+    # chunks against the pack index, materialise the blobs to a scratch tiles/
+    # layout so the per-tile checks re-read from disk exactly as the strict
+    # path does, verify the manifest recompute, then byte-compare the whole
+    # packed deliverable against a rebuild.
+    pack = read_pack(out_dir / TILES_HFP_NAME)
+    _verify_two_encodings(pack, flat, document, profile)
+    if profile is Profile.HEIGHTFIELD:
+        # Runs before the per-tile source checks so a corrupted chunk region
+        # attributes to this cross-check, not the chunk<->mesh comparison.
+        _verify_chunk_entry(pack, tiles_by_uri)
+    with TemporaryDirectory() as scratch:
+        content_root = Path(scratch)
+        _materialise_pack(pack, content_root, profile)
+        _verify_tile_content(
+            content_root,
+            flat,
+            tiles_by_uri,
+            texture_by_uri,
+            expected_textures,
+            terrain,
+            geodesy,
+            profile,
+        )
+    _verify_manifest(out_dir, pack)
+    _verify_packed_byte_identity(out_dir, terrain, tree, profile)
+
+
+def _verify_tile_content(
+    content_root: Path,
+    flat: _Flat,
+    tiles_by_uri: dict[str, TilePlan],
+    texture_by_uri: dict[str, str | None],
+    expected_textures: set[str],
+    terrain: TerrainGrid,
+    geodesy: Geodesy,
+    profile: Profile,
+) -> None:
+    """Run the link + per-tile checks against ``content_root``'s tiles/.
+
+    ``content_root`` is ``out_dir`` for the strict profile's loose tiles and
+    a scratch directory holding the pack's materialised blobs for the lossy
+    profiles; the per-tile verifiers are identical either way.
+    """
+    _verify_links(content_root, flat, tiles_by_uri, expected_textures)
     for entry, enclosing_regions in flat:
         uri = _entry_uri(entry)
         tile = tiles_by_uri[uri]
@@ -134,13 +238,13 @@ def verify_tiles3d(
             # This profile always writes a sibling texture (never None).
             texture = cast("str", texture_by_uri[uri])
             verify_heightfield_tile(
-                out_dir, uri, texture, terrain, tile, geodesy
+                content_root, uri, texture, terrain, tile, geodesy
             )
             _verify_containment(
                 terrain, tile, enclosing_regions, geodesy, uri
             )
         else:
-            gltf, binary = _parse_glb((out_dir / uri).read_bytes(), uri)
+            gltf, binary = _parse_glb((content_root / uri).read_bytes(), uri)
             if profile is Profile.STRICT:
                 _verify_gltf(gltf, binary, uri)
                 _verify_texture(gltf, binary, terrain, tile, uri)
@@ -157,8 +261,227 @@ def verify_tiles3d(
                     geodesy,
                     uri,
                 )
-    computed = compute_build(terrain, tree, encoder=profile.encoder())
-    _verify_byte_identity(out_dir, computed, profile)
+
+
+def _materialise_pack(
+    pack: Pack, content_root: Path, profile: Profile
+) -> None:
+    """Write every pack blob to ``content_root/tiles/`` under its uri name.
+
+    Restores the loose ``tiles/<level>-<tx>-<ty>.<ext>`` layout (plus the
+    heightfield ``.jpg`` siblings) from the validated pack so the untouched
+    per-tile verifiers can re-read each tile from disk.
+    """
+    tiles_dir = content_root / TILES_SUBDIR
+    tiles_dir.mkdir()
+    content_suffix = profile.content_suffix()
+    texture_suffix = profile.texture_suffix()
+    for index, entry in enumerate(pack.entries):
+        base = f"{entry.level}-{entry.tx}-{entry.ty}"
+        (tiles_dir / f"{base}{content_suffix}").write_bytes(
+            pack.primary_blob(index)
+        )
+        if texture_suffix is not None:
+            texture = pack.texture_blob(index)
+            # content_kind = 0 (heightfield) always carries a texture blob.
+            (tiles_dir / f"{base}{texture_suffix}").write_bytes(
+                cast("bytes", texture)
+            )
+
+
+def _f64_bits(value: float) -> bytes:
+    """Return a float's little-endian IEEE 754 binary64 bit pattern."""
+    return struct.pack("<d", float(value))
+
+
+def _region_bits(region: Sequence[float]) -> bytes:
+    """Return the concatenated bit patterns of a region's doubles."""
+    return b"".join(_f64_bits(v) for v in region)
+
+
+def _parse_tile_uri(uri: str, expected_ext: str) -> _TileKey:
+    """Parse ``tiles/<level>-<tx>-<ty>.<ext>`` strictly into ``(level, tx, ty)``.
+
+    The extension must be exactly ``expected_ext`` (``hf`` / ``glb``), the
+    three integers base-10 with no leading zeros; any deviation is rejected.
+    """
+    match = _URI_PATTERN.fullmatch(uri)
+    if match is None or match.group(4) != expected_ext:
+        msg = (
+            f"content uri {uri!r} is not the canonical "
+            f"tiles/<level>-<tx>-<ty>.{expected_ext} form."
+        )
+        raise Tiles3dError(msg)
+    return (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+
+
+def _verify_two_encodings(
+    pack: Pack,
+    flat: _Flat,
+    document: dict[str, Any],
+    profile: Profile,
+) -> None:
+    """Cross-check the pack index against tileset.json, bit-for-bit.
+
+    The two-encodings witness. Maps every ``tileset.json`` ``content.uri`` to
+    a pack key by the strict
+    canonical parse, demands a one-to-one onto correspondence with the pack
+    index (no orphan either way), then bit-compares each matched tile's
+    ``region`` and ``geometricError`` and the pack header's
+    ``root_geometric_error`` against the tileset's top-level ``geometricError``.
+    """
+    expected_ext = profile.content_suffix()[1:]
+    tileset_by_key: dict[_TileKey, dict[str, Any]] = {}
+    for entry, _ in flat:
+        key = _parse_tile_uri(_entry_uri(entry), expected_ext)
+        tileset_by_key[key] = entry
+    pack_by_key = {(e.level, e.tx, e.ty): e for e in pack.entries}
+    for key in tileset_by_key:
+        _require(
+            key in pack_by_key,
+            f"tileset entry tiles/{key[0]}-{key[1]}-{key[2]}.{expected_ext} "
+            "has no matching pack index entry.",
+        )
+    for key in pack_by_key:
+        _require(
+            key in tileset_by_key,
+            f"pack index entry tiles/{key[0]}-{key[1]}-{key[2]}."
+            f"{expected_ext} has no matching tileset.json entry.",
+        )
+    _require(
+        _f64_bits(pack.header.root_geometric_error)
+        == _f64_bits(cast("float", document["geometricError"])),
+        "the pack header root_geometric_error does not bit-equal the "
+        "tileset.json top-level geometricError.",
+    )
+    for key, entry in tileset_by_key.items():
+        pack_entry = pack_by_key[key]
+        uri = _entry_uri(entry)
+        region = cast("list[float]", entry["boundingVolume"]["region"])
+        _require(
+            _region_bits(region) == _region_bits(pack_entry.region),
+            f"{uri}: the tileset region does not bit-equal the pack index "
+            "entry region.",
+        )
+        _require(
+            _f64_bits(cast("float", entry["geometricError"]))
+            == _f64_bits(pack_entry.geometric_error),
+            f"{uri}: the tileset geometricError does not bit-equal the pack "
+            "index entry geometric_error.",
+        )
+
+
+def _verify_chunk_entry(
+    pack: Pack, tiles_by_uri: dict[str, TilePlan]
+) -> None:
+    """Cross-check each ``.hf`` chunk-header region against its pack entry.
+
+    The chunk header carries the tile's *own* mesh region; the pack index
+    entry carries the *enclosing* region. Per the chunk spec's region
+    semantics the four horizontal doubles are bit-equal for every tile and
+    the chunk height range is contained in the entry's — bit-equal in all six
+    for a leaf. ``rtc_centre`` / quantizer consistency is left to
+    :func:`~ahn_cli.tiles3d.verify_heightfield.verify_heightfield_tile`
+    (chunk vs the reloaded sources); this only relates the two on-disk
+    encodings.
+    """
+    plan_by_key = {
+        (tile.level, tile.tx, tile.ty): tile for tile in tiles_by_uri.values()
+    }
+    for index, entry in enumerate(pack.entries):
+        uri = f"{TILES_SUBDIR}/{entry.level}-{entry.tx}-{entry.ty}.hf"
+        chunk_region = decode_heightfield(pack.primary_blob(index)).region
+        _require(
+            _region_bits(chunk_region[:_HORIZONTAL])
+            == _region_bits(entry.region[:_HORIZONTAL]),
+            f"{uri}: the heightfield chunk horizontal region does not "
+            "bit-equal the pack index entry region.",
+        )
+        _require(
+            entry.region[4] <= chunk_region[4]
+            and chunk_region[5] <= entry.region[5],
+            f"{uri}: the heightfield chunk height range is not contained in "
+            "the pack index entry height range.",
+        )
+        if not plan_by_key[(entry.level, entry.tx, entry.ty)].children:
+            _require(
+                _region_bits(chunk_region) == _region_bits(entry.region),
+                f"{uri}: the leaf heightfield chunk region does not bit-equal "
+                "the pack index entry region.",
+            )
+
+
+def _verify_manifest(out_dir: Path, pack: Pack) -> None:
+    """Byte-compare manifest.json against a recompute of the on-disk files.
+
+    Recomputes each loose file's + the pack's SHA-256 and size straight from
+    disk, ties them to the pack's ``dataset_id``, renders the manifest and
+    demands it byte-equal the written ``manifest.json`` — so a manifest whose
+    digests, sizes or ``dataset_id`` drift from the artifacts they describe is
+    refused before the byte-identity backstop.
+    """
+    files = {
+        name: FileDigest(
+            sha256=hashlib.sha256(data).hexdigest(), size=len(data)
+        )
+        for name in (TILESET_NAME, PROVENANCE_NAME, TILES_HFP_NAME)
+        for data in ((out_dir / name).read_bytes(),)
+    }
+    expected = render_manifest(files, pack.header.dataset_id.hex()).encode(
+        "utf-8"
+    )
+    _require(
+        (out_dir / MANIFEST_NAME).read_bytes() == expected,
+        "manifest.json does not match a recomputation of the on-disk "
+        "artifacts' digests, sizes and dataset_id.",
+    )
+
+
+def _verify_packed_byte_identity(
+    out_dir: Path, terrain: TerrainGrid, tree: TreePlan, profile: Profile
+) -> None:
+    """Byte-compare the packed deliverable against an independent rebuild.
+
+    Rebuilds ``tiles.hfp`` (in memory), the ``tileset.json`` sidecar, the
+    ``provenance.json`` (with the rebuilt pack's ``dataset_id``) and the
+    ``manifest.json`` from the re-verified sources, and demands each of the
+    four on-disk files match byte for byte.
+    """
+    packed = compute_packed_build(terrain, tree, profile=profile)
+    buffer = io.BytesIO()
+    dataset_id = write_pack(
+        buffer,
+        packed.entries,
+        packed.blob_source,
+        root_geometric_error=packed.root_geometric_error,
+        content_kind=packed.content_kind,
+    )
+    pack_bytes = buffer.getvalue()
+    tileset_bytes = render_tileset(packed.document).encode("utf-8")
+    provenance = render_provenance(profile, dataset_id=dataset_id.hex())
+    provenance_bytes = cast("str", provenance).encode("utf-8")
+    members = {
+        TILESET_NAME: tileset_bytes,
+        PROVENANCE_NAME: provenance_bytes,
+        TILES_HFP_NAME: pack_bytes,
+    }
+    files = {
+        name: FileDigest(
+            sha256=hashlib.sha256(data).hexdigest(), size=len(data)
+        )
+        for name, data in members.items()
+    }
+    manifest_bytes = render_manifest(files, dataset_id.hex()).encode("utf-8")
+    for name, expected in (
+        (TILES_HFP_NAME, pack_bytes),
+        (TILESET_NAME, tileset_bytes),
+        (PROVENANCE_NAME, provenance_bytes),
+        (MANIFEST_NAME, manifest_bytes),
+    ):
+        _require(
+            (out_dir / name).read_bytes() == expected,
+            f"{name} does not byte-equal its independent rebuild.",
+        )
 
 
 def _walk(tile: TilePlan) -> list[TilePlan]:
@@ -372,8 +695,14 @@ def _verify_links(
 
     ``expected_textures`` are the sibling texture files a profile writes
     but does not reference from ``tileset.json`` (empty for the
-    embedded-texture glTF profiles): each must exist, and they are excluded
-    from the orphan sweep so a genuine texture is not mistaken for one.
+    embedded-texture glTF profiles); they are excluded from the orphan sweep
+    so a genuine texture is not mistaken for one. Their *presence* is not
+    re-checked here: the heightfield profile is the only one with sibling
+    textures, and its ``_verify_links`` runs against the scratch dir
+    :func:`_materialise_pack` just filled — which writes a ``.jpg`` for every
+    pack entry, and ``pack.read_pack`` guarantees every ``content_kind=0``
+    entry carries a texture blob — so a texture can never be absent while its
+    ``.hf`` (checked first, below) is present.
     """
     seen: set[str] = set()
     for entry, _ in flat:
@@ -397,11 +726,6 @@ def _verify_links(
         _require(
             (out_dir / uri).is_file(),
             f"missing content file: {uri}.",
-        )
-    for texture in sorted(expected_textures):
-        _require(
-            (out_dir / texture).is_file(),
-            f"missing texture file: {texture}.",
         )
     on_disk = {
         f"{TILES_SUBDIR}/{path.name}"
@@ -588,21 +912,14 @@ def _points_within(
     )
 
 
-def _verify_byte_identity(
-    out_dir: Path, computed: ComputedBuild, profile: Profile
-) -> None:
-    """Verify every artifact byte-equals its independent rebuild.
+def _verify_byte_identity(out_dir: Path, computed: ComputedBuild) -> None:
+    """Verify the strict deliverable byte-equals its independent rebuild.
 
-    Covers every tile content file and every sibling texture file (the
-    heightfield profile's ``.jpg`` set), plus — under the lossy profiles —
-    ``provenance.json``, recomputed in-process from the pinned settings.
+    The strict profile embeds its texture in each glb and writes no sidecar,
+    so this covers every ``.glb`` plus ``tileset.json``; the packed lossy
+    profiles have their own backstop (:func:`_verify_packed_byte_identity`).
     """
     for uri, expected in computed.glbs.items():
-        _require(
-            (out_dir / uri).read_bytes() == expected,
-            f"{uri} does not byte-equal its independent rebuild.",
-        )
-    for uri, expected in computed.textures.items():
         _require(
             (out_dir / uri).read_bytes() == expected,
             f"{uri} does not byte-equal its independent rebuild.",
@@ -612,10 +929,3 @@ def _verify_byte_identity(
         == render_tileset(computed.document).encode("utf-8"),
         "tileset.json does not byte-equal its independent rebuild.",
     )
-    provenance = render_provenance(profile)
-    if provenance is not None:
-        _require(
-            (out_dir / PROVENANCE_NAME).read_bytes()
-            == provenance.encode("utf-8"),
-            "provenance.json does not byte-equal its independent rebuild.",
-        )

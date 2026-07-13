@@ -24,8 +24,15 @@ it against both the OGC 3D Tiles 1.1 / glTF 2.0 rules and an
 7.  containment: every sampled vertex's EPSG:4979 coordinate inside
     the tile's stored region and every ancestor's stored region.
 8.  coverage: the recomputed leaf spans cover every grid pixel.
-9.  byte identity: every glb and tileset.json byte-equal to a full
-    independent rebuild from the (re-verified) sources.
+9.  byte identity: for the strict profile every glb and tileset.json;
+    for the packed lossy profiles the whole ``tiles.hfp`` pack plus
+    ``tileset.json``, ``provenance.json`` and ``manifest.json`` — each
+    byte-equal to a full independent rebuild from the (re-verified) sources.
+
+For the packed profiles the per-tile checks read each tile's content from
+the pack (via :func:`~ahn_cli.tiles3d.pack.read_pack`, which fully
+validates the container) materialised to a scratch ``tiles/`` directory, so
+the strict/game/heightfield per-tile verifiers are identical either way.
 
 Any violation raises :class:`Tiles3dError`; the build orchestrator
 then removes everything it wrote.
@@ -107,10 +114,11 @@ def verify_tiles3d(
         - Returns only when every check in the module docstring holds,
           all from fresh disk reads.
         - ``profile`` selects the encoder for the independent rebuild so
-          the byte-identity backstop reproduces the same on-disk bytes;
-          under either lossy profile (game or heightfield) that backstop
-          also covers ``provenance.json``. Each profile runs its own
-          per-tile checks before the backstop: the strict profile's
+          the byte-identity backstop reproduces the same on-disk bytes:
+          for strict every ``.glb`` + ``tileset.json``; for the packed lossy
+          profiles the whole ``tiles.hfp`` pack plus ``tileset.json``,
+          ``provenance.json`` and ``manifest.json``. Each profile runs its
+          own per-tile checks before the backstop: the strict profile's
           float32/PNG glTF/texture/containment checks; the game profile's
           four quantized/meshopt/JPEG families plus dequantized-vertex
           containment (:func:`~ahn_cli.tiles3d.verify_game.verify_game_tile`);
@@ -501,8 +509,14 @@ def _verify_links(
 
     ``expected_textures`` are the sibling texture files a profile writes
     but does not reference from ``tileset.json`` (empty for the
-    embedded-texture glTF profiles): each must exist, and they are excluded
-    from the orphan sweep so a genuine texture is not mistaken for one.
+    embedded-texture glTF profiles); they are excluded from the orphan sweep
+    so a genuine texture is not mistaken for one. Their *presence* is not
+    re-checked here: the heightfield profile is the only one with sibling
+    textures, and its ``_verify_links`` runs against the scratch dir
+    :func:`_materialise_pack` just filled — which writes a ``.jpg`` for every
+    pack entry, and ``pack.read_pack`` guarantees every ``content_kind=0``
+    entry carries a texture blob — so a texture can never be absent while its
+    ``.hf`` (checked first, below) is present.
     """
     seen: set[str] = set()
     for entry, _ in flat:
@@ -526,11 +540,6 @@ def _verify_links(
         _require(
             (out_dir / uri).is_file(),
             f"missing content file: {uri}.",
-        )
-    for texture in sorted(expected_textures):
-        _require(
-            (out_dir / texture).is_file(),
-            f"missing texture file: {texture}.",
         )
     on_disk = {
         f"{TILES_SUBDIR}/{path.name}"

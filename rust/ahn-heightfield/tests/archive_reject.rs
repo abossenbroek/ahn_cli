@@ -500,3 +500,56 @@ fn truncation_after_header_is_file_size_mismatch() {
         );
     }
 }
+
+// ---- allocation bounds ----------------------------------------------------
+
+#[test]
+fn giant_counts_do_not_allocate() {
+    // A file_size-honest 128-byte pack (just the header; file_size == actual ==
+    // 128) declaring u32::MAX tile_count/level_count, with internally-consistent
+    // index_size/hash_offset/hash_size and a valid header_crc32. Every header
+    // check passes, so a reader trusting the counts would allocate a ~481 GB
+    // index. The bound rejects it *before* any allocation — this test finishing
+    // near-instantly (not OOM-ing) is the practical proof.
+    let count = u32::MAX;
+    let index_size = u64::from(count) * 16 + u64::from(count) * 96;
+    let hash_offset = 128 + index_size;
+    let hash_size = u64::from(count) * 64;
+
+    let mut p = vec![0u8; 128];
+    p[0..4].copy_from_slice(b"AHNP");
+    p[4..8].copy_from_slice(&1u32.to_le_bytes()); // format_version
+    p[8..12].copy_from_slice(&count.to_le_bytes()); // tile_count
+    p[12..16].copy_from_slice(&count.to_le_bytes()); // level_count (== tile_count, allowed)
+    p[16..24].copy_from_slice(&128u64.to_le_bytes()); // index_offset
+    p[24..32].copy_from_slice(&index_size.to_le_bytes());
+    p[32..40].copy_from_slice(&hash_offset.to_le_bytes());
+    p[40..48].copy_from_slice(&hash_size.to_le_bytes());
+    p[48..56].copy_from_slice(&128u64.to_le_bytes()); // file_size == actual length
+    p[56..64].copy_from_slice(&8.0f64.to_le_bytes()); // root_geometric_error
+                                                      // content_kind (104), reserved (100) and pad all stay zero.
+    let header_crc = crc32fast::hash(&p[..124]);
+    p[124..128].copy_from_slice(&header_crc.to_le_bytes());
+
+    let region_end = hash_offset + hash_size;
+    assert!(matches!(
+        open_err(&p),
+        HfError::IndexHashBeyondEof { region_end: re, file_size: 128 }
+            if re == region_end
+    ));
+}
+
+#[test]
+fn trailing_bytes_after_last_blob() {
+    let mut p = hf();
+    let blob_end = p.len() as u64; // committed pack ends exactly at its last blob
+    p.extend_from_slice(&[0u8; 16]); // append trailing bytes past the last blob
+    let new_len = p.len() as u64;
+    p[48..56].copy_from_slice(&new_len.to_le_bytes()); // file_size -> actual length
+    common::resign_pack(&mut p);
+    assert!(matches!(
+        open_err(&p),
+        HfError::TrailingBytes { blob_region_end, file_size }
+            if blob_region_end == blob_end && file_size == new_len
+    ));
+}

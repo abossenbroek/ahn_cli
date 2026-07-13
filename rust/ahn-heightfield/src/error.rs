@@ -250,6 +250,21 @@ pub enum HfError {
         /// The actual file length.
         actual: u64,
     },
+    /// The index + hash region declared by the header ends past `file_size` —
+    /// `hash_offset + hash_size` (the blob-region start) exceeds `file_size`,
+    /// so a `file_size`-honest header nonetheless declares more index/hash than
+    /// the file can hold. Checked immediately after `file_size`, before any
+    /// count-sized allocation, so a corrupt `tile_count`/`level_count` can never
+    /// drive a giant allocation. The spec folds this into its
+    /// truncation/length-invariant rejects (`index_size`, `hash_size`,
+    /// `file_size`).
+    #[error("pack index/hash region ends at {region_end}, past file_size {file_size}")]
+    IndexHashBeyondEof {
+        /// End of the index + hash region (`hash_offset + hash_size`).
+        region_end: u64,
+        /// The pack's `file_size`.
+        file_size: u64,
+    },
     /// The index region's CRC-32/ISO-HDLC did not match.
     #[error("pack index CRC-32 mismatch: expected {expected:#010x}, computed {computed:#010x}")]
     IndexCrc {
@@ -362,6 +377,19 @@ pub enum HfError {
     InterBlobPadding {
         /// Offset of the non-zero padding byte.
         offset: u64,
+    },
+    /// Bytes remain between the final blob's end and `file_size` — a
+    /// trailing-byte or trailing-gap region after the last blob. A conforming
+    /// pack ends exactly at the last blob, so the read cursor must equal
+    /// `file_size`.
+    #[error(
+        "pack has trailing bytes: blob region ends at {blob_region_end}, file_size {file_size}"
+    )]
+    TrailingBytes {
+        /// End of the last blob (the read cursor after the blob scan).
+        blob_region_end: u64,
+        /// The pack's `file_size`.
+        file_size: u64,
     },
     /// A texture slot inconsistent with `content_kind` (kind 1 with a texture,
     /// or kind 0 with an empty texture).

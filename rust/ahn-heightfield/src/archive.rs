@@ -408,14 +408,16 @@ impl<R: ReadAt> Archive<R> {
     /// [`HfError::DegenerateCounts`], [`HfError::NonFiniteRootGeometricError`],
     /// [`HfError::ReservedNonZero`], [`HfError::BadContentKind`],
     /// [`HfError::IndexOffset`], [`HfError::IndexSize`], [`HfError::HashOffset`],
-    /// [`HfError::HashSize`], [`HfError::FileSize`], [`HfError::IndexCrc`],
+    /// [`HfError::HashSize`], [`HfError::FileSize`],
+    /// [`HfError::IndexHashBeyondEof`], [`HfError::IndexCrc`],
     /// [`HfError::DirectoryDiscontinuity`], [`HfError::EntryCountMismatch`],
     /// [`HfError::NotSorted`], [`HfError::TzNonZero`],
     /// [`HfError::NonFiniteEntryField`], [`HfError::RegionNotWellOrdered`],
     /// [`HfError::LevelOutOfDirectory`], [`HfError::NotAligned`],
     /// [`HfError::BlobOrder`], [`HfError::BlobOverlap`],
     /// [`HfError::BlobBeyondEof`], [`HfError::InterBlobPadding`],
-    /// [`HfError::TextureConsistency`], or [`HfError::Io`].
+    /// [`HfError::TrailingBytes`], [`HfError::TextureConsistency`], or
+    /// [`HfError::Io`].
     ///
     /// # Examples
     ///
@@ -534,6 +536,21 @@ impl<R: ReadAt> Archive<R> {
         }
         let file_size = le_u64(&hdr, 48);
         check_file_size(&reader, file_size)?;
+
+        // Bound every count-sized allocation before it is made: the index and
+        // hash regions must fit within the (already file-length-verified)
+        // `file_size`. `hash_offset + hash_size` is the blob-region start; both
+        // are the stored values, already checked equal to their count-derived
+        // forms, so this bounds `index_size` — and thus `tile_count` /
+        // `level_count` — to the file length. Without it, a `file_size`-honest
+        // header declaring giant counts would drive a giant `index` allocation.
+        let region_end = hash_offset.saturating_add(hash_size);
+        if region_end > file_size {
+            return Err(HfError::IndexHashBeyondEof {
+                region_end,
+                file_size,
+            });
+        }
 
         // ---- index region: one contiguous read + CRC ---------------------
         let index_len = usize::try_from(index_size).map_err(|_| {
@@ -707,6 +724,14 @@ impl<R: ReadAt> Archive<R> {
             if e.texture_size > 0 {
                 check(e.texture_offset, e.texture_size, BlobSlot::Texture)?;
             }
+        }
+        // A conforming pack ends exactly at the last blob; any bytes between the
+        // final blob's end and `file_size` are trailing/gap bytes and rejected.
+        if cursor != file_size {
+            return Err(HfError::TrailingBytes {
+                blob_region_end: cursor,
+                file_size,
+            });
         }
 
         Ok(Archive {

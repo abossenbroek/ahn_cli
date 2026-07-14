@@ -26,7 +26,11 @@ trained radiance field (no view-dependent SH, no multi-view training).
   and heightfield profiles, which also drape tiles with the raw sampled
   bytes untouched (see :mod:`ahn_cli.tiles3d.jpeg` /
   :mod:`ahn_cli.tiles3d.png`); this profile does not introduce a
-  colour-space conversion the others don't have either.
+  colour-space conversion the others don't have either. **Consumer note:**
+  because the game/heightfield mesh textures are sampled as sRGB while this
+  ``f_dc`` is treated as a linear SH coefficient, a splat cloud reads
+  brighter than the same ortho as a mesh texture; a consumer that needs
+  colour parity between the two must sRGB-decode ``f_dc`` on its side.
 - ``opacity``: a fixed full-opacity constant for every gaussian (not
   data-derived).
 - ``rotation``: the identity quaternion for every gaussian (axis-aligned,

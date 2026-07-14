@@ -1,10 +1,15 @@
 //! The `Plugin`: opens AHNP packs, drives per-frame LOD selection
 //! ([`engine::tree::select`]), and spawns/hides tile entities to match.
 //!
-//! Content decode is synchronous today (inline in [`stream_tiles`]) — handing
-//! it to `AsyncComputeTaskPool` so a big pack doesn't stall a frame is a
-//! documented follow-up, not a design constraint of this module (see the
-//! Track C report).
+//! Content decode runs on `AsyncComputeTaskPool` (see [`poll_tasks`]):
+//! selecting a `Pending` tile spawns a `Task` and flips it to `Loading` (not
+//! loadable again until it settles — [`crate::engine::tree::TileContent`]),
+//! so a tile is never decoded twice concurrently. Tasks are polled once per
+//! frame with `poll_once`, never blocked on; a pack whose entity is despawned
+//! mid-load drops its `Vec<Option<Task<_>>>` along with it, which cancels
+//! whatever's still in flight (`bevy_tasks::Task`'s own `Drop`) — there is no
+//! separate "stale task" bookkeeping to do because tile indices never change
+//! after `AhnpPack::open` (the tree is built once and never mutated).
 
 #[cfg(feature = "gpu_textures")]
 pub mod gpu_texture;
@@ -16,25 +21,41 @@ pub mod mesh_points;
 
 use std::collections::HashSet;
 use std::path::Path;
+use std::sync::Arc;
 
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::log::warn;
 use bevy::math::DVec3;
 use bevy::prelude::*;
+use bevy::tasks::{AsyncComputeTaskPool, Task, poll_once};
 
 use crate::ahnp::loader::{DecodedContent, decode_tile};
 use crate::ahnp::source::AhnpSource;
-use crate::engine::tree::{DEFAULT_SSE_THRESHOLD_PX, History, SelectParams, TileContent, select};
+use crate::engine::tree::{
+    DEFAULT_SSE_THRESHOLD_PX, History, SelectParams, TileContent, TileNode, select,
+};
 use crate::errors::AhnpError;
+
+/// A decode task's output: the tile it was decoding for (needed on
+/// completion to report/log against, since the task itself doesn't know its
+/// own index) plus the decode result.
+type DecodeTask = Task<(TileNode, Result<DecodedContent, AhnpError>)>;
 
 /// One opened pack's streaming state, as a component on a scene-owning
 /// entity. Add via [`AhnpPack::open`] + `commands.spawn(pack)`.
+///
+/// `source` is `Arc`-wrapped so an in-flight decode task can hold its own
+/// clone independent of the ECS borrow — `ahn_heightfield::Archive<R>` is
+/// `Send + Sync` whenever `R` is (it is, for `std::fs::File`) by design, so
+/// concurrent tile decodes from the same open archive are exactly what the
+/// underlying crate expects.
 #[derive(Component)]
 pub struct AhnpPack {
-    source: AhnpSource,
+    source: Arc<AhnpSource>,
     content: Vec<TileContent>,
     history: History,
     entities: Vec<Option<Entity>>,
+    tasks: Vec<Option<DecodeTask>>,
 }
 
 impl AhnpPack {
@@ -48,7 +69,8 @@ impl AhnpPack {
             content: vec![TileContent::Pending; n],
             history,
             entities: vec![None; n],
-            source,
+            tasks: (0..n).map(|_| None).collect(),
+            source: Arc::new(source),
         })
     }
 }
@@ -58,7 +80,7 @@ pub struct AhnpOrthoPlugin;
 
 impl Plugin for AhnpOrthoPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (tag_ortho_camera, stream_tiles));
+        app.add_systems(Update, (tag_ortho_camera, poll_tasks, stream_tiles).chain());
     }
 }
 
@@ -81,17 +103,90 @@ pub fn tag_ortho_camera(
     }
 }
 
-/// Per-frame: select the LOD cut for every open [`AhnpPack`] against the
-/// first `Camera3d` found, decode newly-selected tiles, and show/hide their
-/// entities to match the selection.
+/// Poll every in-flight decode task; on completion, build its mesh/material
+/// (or gaussian cloud) and spawn its (hidden) entity, or log+mark `Failed`.
+/// Runs before [`stream_tiles`] each frame so a tile that finished loading
+/// this frame is already `Ready` in time for this frame's selection.
 #[allow(clippy::too_many_arguments)]
+fn poll_tasks(
+    mut commands: Commands,
+    mut packs: Query<&mut AhnpPack>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut images: ResMut<Assets<Image>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    for mut pack in &mut packs {
+        let AhnpPack {
+            source,
+            content,
+            entities,
+            tasks,
+            ..
+        } = &mut *pack;
+        for i in 0..tasks.len() {
+            let Some(task) = &mut tasks[i] else { continue };
+            let Some((node, result)) = bevy::tasks::block_on(poll_once(task)) else {
+                continue;
+            };
+            tasks[i] = None;
+            match result {
+                Ok(DecodedContent::Heightfield {
+                    heightfield,
+                    texture,
+                }) => {
+                    let mesh = meshes.add(mesh_hf::build_mesh(source, &heightfield));
+                    let material_handle =
+                        textured_material(&mut materials, &mut images, texture.as_deref(), &node);
+                    let entity = commands
+                        .spawn((
+                            Mesh3d(mesh),
+                            MeshMaterial3d(material_handle),
+                            Transform::IDENTITY,
+                            Visibility::Hidden,
+                        ))
+                        .id();
+                    entities[i] = Some(entity);
+                    content[i] = TileContent::Ready;
+                }
+                Ok(DecodedContent::Game(tile)) => {
+                    let mesh = meshes.add(mesh_glb::build_mesh(source, &tile));
+                    let material_handle =
+                        textured_material(&mut materials, &mut images, Some(&tile.texture), &node);
+                    let entity = commands
+                        .spawn((
+                            Mesh3d(mesh),
+                            MeshMaterial3d(material_handle),
+                            Transform::IDENTITY,
+                            Visibility::Hidden,
+                        ))
+                        .id();
+                    entities[i] = Some(entity);
+                    content[i] = TileContent::Ready;
+                }
+                #[cfg(feature = "splat")]
+                Ok(DecodedContent::Splat(cloud)) => {
+                    entities[i] = Some(crate::splat::spawn_cloud(&mut commands, cloud));
+                    content[i] = TileContent::Ready;
+                }
+                Err(e) => {
+                    warn!(
+                        "tile ({}, {}, {}) failed to decode: {e}",
+                        node.key.level, node.key.tx, node.key.ty
+                    );
+                    content[i] = TileContent::Failed;
+                }
+            }
+        }
+    }
+}
+
+/// Per-frame: select the LOD cut for every open [`AhnpPack`] against the
+/// first `Camera3d` found, spawn decode tasks for newly-selected `Pending`
+/// tiles, and show/hide already-decoded entities to match the selection.
 fn stream_tiles(
     mut commands: Commands,
     mut packs: Query<&mut AhnpPack>,
     cameras: Query<(&GlobalTransform, &Projection, &Camera), With<Camera3d>>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut images: ResMut<Assets<Image>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     let Some((cam_gt, proj, camera)) = cameras.iter().next() else {
         return;
@@ -110,6 +205,7 @@ fn stream_tiles(
             content,
             history,
             entities,
+            tasks,
         } = &mut *pack;
         let inv = source.world_from_ecef.inverse();
         let cam_w = cam_gt.translation();
@@ -130,58 +226,24 @@ fn stream_tiles(
         };
         let sel = select(&source.tree, content, history, &|_| false, params);
 
+        let pool = AsyncComputeTaskPool::get();
         for req in &sel.loads {
+            // `select()` only ever requests a `loadable()` (i.e. `Pending`)
+            // tile — `Loading`/`Ready`/`Failed` are all excluded by
+            // construction (see `TileContent::loadable`) — so this check is
+            // a redundant, cheap belt-and-suspenders guard against ever
+            // double-spawning a task for the same tile.
             if content[req.tile] != TileContent::Pending {
                 continue;
             }
-            let node = &source.tree.nodes[req.tile];
-            match decode_tile(source, node) {
-                Ok(DecodedContent::Heightfield {
-                    heightfield,
-                    texture,
-                }) => {
-                    let mesh = meshes.add(mesh_hf::build_mesh(source, &heightfield));
-                    let material_handle =
-                        textured_material(&mut materials, &mut images, texture.as_deref(), node);
-                    let entity = commands
-                        .spawn((
-                            Mesh3d(mesh),
-                            MeshMaterial3d(material_handle),
-                            Transform::IDENTITY,
-                            Visibility::Hidden,
-                        ))
-                        .id();
-                    entities[req.tile] = Some(entity);
-                    content[req.tile] = TileContent::Ready;
-                }
-                Ok(DecodedContent::Game(tile)) => {
-                    let mesh = meshes.add(mesh_glb::build_mesh(source, &tile));
-                    let material_handle =
-                        textured_material(&mut materials, &mut images, Some(&tile.texture), node);
-                    let entity = commands
-                        .spawn((
-                            Mesh3d(mesh),
-                            MeshMaterial3d(material_handle),
-                            Transform::IDENTITY,
-                            Visibility::Hidden,
-                        ))
-                        .id();
-                    entities[req.tile] = Some(entity);
-                    content[req.tile] = TileContent::Ready;
-                }
-                #[cfg(feature = "splat")]
-                Ok(DecodedContent::Splat(cloud)) => {
-                    entities[req.tile] = Some(crate::splat::spawn_cloud(&mut commands, cloud));
-                    content[req.tile] = TileContent::Ready;
-                }
-                Err(e) => {
-                    warn!(
-                        "tile ({}, {}, {}) failed to decode: {e}",
-                        node.key.level, node.key.tx, node.key.ty
-                    );
-                    content[req.tile] = TileContent::Failed;
-                }
-            }
+            let node = source.tree.nodes[req.tile].clone();
+            let archive_source = Arc::clone(source);
+            let task = pool.spawn(async move {
+                let result = decode_tile(&archive_source, &node);
+                (node, result)
+            });
+            tasks[req.tile] = Some(task);
+            content[req.tile] = TileContent::Loading;
         }
 
         let want: HashSet<usize> = sel.render.iter().copied().collect();
@@ -206,7 +268,7 @@ fn textured_material(
     materials: &mut Assets<StandardMaterial>,
     images: &mut Assets<Image>,
     texture: Option<&[u8]>,
-    node: &crate::engine::tree::TileNode,
+    node: &TileNode,
 ) -> Handle<StandardMaterial> {
     #[cfg(feature = "gpu_textures")]
     let decoded = texture.map(gpu_texture::decode_jpeg_bc1);

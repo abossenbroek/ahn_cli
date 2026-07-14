@@ -281,14 +281,19 @@ impl History {
 /// Per-tile content readiness, as the traversal sees it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TileContent {
+    /// Not yet requested.
     Pending,
+    /// A decode task is in flight (an async renderer's equivalent of
+    /// `Pending`, but already requested — `loadable()` is `false` so
+    /// `select()` never asks for it twice while it's running).
+    Loading,
     Ready,
     Failed,
 }
 
 impl TileContent {
     fn settled(self) -> bool {
-        !matches!(self, TileContent::Pending)
+        !matches!(self, TileContent::Pending | TileContent::Loading)
     }
 
     fn loadable(self) -> bool {

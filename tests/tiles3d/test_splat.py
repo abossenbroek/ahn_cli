@@ -10,6 +10,7 @@ from __future__ import annotations
 import math
 
 import numpy as np
+import numpy.typing as npt
 import pytest
 import zstandard as zstd
 
@@ -46,7 +47,7 @@ def _payload(width: int = 6, height: int = 5, seed: int = 4) -> TilePayload:
     )
 
 
-def _expected_f_dc(payload: TilePayload) -> np.ndarray:
+def _expected_f_dc(payload: TilePayload) -> npt.NDArray[np.float32]:
     rgb = payload.rgb.reshape(-1, 3).astype(np.float64) / 255.0
     return ((rgb - 0.5) / SH_DC0).astype(np.float32)
 

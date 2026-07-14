@@ -241,6 +241,15 @@ def _cell_spacing(mesh: TileMesh) -> float:
     (:func:`~ahn_cli.tiles3d.quadtree.plan_quadtree`'s 2-sample-per-axis
     floor), so this is always defined for a genuine tile; applied uniformly
     (isotropic) as every gaussian's scale.
+
+    The full 3D (slant) distance is used deliberately, not a horizontal-only
+    projection: the isotropic gaussian must cover the *surface* between two
+    adjacent samples, which on sloped terrain is the slant span, not its
+    ground-plane shadow. A single deterministic edge (rather than a median
+    over all edges) keeps the measurement exactly reproducible and is a
+    coarse-but-honest per-tile scale — the splat profile is an isotropic
+    approximation by design (see the module docstring), not a per-vertex
+    covariance fit.
     """
     positions = mesh.positions.astype(np.float64)
     delta = positions[1] - positions[0]

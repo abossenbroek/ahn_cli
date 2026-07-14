@@ -83,8 +83,14 @@ def test_scale_is_isotropic_and_positive() -> None:
     first = decoded.scale[0, 0]
     assert bool(np.isfinite(decoded.scale).all())
     assert bool((decoded.scale == first).all())
-    # exp(scale) is the actual metric spacing, which must be positive.
-    assert math.exp(float(first)) > 0.0
+    # The stored value is log() of the tile's measured cell spacing — the
+    # RTC-frame distance between the first two column-adjacent vertices.
+    # Pin it against that independently-measured spacing (not the tautology
+    # exp(x) > 0, which holds for every finite x and asserts nothing).
+    positions = payload.mesh.positions.astype(np.float64)
+    delta = positions[1] - positions[0]
+    spacing = float(np.sqrt(np.sum(delta * delta)))
+    assert first == np.float32(math.log(spacing))
 
 
 def test_rotation_is_the_identity_quaternion() -> None:

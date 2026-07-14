@@ -11,11 +11,13 @@
 # only cost is wall-clock. Each job gets its own Swatinem/rust-cache entry
 # (the action keys caches by job name automatically), which also avoids the
 # cache thrashing that came from alternating `cargo test`/`clippy`/`build`
-# modes against one shared target dir. Every step that links a Bevy binary
-# passes `--features bevy/dynamic_linking` (Bevy's own documented CI/dev
-# speedup: the engine becomes a shared lib, so linking a test/example binary
-# against it is fast instead of relinking the whole static archive each
-# time) — harmless on steps that only `check`/`clippy` (no link happens).
+# modes against one shared target dir. The default-features test job passes
+# `--features bevy/dynamic_linking` (Bevy's own documented CI/dev speedup:
+# the engine becomes a shared lib, so linking the test binary against it is
+# fast instead of relinking the whole static archive) -- NOT the
+# --all-features job, since --all-features pulls in gpu_textures
+# (intel_tex_2, a C++/ISPC library) and dynamic linking's shared-lib link
+# config leaves libstdc++'s `__gxx_personality_v0` unresolved there.
 # The former "build --examples" step is now a `check` (no codegen/link;
 # `clippy --all-features --examples` already exercises the same code paths
 # for type errors, so `check` only needs to additionally validate the
@@ -117,9 +119,14 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
-      - name: cargo test --all-features --features bevy/dynamic_linking
+      # NOT bevy/dynamic_linking here: --all-features pulls in gpu_textures
+      # (intel_tex_2, a C++/ISPC library), and dynamic linking's shared-lib
+      # link config leaves `__gxx_personality_v0` (libstdc++'s C++ exception
+      # ABI symbol) unresolved -- linking fails outright. Only test-default
+      # (no C++ deps) gets the dynamic_linking speedup.
+      - name: cargo test --all-features
         working-directory: rust/bevy_ahnp_ortho
-        run: cargo test --all-features --features bevy/dynamic_linking
+        run: cargo test --all-features
 
   examples-check:
     name: cargo check --examples (splat,points, non-blocking)

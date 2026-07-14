@@ -56,6 +56,23 @@ cargo run --example viewer -- path/to/tiles.hfp
 cargo run --example viewer_splat --features splat -- path/to/splat_tiles.hfp
 ```
 
+**Splat render settings are a consumer choice, not baked into the pack.** The
+splat producer is a faithful, opinion-free encoding — one isotropic gaussian
+per cell — so *how* those gaussians are drawn is exposed via the
+`splat::SplatSettings(CloudSettings)` resource: insert it before tiles spawn
+to set `global_scale`, `global_opacity`, draw/rasterize mode, sort, etc. This
+is where the roof-vs-wall tradeoff lives: on 2.5D building walls the nadir AHN
+has no samples, so the raw encoding shows sparse round gaussians with the
+background between them; a larger `global_scale` overlaps them into a filled,
+smear-like face at the cost of crispness on the roofs. `examples/viewer_splat`
+wires this to `AHNP_SPLAT_SCALE` / `AHNP_SPLAT_OPACITY` env vars so you can
+dial it live:
+
+```bash
+AHNP_SPLAT_SCALE=3 AHNP_SPLAT_OPACITY=0.6 \
+  cargo run --example viewer_splat --features splat -- path/to/splat_tiles.hfp
+```
+
 ## Known limitations
 
 - **2.5D wall smearing (heightfield & game profiles) — intentionally not

@@ -17,20 +17,47 @@ use bevy::asset::AssetServer;
 use bevy::prelude::*;
 use bevy_gaussian_splatting::{CloudSettings, PlanarGaussian3d, PlanarGaussian3dHandle};
 
+/// Consumer-tunable render settings applied to every splat tile cloud this
+/// crate spawns ([`spawn_cloud`]).
+///
+/// The splat **producer** stays a faithful, opinion-free encoding — one
+/// isotropic gaussian per cell, the honest 2.5D sampling — so how those
+/// gaussians are *drawn* is deliberately left to the consumer rather than
+/// baked into the frozen pack. A viewer, a game, and an app can each dial the
+/// look they want here: e.g. a larger [`CloudSettings::global_scale`] overlaps
+/// the sparse gaussians that sit on building **wall** faces (where nadir AHN
+/// has no samples at all, so the raw encoding shows round blobs with the
+/// background between them), trading crispness on the roofs for a filled,
+/// smear-like wall — the same roof/wall tension the mesh profile resolves with
+/// a stretched triangle. `global_opacity`, `draw_mode`, `rasterize_mode` and
+/// the sort are yours to set too.
+///
+/// Insert this resource before the plugin spawns tiles to override it; absent,
+/// [`CloudSettings::default()`] is used. Mutating it does **not**
+/// retroactively re-style already-spawned tile entities — set it up front (or
+/// edit each tile's own `CloudSettings` component to restyle live).
+#[derive(Resource, Clone, Default)]
+pub struct SplatSettings(pub CloudSettings);
+
 /// Spawn `cloud` as a hidden gaussian-splat entity, returning its `Entity` so
 /// the caller can toggle `Visibility` per-frame like every other tile kind.
 ///
 /// Deferred via [`Commands::queue`]: the `Assets<PlanarGaussian3d>` resource
 /// insert happens on a synchronously-reserved [`Entity`] id
 /// ([`Commands::spawn_empty`]), so the id is usable immediately even though
-/// the asset add is applied later in the same frame.
+/// the asset add is applied later in the same frame. The queued closure also
+/// reads the [`SplatSettings`] resource at apply time, so the consumer's
+/// chosen render settings (or the default, if unset) style the cloud.
 pub fn spawn_cloud(commands: &mut Commands, cloud: PlanarGaussian3d) -> Entity {
     let entity = commands.spawn_empty().id();
     commands.queue(move |world: &mut World| {
+        let settings = world
+            .get_resource::<SplatSettings>()
+            .map_or_else(CloudSettings::default, |s| s.0.clone());
         let handle = world.resource_mut::<Assets<PlanarGaussian3d>>().add(cloud);
         world.entity_mut(entity).insert((
             PlanarGaussian3dHandle(handle),
-            CloudSettings::default(),
+            settings,
             Transform::default(),
             Visibility::Hidden,
         ));

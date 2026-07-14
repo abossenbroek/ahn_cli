@@ -17,6 +17,20 @@ fn game() -> Vec<u8> {
     common::read_pack("game")
 }
 
+/// A valid `content_kind = 2` (splat) pack, built by relabeling the
+/// committed no-texture `game` pack: `game` (kind 1) already satisfies
+/// splat's texture-forbidden layout exactly (`texture_offset`/`texture_size`
+/// zero, `texture_sha256` the zero sentinel), so flipping `content_kind`
+/// alone yields a spec-valid kind-2 pack. There is no Rust pack *encoder*
+/// (packs are Python-produced), so this is the crate's only way to
+/// construct one.
+fn splat() -> Vec<u8> {
+    let mut p = game();
+    p[104..108].copy_from_slice(&2u32.to_le_bytes());
+    common::resign_pack(&mut p);
+    p
+}
+
 fn open_err(bytes: &[u8]) -> HfError {
     match Archive::open(bytes) {
         Ok(_) => panic!("expected open to reject this pack"),
@@ -136,9 +150,9 @@ fn pad_non_zero() {
 #[test]
 fn bad_content_kind() {
     let mut p = hf();
-    p[104..108].copy_from_slice(&2u32.to_le_bytes());
+    p[104..108].copy_from_slice(&3u32.to_le_bytes());
     common::resign_pack(&mut p);
-    assert!(matches!(open_err(&p), HfError::BadContentKind { found: 2 }));
+    assert!(matches!(open_err(&p), HfError::BadContentKind { found: 3 }));
 }
 
 #[test]
@@ -461,6 +475,53 @@ fn texture_consistency_game_unexpected_texture() {
         HfError::TextureConsistency {
             index: 0,
             content_kind: 1
+        }
+    ));
+}
+
+// ---- splat (content_kind = 2) ---------------------------------------------
+
+#[test]
+fn open_accepts_a_splat_kind_pack() {
+    let p = splat();
+    let archive = Archive::open(&p[..]).expect("kind-2 pack opens");
+    assert_eq!(archive.header().content_kind, 2);
+}
+
+#[test]
+fn read_texture_is_none_for_every_splat_entry() {
+    let p = splat();
+    let archive = Archive::open(&p[..]).expect("kind-2 pack opens");
+    for entry in archive.entries() {
+        assert_eq!(
+            archive.read_texture(entry).expect("read_texture succeeds"),
+            None
+        );
+    }
+}
+
+#[test]
+fn decode_tile_errors_on_a_splat_entry() {
+    let p = splat();
+    let archive = Archive::open(&p[..]).expect("kind-2 pack opens");
+    let entry = archive.entries().first().expect("at least one entry");
+    assert!(matches!(
+        archive.decode_tile(entry),
+        Err(HfError::BadContentKind { found: 2 })
+    ));
+}
+
+#[test]
+fn texture_consistency_splat_unexpected_texture() {
+    let mut p = splat();
+    let e0 = common::entry_offset(&p, 0);
+    p[e0 + 92..e0 + 96].copy_from_slice(&1u32.to_le_bytes()); // texture_size -> 1
+    common::resign_pack(&mut p);
+    assert!(matches!(
+        open_err(&p),
+        HfError::TextureConsistency {
+            index: 0,
+            content_kind: 2
         }
     ));
 }

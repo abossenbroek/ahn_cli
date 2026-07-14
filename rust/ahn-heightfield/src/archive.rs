@@ -232,7 +232,8 @@ pub struct PackHeader {
     pub root_geometric_error: f64,
     /// SHA-256 of the hash section — the content version (Merkle-style root).
     pub dataset_id: [u8; 32],
-    /// `0` = heightfield (`.hf` + `.jpg`), `1` = game (`.glb`).
+    /// `0` = heightfield (`.hf` + `.jpg`), `1` = game (`.glb`), `2` = splat
+    /// (`.ply`, no texture).
     pub content_kind: u32,
 }
 
@@ -261,7 +262,7 @@ pub struct Entry {
     /// Absolute file offset of the primary blob (`.hf` or `.glb`), 16-aligned.
     pub primary_offset: u64,
     /// Absolute file offset of the texture blob (`.jpg`), or `0` when there is
-    /// no texture (`content_kind == 1`).
+    /// no texture (`content_kind == 1` or `content_kind == 2`).
     pub texture_offset: u64,
     /// Byte length of the primary blob.
     pub primary_size: u32,
@@ -496,7 +497,7 @@ impl<R: ReadAt> Archive<R> {
             }
         }
         let content_kind = le_u32(&hdr, 104);
-        if content_kind > 1 {
+        if content_kind > 2 {
             return Err(HfError::BadContentKind {
                 found: content_kind,
             });
@@ -670,7 +671,7 @@ impl<R: ReadAt> Archive<R> {
                 });
             }
             match content_kind {
-                1 if e.texture_offset != 0 || e.texture_size != 0 => {
+                1 | 2 if e.texture_offset != 0 || e.texture_size != 0 => {
                     return Err(HfError::TextureConsistency {
                         index: i,
                         content_kind,
@@ -824,13 +825,14 @@ impl<R: ReadAt> Archive<R> {
     }
 
     /// Opaque texture blob bytes (`.jpg`) for `entry`, or `None` when the pack
-    /// is a game pack (`content_kind == 1`, no separate texture blob).
+    /// is a game or splat pack (`content_kind == 1` or `2`, no separate
+    /// texture blob).
     ///
     /// # Errors
     ///
     /// Returns [`HfError::Io`] on an underlying reader failure.
     pub fn read_texture(&self, entry: &Entry) -> Result<Option<Vec<u8>>, HfError> {
-        if self.header.content_kind == 1 {
+        if self.header.content_kind == 1 || self.header.content_kind == 2 {
             return Ok(None);
         }
         Ok(Some(
@@ -937,7 +939,7 @@ impl<R: ReadAt> Archive<R> {
                     slot: BlobSlot::Primary,
                 });
             }
-            if self.header.content_kind == 1 {
+            if self.header.content_kind == 1 || self.header.content_kind == 2 {
                 if rec[32..64] != [0u8; 32] {
                     return Err(HfError::TextureHashNotZero { index: i });
                 }

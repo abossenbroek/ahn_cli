@@ -21,9 +21,10 @@ pub fn decode_jpeg(jpeg: &[u8]) -> Result<Image, image::ImageError> {
     ))
 }
 
-// The `gpu_textures` feature (GPU-native BCn transcode via `intel_tex_2` at
-// load, falling back to this module's plain `Rgba8UnormSrgb` path when off)
-// is reserved but not yet wired up here — see the Track C report.
+// The `gpu_textures` feature (GPU-native BC1 transcode via `intel_tex_2` at
+// load) lives in `render::gpu_texture`; `render::stream_tiles`'s
+// `textured_material` dispatches to it instead of this module's plain
+// `Rgba8UnormSrgb` `decode_jpeg` when the feature is on.
 
 /// An unlit material draping `texture` 1:1 (no lighting term) — matching the
 /// ortho pixels' meaning as measured colour, not a lit surface.

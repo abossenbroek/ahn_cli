@@ -546,7 +546,8 @@
 - **`tiles.hfp` AHNP pack** bundles each profile's tile blobs into one
   self-describing binary quadtree index (Merkle-rooted `dataset_id`, per-blob
   SHA-256, CRC'd header/index) + demoted `tileset.json` interop, `provenance.json`,
-  `manifest.json` sidecars. Normative specs under `docs/specs/2026-07-12-*`.
+  `manifest.json` sidecars. Normative specs: `docs/specs/hfp-pack-format.md`,
+  `docs/specs/heightfield-chunk-format.md`.
 - **`.hf` format → v3, NAP-native.** Heightfield stores heights (plane *and*
   every region: `.hf` header + `tileset.json` + pack index) in NAP (EPSG:5709),
   tagged in a new `vertical_datum` header field. Fixes a latent v2 mix (NAP plane
@@ -577,7 +578,7 @@
   producer + a relocated copy in the containment verifier), both fixed. Green:
   Python `make check` (1198 passed, 100% branch cov, ruff + pyright strict) +
   ahn-heightfield `make rust-check` + bevy_ahnp_ortho clippy `-D`/test/fmt/deny.
-  Per-PR changelog: `docs/changelogs/2026-07-13-tiles3d-profiles-renderer.md`.
+  Per-PR changelog: `docs/changelogs/tiles3d-profiles-renderer.md`.
 - STATE: open-PR={#26 → main, pushed, not merged} gate=4-adversarial-reviews(all
   5/5)+green(Python make check 1198/100% · rust make rust-check · bevy crate
   clippy/test/fmt/deny) merge-authority=stakeholder(manual). pending-user={merge

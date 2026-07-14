@@ -173,7 +173,7 @@ ahn_cli reconcile --ortho data/delft/ortho/ortho.tif --cloud data/delft/pointclo
 ahn_cli copc --cloud data/delft/reconciled/reconciled.laz --out data/delft/reconciled/reconciled.copc.laz
 ```
 
-The command exists because external COPC writers break on Dutch-shaped data (see `docs/bugs/2026-07-11-pdal-copc-xyz-bounds-flat-terrain.md`: PDAL's `writers.copc` declares cube and header bounds through two different float64 paths, and on flat, horizontally-huge terrain — where every point is pinned to the octree cube's Z-minimum face — the resulting sub-millimetre epsilon fails `copc-validator`'s `xyz` check on hundreds of nodes, including the root). `ahn_cli copc` instead:
+The command exists because external COPC writers break on Dutch-shaped data (see `docs/bugs/pdal-copc-xyz-bounds-flat-terrain.md`: PDAL's `writers.copc` declares cube and header bounds through two different float64 paths, and on flat, horizontally-huge terrain — where every point is pinned to the octree cube's Z-minimum face — the resulting sub-millimetre epsilon fails `copc-validator`'s `xyz` check on hundreds of nodes, including the root). `ahn_cli copc` instead:
 
 - **streams in bounded memory** (chunked reads → on-disk XY buckets → one bucket at a time), so nationwide-scale inputs work;
 - **preserves AHN's native 0.5 m coarseness**: it never thins below the source grid, and de-duplicates only when multiple points share one 0.5 m voxel — the survivor is chosen by outlier reasoning (median/MAD on Z, nearest-to-median wins), never synthesised;
@@ -198,9 +198,9 @@ ahn_cli tiles3d --ortho data/delft/ortho/ortho.tif --heights data/delft/reconcil
 
 - `strict` (default) — lossless float32 glTF with embedded PNG textures, written as a loose `tileset.json` + `tiles/` directory; writes no other sidecar.
 - `game` — the compact runtime profile: quantized (`KHR_mesh_quantization`) geometry, `EXT_meshopt_compression` streams and baseline JPEG textures.
-- `heightfield` — the vendor Approach-C profile: each tile is a self-describing `.hf` chunk (120-byte header + a zstd level-3, checksummed frame of 12-bit-quantized `uint16` NAP-height levels, 25mm absolute-error cap; format spec in `docs/specs/2026-07-12-heightfield-chunk-format.md`) with a sibling baseline JPEG.
+- `heightfield` — the vendor Approach-C profile: each tile is a self-describing `.hf` chunk (120-byte header + a zstd level-3, checksummed frame of 12-bit-quantized `uint16` NAP-height levels, 25mm absolute-error cap; format spec in `docs/specs/heightfield-chunk-format.md`) with a sibling baseline JPEG.
 
-Both `game` and `heightfield` bundle every tile's blobs into a single binary `tiles.hfp` **AHNP pack** — a self-describing scene index that is the runtime's only input besides its own blobs (format spec `docs/specs/2026-07-12-hfp-pack-format.md`) — plus a demoted `tileset.json` debug/interop sidecar, a deterministic `provenance.json` (pinned quantization/JPEG/encoder/zstd settings and the pack's content-version `dataset_id`), and a `manifest.json` integrity sidecar hashing every loose file plus the pack. `.hf`/`tiles.hfp` are vendor content types the generic OGC validator does not recognize, so a `heightfield` tileset is validated by `ahn_cli`'s own post-write verifier rather than the generic one.
+Both `game` and `heightfield` bundle every tile's blobs into a single binary `tiles.hfp` **AHNP pack** — a self-describing scene index that is the runtime's only input besides its own blobs (format spec `docs/specs/hfp-pack-format.md`) — plus a demoted `tileset.json` debug/interop sidecar, a deterministic `provenance.json` (pinned quantization/JPEG/encoder/zstd settings and the pack's content-version `dataset_id`), and a `manifest.json` integrity sidecar hashing every loose file plus the pack. `.hf`/`tiles.hfp` are vendor content types the generic OGC validator does not recognize, so a `heightfield` tileset is validated by `ahn_cli`'s own post-write verifier rather than the generic one.
 
 ```bash
 ahn_cli tiles3d --ortho data/delft/ortho/ortho.tif --heights data/delft/reconciled/reconciled.exr --out data/delft/tiles3d --profile game

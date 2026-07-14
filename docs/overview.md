@@ -148,7 +148,7 @@ engine-oriented formats:
   accuracy). Vertex positions, texture coordinates, and triangle connectivity are
   *implicit*: the runtime rebuilds them from the tile's geographic footprint, so only the
   heights and a sibling JPEG texture are stored. Normative spec:
-  [`docs/specs/2026-07-12-heightfield-chunk-format.md`](specs/2026-07-12-heightfield-chunk-format.md).
+  [`docs/specs/heightfield-chunk-format.md`](specs/heightfield-chunk-format.md).
 
 - **`AHNP` — the pack container** (`tiles.hfp`, magic bytes `AHNP` = "AHN Pack"). Instead
   of scattering thousands of small tile files across a directory, both engine profiles
@@ -159,7 +159,7 @@ engine-oriented formats:
   once, and then streams individual tiles by ranged reads with **no JSON parsing at
   runtime**. A content-derived `dataset_id` lets a client detect a changed dataset in a
   single header read, and layered CRC-32 / SHA-256 integrity guards every load. Normative
-  spec: [`docs/specs/2026-07-12-hfp-pack-format.md`](specs/2026-07-12-hfp-pack-format.md).
+  spec: [`docs/specs/hfp-pack-format.md`](specs/hfp-pack-format.md).
 
 A companion Rust crate, [`rust/ahn-heightfield`](../rust/ahn-heightfield), decodes both
 `.hf` chunks and `AHNP` packs against those specs (not against the Python source), so a

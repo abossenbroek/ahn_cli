@@ -8,7 +8,7 @@ codec (`ahn_cli/tiles3d/heightfield.py`) and its verifier
 (`ahn_cli/tiles3d/verify_heightfield.py`) implement exactly what follows.
 The companion pack container that bundles these chunks for the runtime is
 specified separately in
-[`2026-07-12-hfp-pack-format.md`](2026-07-12-hfp-pack-format.md).
+[`hfp-pack-format.md`](hfp-pack-format.md).
 
 A `.hf` chunk is a fixed little-endian header immediately followed by a
 single zstandard frame. The frame decompresses to the tile's quantized

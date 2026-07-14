@@ -16,8 +16,8 @@ on:
       - 'ahn_cli/tiles3d/**'
       - 'tests/tiles3d/regen_rust_fixtures.py'
       - 'tests/tiles3d/fixtures/rust-consumer/**'
-      - 'docs/specs/2026-07-12-heightfield-chunk-format.md'
-      - 'docs/specs/2026-07-12-hfp-pack-format.md'
+      - 'docs/specs/heightfield-chunk-format.md'
+      - 'docs/specs/hfp-pack-format.md'
       - '.github/workflows/rust.yml'
   pull_request:
     paths:
@@ -25,8 +25,8 @@ on:
       - 'ahn_cli/tiles3d/**'
       - 'tests/tiles3d/regen_rust_fixtures.py'
       - 'tests/tiles3d/fixtures/rust-consumer/**'
-      - 'docs/specs/2026-07-12-heightfield-chunk-format.md'
-      - 'docs/specs/2026-07-12-hfp-pack-format.md'
+      - 'docs/specs/heightfield-chunk-format.md'
+      - 'docs/specs/hfp-pack-format.md'
       - '.github/workflows/rust.yml'
 
 # git-bash on Windows too, so `git diff`, `cargo +nightly`, and the shell

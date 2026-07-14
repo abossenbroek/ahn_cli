@@ -5,7 +5,7 @@ plus a self-describing binary scene index into a single ``tiles.hfp``
 pack; the pack *is* the runtime's scene (it never parses JSON on the play
 path). This module is the only place that knows the container byte layout;
 the normative specification the Rust runtime codes against lives in
-``docs/specs/2026-07-12-hfp-pack-format.md`` and this
+``docs/specs/hfp-pack-format.md`` and this
 producer/reader mirrors it exactly.
 
 **Layout.** Five contiguous regions: a fixed 128-byte header, the index

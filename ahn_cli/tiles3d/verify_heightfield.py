@@ -69,7 +69,7 @@ if TYPE_CHECKING:
 
     from ahn_cli.tiles3d.geodesy import Geodesy
     from ahn_cli.tiles3d.heightfield import DecodedHeightfield
-    from ahn_cli.tiles3d.mesh import TileMesh
+    from ahn_cli.tiles3d.mesh import Region, TileMesh
     from ahn_cli.tiles3d.quadtree import TilePlan
     from ahn_cli.tiles3d.quantize import QuantizedAxis
     from ahn_cli.tiles3d.sources import TerrainGrid
@@ -109,8 +109,25 @@ def verify_heightfield_tile(
     grid_height, grid_width = heights.shape
     quantized = quantize_axis(heights.reshape(-1), MAX_LEVEL)
     decoded = decode_heightfield((out_dir / content_uri).read_bytes())
+    # Independent recomputation of the tile's own NAP region (v3, NAP-native):
+    # the mesh's horizontal doubles + the tile's own NAP height min/max —
+    # mirrors `heightfield.nap_region` without calling it.
+    west, south, east, north, *_ = mesh.region
+    expected_region = (
+        west,
+        south,
+        east,
+        north,
+        float(heights.min()),
+        float(heights.max()),
+    )
     _verify_header(
-        decoded, quantized, mesh, (grid_width, grid_height), content_uri
+        decoded,
+        quantized,
+        mesh,
+        expected_region,
+        (grid_width, grid_height),
+        content_uri,
     )
     _verify_requantization(
         decoded, quantized, heights, (grid_width, grid_height), content_uri
@@ -122,6 +139,7 @@ def _verify_header(
     decoded: DecodedHeightfield,
     quantized: QuantizedAxis,
     mesh: TileMesh,
+    expected_region: Region,
     dims: tuple[int, int],
     uri: str,
 ) -> None:
@@ -144,9 +162,9 @@ def _verify_header(
         "centre.",
     )
     _require(
-        decoded.region == mesh.region,
-        f"{uri}: heightfield region does not equal the tile's EPSG:4979 "
-        "region.",
+        decoded.region == expected_region,
+        f"{uri}: heightfield region does not equal the tile's own NAP "
+        "region (v3: radian lon/lat + NAP height bounds).",
     )
 
 

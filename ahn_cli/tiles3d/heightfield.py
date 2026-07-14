@@ -4,9 +4,18 @@ The heightfield profile (Approach C) stores each tile as a compact vendor
 chunk instead of a glTF: a fixed 120-byte little-endian header followed by
 one zstandard frame of the tile's quantized elevation plane. This module
 is the only place that knows the ``.hf`` byte layout; the normative
-specification (version 2) the Rust runtime decoder codes against lives in
+specification (version 3) the Rust runtime decoder codes against lives in
 ``docs/specs/2026-07-12-heightfield-chunk-format.md`` and this
 codec mirrors it exactly.
+
+**Vertical datum — NAP (v3).** Every height in a ``.hf`` chunk — the stored
+plane, ``z_offset`` and the two ``region`` height doubles — is a **NAP**
+height (EPSG:5709; see :data:`VERTICAL_DATUM`), not a WGS84 ellipsoidal
+height, and the ``vertical_datum`` header field states this in the bytes. The
+region is therefore self-consistent with its plane (it contains its own NAP
+geometry); the trade-off, deliberate for this Netherlands-specific product, is
+that heightfield tiles sit ~43 m off a globe and do not co-register with the
+ellipsoidal ``strict``/``game``/``splat`` profiles.
 
 **Coordinate contract (load-bearing).** The stored plane is the *quantized
 NAP height plane* — the genuine sampled source heights (``payload.z``),
@@ -14,16 +23,17 @@ quantized to ``uint16`` along that single axis via
 :func:`~ahn_cli.tiles3d.quantize.quantize_axis` at the 12-bit
 :data:`MAX_LEVEL`. It is **not** an ECEF-swizzled mesh axis: a heightfield
 tile is a geodetic-grid product whose footprint travels in the header
-``region`` — the tile's *own* mesh region, contained within (not always
-equal to) the enclosing ``tileset.json`` bounding volume — and whose
-implicit vertex X/Y, UVs and connectivity a runtime reconstructs from that
-region. ``rtc_centre`` rides in the header only as an A-profile alignment
-anchor. Every stored value is a real source sample requantized — never
-averaged or infilled.
+``region`` — the tile's *own* NAP mesh region (:func:`nap_region`), contained
+within (not always equal to) the enclosing ``tileset.json`` bounding volume —
+and whose implicit vertex X/Y, UVs and connectivity a runtime reconstructs
+from that region. ``rtc_centre`` rides in the header only as an A-profile
+alignment anchor. Every stored value is a real source sample requantized —
+never averaged or infilled.
 
 **Integrity.** The header carries a :data:`~zlib.crc32` (CRC-32/ISO-HDLC)
-over its first 112 bytes so a corrupt ``width``/``height``/``payload_len``
-is rejected before it can size an allocation, and the zstd frame is written
+over its first 116 bytes (through ``vertical_datum``) so a corrupt
+``width``/``height``/``payload_len`` or datum tag is rejected before it can
+size an allocation or be trusted, and the zstd frame is written
 with its RFC 8878 content checksum so a bit-flipped payload fails to decode
 rather than decoding to wrong bytes.
 
@@ -60,18 +70,31 @@ __all__ = [
     "MAX_AXIS_ERROR_M",
     "MAX_LEVEL",
     "VERSION",
+    "VERTICAL_DATUM",
     "ZSTD_LEVEL",
     "DecodedHeightfield",
     "decode_heightfield",
     "encode_heightfield",
+    "nap_region",
     "zstandard_version",
 ]
 
 MAGIC = b"AHNH"
 """The 4-byte chunk magic; any other leading bytes are a decode error."""
 
-VERSION = 2
-"""The format version this codec reads and writes."""
+VERSION = 3
+"""The format version this codec reads and writes (v3: NAP-native region +
+``vertical_datum`` header field; see the module docstring and the spec)."""
+
+VERTICAL_DATUM = 5709
+"""The EPSG code written to the ``vertical_datum`` header field and expected
+on decode. EPSG:5709 is *NAP height* (Normaal Amsterdams Peil, the Dutch
+national vertical datum). Every height in a ``.hf`` chunk — the stored plane,
+``z_offset`` and ``region[4]/[5]`` — is a NAP height, **not** a WGS84
+ellipsoidal height. This is deliberate and Netherlands-specific; a consumer
+that needs ellipsoidal placement must apply a geoid undulation itself (this
+format carries none), so heightfield tiles sit ~43 m off a globe and do not
+co-register with the ellipsoidal ``strict``/``game``/``splat`` profiles."""
 
 ZSTD_LEVEL = 3
 """Pinned zstandard level: the stakeholder-pinned middle ground from the
@@ -94,16 +117,20 @@ lossy one. No genuine AHN tile approaches the equivalent 204.75 m extent."""
 _PREFIX_FORMAT = "<4sIII" + "d" * 11 + "Q"
 """The header up to and including ``payload_len`` (bytes ``[0, 112)``): magic,
 version, width, height, z_offset, z_scale, 3x rtc_centre, 6x region,
-payload_len. This is the exact span ``header_crc32`` covers."""
+payload_len. In v3 the ``vertical_datum`` field (offset 112) follows this and
+is *also* inside the CRC span — see :data:`_CRC_SPAN`."""
 
 _HEADER_FORMAT = _PREFIX_FORMAT + "II"
-"""The full header: the CRC-covered prefix plus ``header_crc32`` and ``pad``."""
+"""The full header: the prefix plus ``vertical_datum`` (offset 112) and
+``header_crc32`` (offset 116). (v2 had ``header_crc32`` then ``pad`` here.)"""
 
 HEADER_SIZE = struct.calcsize(_HEADER_FORMAT)
 """Fixed header size in bytes (120): no padding under the ``<`` layout."""
 
-_CRC_SPAN = struct.calcsize(_PREFIX_FORMAT)
-"""Byte span ``header_crc32`` is computed over (112)."""
+_CRC_SPAN = struct.calcsize(_PREFIX_FORMAT) + 4
+"""Byte span ``header_crc32`` is computed over (116): the prefix through
+``payload_len`` plus the 4-byte ``vertical_datum`` field, so the datum tag is
+integrity-protected. (v2's span was 112, excluding the trailing ``pad``.)"""
 
 _FLOAT_FIELD_NAMES = (
     "z_offset",
@@ -133,7 +160,8 @@ class DecodedHeightfield:
         - ``version`` / ``width`` / ``height``: the header dims.
         - ``z_offset`` / ``z_scale``: the height-axis quantizer transform.
         - ``rtc_centre``: the A-profile ECEF y-up RTC centre anchor.
-        - ``region``: the tile's own EPSG:4979 region (radians + metres).
+        - ``region``: the tile's own region (radians lon/lat + **NAP**-metre
+          height bounds; v3 — see :func:`nap_region`).
         - ``z_ints``: the ``(height, width)`` uint16 quantized height
           plane, row-major top row first.
 
@@ -159,8 +187,9 @@ def encode_heightfield(payload: TilePayload) -> bytes:
           :func:`~ahn_cli.tiles3d.quantize.quantize_axis`, zstd-compresses
           the row-major (top row first) plane, and prepends the fixed
           header carrying the dims, the quantizer transform, the mesh's RTC
-          centre and EPSG:4979 region, the frame length and a CRC over the
-          preceding header bytes.
+          centre, the tile's **NAP** region (:func:`nap_region`), the
+          ``vertical_datum`` tag, the frame length and a CRC over the
+          preceding header bytes ``[0, 116)``.
         - Deterministic: identical bytes for an identical payload.
 
     Failure modes:
@@ -189,11 +218,40 @@ def encode_heightfield(payload: TilePayload) -> bytes:
         quantized.offset,
         quantized.scale,
         *payload.mesh.center,
-        *payload.mesh.region,
+        *nap_region(payload),
         len(frame),
     )
-    crc = zlib.crc32(prefix) & 0xFFFFFFFF
-    return prefix + struct.pack("<II", crc, 0) + frame
+    # v3: vertical_datum (offset 112) is inside the CRC span [0, 116); the CRC
+    # (offset 116) is the last field. There is no v2 pad.
+    body = prefix + struct.pack("<I", VERTICAL_DATUM)
+    crc = zlib.crc32(body) & 0xFFFFFFFF
+    return body + struct.pack("<I", crc) + frame
+
+
+def nap_region(payload: TilePayload) -> Region:
+    """Return the tile's region with **NAP** height bounds (v3, NAP-native).
+
+    The horizontal doubles (``west, south, east, north``) are the tile's own
+    mesh region unchanged (longitude/latitude are datum-independent); the two
+    height doubles are the min/max of the tile's genuine NAP samples
+    (``payload.z``), replacing the ellipsoidal heights ``mesh.region`` carries.
+    This makes the heightfield region self-consistent with its stored NAP plane
+    — each region contains its own geometry — and, unioned into the enclosing
+    ``tileset.json``/pack regions by the emitter, keeps the whole heightfield
+    deliverable single-datum (NAP). See :data:`VERTICAL_DATUM` and the spec's
+    *Region semantics*.
+    """
+    west, south, east, north, _min_ellipsoidal, _max_ellipsoidal = (
+        payload.mesh.region
+    )
+    return (
+        west,
+        south,
+        east,
+        north,
+        float(payload.z.min()),
+        float(payload.z.max()),
+    )
 
 
 def decode_heightfield(data: bytes) -> DecodedHeightfield:
@@ -209,8 +267,8 @@ def decode_heightfield(data: bytes) -> DecodedHeightfield:
     checked in an order that never trusts an unverified length):
         - input shorter than :data:`HEADER_SIZE`;
         - ``magic`` not :data:`MAGIC`; ``version`` not :data:`VERSION`;
-        - ``header_crc32`` not matching the CRC-32 of bytes ``[0, 112)``;
-        - ``pad`` not ``0``;
+        - ``header_crc32`` not matching the CRC-32 of bytes ``[0, 116)``;
+        - ``vertical_datum`` not :data:`VERTICAL_DATUM` (EPSG:5709, NAP);
         - ``width`` or ``height`` equal to ``0``;
         - any non-finite ``float64`` header field;
         - ``z_scale`` not strictly positive;
@@ -278,10 +336,10 @@ def _read_header(data: bytes) -> _Header:
     """Parse and integrity-check the fixed header, returning its fields.
 
     Runs every header-level reject in spec order — length, magic, version,
-    ``header_crc32`` (before any dimension is trusted), ``pad``, zero dims,
-    non-finite floats and non-positive ``z_scale`` — so the caller can trust
-    the returned fields when sizing the payload. Each violation raises a
-    :class:`~ahn_cli.tiles3d.errors.Tiles3dError`.
+    ``header_crc32`` (before any dimension is trusted), ``vertical_datum``,
+    zero dims, non-finite floats and non-positive ``z_scale`` — so the caller
+    can trust the returned fields when sizing the payload. Each violation
+    raises a :class:`~ahn_cli.tiles3d.errors.Tiles3dError`.
     """
     if len(data) < HEADER_SIZE:
         msg = (
@@ -303,7 +361,7 @@ def _read_header(data: bytes) -> _Header:
             f"version {VERSION}."
         )
         raise Tiles3dError(msg)
-    stored_crc = int(fields[16])
+    stored_crc = int(fields[17])
     actual_crc = zlib.crc32(data[:_CRC_SPAN]) & 0xFFFFFFFF
     if actual_crc != stored_crc:
         msg = (
@@ -311,9 +369,12 @@ def _read_header(data: bytes) -> _Header:
             f"computed {actual_crc:#010x}; the header is corrupt."
         )
         raise Tiles3dError(msg)
-    pad = int(fields[17])
-    if pad != 0:
-        msg = f"heightfield header pad field is {pad}, must be 0."
+    vertical_datum = int(fields[16])
+    if vertical_datum != VERTICAL_DATUM:
+        msg = (
+            f"heightfield header vertical_datum {vertical_datum} is not the "
+            f"supported EPSG:{VERTICAL_DATUM} (NAP height)."
+        )
         raise Tiles3dError(msg)
     width = int(fields[2])
     height = int(fields[3])

@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING
 
 from ahn_cli.tiles3d.gltf import build_glb
 from ahn_cli.tiles3d.gltf_quant import build_game_glb
-from ahn_cli.tiles3d.heightfield import encode_heightfield
+from ahn_cli.tiles3d.heightfield import encode_heightfield, nap_region
 from ahn_cli.tiles3d.jpeg import encode_jpeg
 from ahn_cli.tiles3d.meshopt import (
     encode_indices,
@@ -51,6 +51,7 @@ from ahn_cli.tiles3d.quantize import quantize_positions, quantize_uvs
 from ahn_cli.tiles3d.splat import encode_splat
 
 if TYPE_CHECKING:
+    from ahn_cli.tiles3d.mesh import Region
     from ahn_cli.tiles3d.payload import TilePayload
 
 __all__ = [
@@ -84,6 +85,10 @@ class StrictEncoder:
             content_name=f"{payload.level}-{payload.tx}-{payload.ty}.glb",
         )
 
+    def region_of(self, payload: TilePayload) -> Region:
+        """Return the mesh's ellipsoidal region (strict is globe-correct)."""
+        return payload.mesh.region
+
 
 class HeightfieldEncoder:
     """Encode a tile as a ``.hf`` height chunk plus a sibling JPEG.
@@ -110,6 +115,15 @@ class HeightfieldEncoder:
             texture=encode_jpeg(payload.rgb),
             texture_name=f"{base}.jpg",
         )
+
+    def region_of(self, payload: TilePayload) -> Region:
+        """Return the tile's **NAP** region.
+
+        Heights are self-consistent with the ``.hf`` plane, so the emitted
+        tileset/pack regions are NAP too (v3, NAP-native; see
+        :func:`ahn_cli.tiles3d.heightfield.nap_region`).
+        """
+        return nap_region(payload)
 
 
 class GameEncoder:
@@ -147,6 +161,10 @@ class GameEncoder:
             content_name=f"{payload.level}-{payload.tx}-{payload.ty}.glb",
         )
 
+    def region_of(self, payload: TilePayload) -> Region:
+        """Return the mesh's ellipsoidal region (game is globe-correct)."""
+        return payload.mesh.region
+
 
 class SplatEncoder:
     """Encode a tile as a zstd-wrapped binary 3DGS ``.ply`` gaussian cloud.
@@ -171,3 +189,7 @@ class SplatEncoder:
             content=content,
             content_name=f"{payload.level}-{payload.tx}-{payload.ty}.ply",
         )
+
+    def region_of(self, payload: TilePayload) -> Region:
+        """Return the mesh's ellipsoidal region (splat is globe-correct)."""
+        return payload.mesh.region

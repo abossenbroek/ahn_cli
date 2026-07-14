@@ -22,6 +22,7 @@ from ahn_cli.tiles3d.mesh import build_tile_mesh
 from ahn_cli.tiles3d.pack import (
     CONTENT_KIND_GAME,
     CONTENT_KIND_HEIGHTFIELD,
+    CONTENT_KIND_SPLAT,
     PackEntry,
     TileKey,
 )
@@ -63,6 +64,7 @@ _LEAF_ERROR_FACTOR = 4.0
 _CONTENT_KIND = {
     Profile.GAME: CONTENT_KIND_GAME,
     Profile.HEIGHTFIELD: CONTENT_KIND_HEIGHTFIELD,
+    Profile.SPLAT: CONTENT_KIND_SPLAT,
 }
 """The pack ``content_kind`` each lossy profile stamps into ``tiles.hfp``."""
 
@@ -218,8 +220,8 @@ class PackedBuild:
           (key + enclosing EPSG:4979 region + geometric error), bit-equal to
           the tileset bounding volumes; the pack writer sorts them itself.
         - ``root_geometric_error``: the tileset document's top-level error.
-        - ``content_kind``: the pack ``content_kind`` (game ``1`` /
-          heightfield ``0``).
+        - ``content_kind``: the pack ``content_kind`` (heightfield ``0`` /
+          game ``1`` / splat ``2``).
         - ``blob_source``: ``key -> (primary, texture)`` re-encoding one tile
           on demand, so the pack writer streams tiles without the whole set
           of encoded blobs ever being resident.

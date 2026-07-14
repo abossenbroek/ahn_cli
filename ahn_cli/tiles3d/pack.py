@@ -51,6 +51,7 @@ __all__ = [
     "BLOB_ALIGNMENT",
     "CONTENT_KIND_GAME",
     "CONTENT_KIND_HEIGHTFIELD",
+    "CONTENT_KIND_SPLAT",
     "FORMAT_VERSION",
     "HASH_RECORD_SIZE",
     "HEADER_SIZE",
@@ -80,6 +81,13 @@ CONTENT_KIND_HEIGHTFIELD = 0
 
 CONTENT_KIND_GAME = 1
 """``content_kind`` for a game pack: ``.glb`` primary, no texture blob."""
+
+CONTENT_KIND_SPLAT = 2
+"""``content_kind`` for a splat pack: ``.ply`` (3DGS, zstd) primary, no
+texture blob (colour lives in the gaussians' SH coefficients)."""
+
+_NO_TEXTURE_KINDS = (CONTENT_KIND_GAME, CONTENT_KIND_SPLAT)
+"""Content kinds whose tiles carry no separate texture blob."""
 
 HEADER_SIZE = 128
 LEVEL_RECORD_SIZE = 16
@@ -276,9 +284,9 @@ def write_pack(
           ``0..N-1``).
         - ``blob_source(key)`` returns ``(primary_bytes, texture_bytes)``
           for one tile, fetched lazily in index order so at most one tile's
-          blobs are resident. ``texture_bytes`` is ``None`` for a game pack
-          (``content_kind = 1``) and non-empty for a heightfield pack
-          (``content_kind = 0``).
+          blobs are resident. ``texture_bytes`` is ``None`` for a game or
+          splat pack (``content_kind = 1`` or ``2``) and non-empty for a
+          heightfield pack (``content_kind = 0``).
         - Writes the header (with ``dataset_id`` and both CRCs), the level
           directory, the sorted index, the hash section, then every blob in
           index order 16-aligned with zero inter-blob padding, and returns
@@ -287,15 +295,22 @@ def write_pack(
         - Deterministic: identical bytes for identical inputs.
 
     Failure modes (each a :class:`~ahn_cli.tiles3d.errors.Tiles3dError`):
-        - ``content_kind`` not in ``{0, 1}``; ``root_geometric_error``
+        - ``content_kind`` not in ``{0, 1, 2}``; ``root_geometric_error``
           non-finite; ``entries`` empty; a duplicate tile key; a non-zero
           ``tz``; a non-finite or non-well-ordered region / geometric error;
           a level set that is not a contiguous ``0..N-1``; an empty primary
-          blob; a heightfield tile with a missing / empty texture, or a game
-          tile whose ``blob_source`` returns a texture.
+          blob; a heightfield tile with a missing / empty texture, or a
+          game/splat tile whose ``blob_source`` returns a texture.
     """
-    if content_kind not in (CONTENT_KIND_HEIGHTFIELD, CONTENT_KIND_GAME):
-        msg = f"pack content_kind {content_kind} is not 0 (heightfield) or 1 (game)."
+    if content_kind not in (
+        CONTENT_KIND_HEIGHTFIELD,
+        CONTENT_KIND_GAME,
+        CONTENT_KIND_SPLAT,
+    ):
+        msg = (
+            f"pack content_kind {content_kind} is not 0 (heightfield), "
+            "1 (game) or 2 (splat)."
+        )
         raise Tiles3dError(msg)
     if not math.isfinite(root_geometric_error):
         msg = (
@@ -511,9 +526,12 @@ def _write_texture(
     key: TileKey,
 ) -> tuple[int, int, bytes, int]:
     """Write (or refuse) the texture blob; return its offset/size/sha/cursor."""
-    if content_kind == CONTENT_KIND_GAME:
+    if content_kind in _NO_TEXTURE_KINDS:
         if texture is not None:
-            msg = f"pack entry {key}: game tile must have no texture blob."
+            msg = (
+                f"pack entry {key}: content_kind {content_kind} tile must "
+                "have no texture blob."
+            )
             raise Tiles3dError(msg)
         return 0, 0, NO_TEXTURE_SHA256, cursor
     if not texture:
@@ -706,8 +724,12 @@ def _validate_header_fields(data: bytes) -> None:
         msg = "pack header pad contains a non-zero byte, must be all zero."
         raise Tiles3dError(msg)
     content_kind = int(fields[13])
-    if content_kind not in (CONTENT_KIND_HEIGHTFIELD, CONTENT_KIND_GAME):
-        msg = f"pack content_kind {content_kind} is not 0 or 1."
+    if content_kind not in (
+        CONTENT_KIND_HEIGHTFIELD,
+        CONTENT_KIND_GAME,
+        CONTENT_KIND_SPLAT,
+    ):
+        msg = f"pack content_kind {content_kind} is not 0, 1 or 2."
         raise Tiles3dError(msg)
 
 
@@ -863,11 +885,12 @@ def _verify_blobs(
             previous_offset,
             f"entry {index} primary",
         )
-        if header.content_kind == CONTENT_KIND_GAME:
+        if header.content_kind in _NO_TEXTURE_KINDS:
             if entry.texture_offset != 0 or entry.texture_size != 0:
                 msg = (
-                    f"pack entry {index}: game tile must have texture_offset "
-                    f"and texture_size 0."
+                    f"pack entry {index}: content_kind "
+                    f"{header.content_kind} tile must have texture_offset "
+                    "and texture_size 0."
                 )
                 raise Tiles3dError(msg)
             continue
@@ -938,11 +961,12 @@ def _verify_hashes(
         if hashlib.sha256(primary).digest() != entry.primary_sha256:
             msg = f"pack entry {index} primary blob fails its SHA-256."
             raise Tiles3dError(msg)
-        if header.content_kind == CONTENT_KIND_GAME:
+        if header.content_kind in _NO_TEXTURE_KINDS:
             if entry.texture_sha256 != NO_TEXTURE_SHA256:
                 msg = (
-                    f"pack entry {index}: game tile texture_sha256 must be 32 "
-                    f"zero bytes."
+                    f"pack entry {index}: content_kind "
+                    f"{header.content_kind} tile texture_sha256 must be 32 "
+                    "zero bytes."
                 )
                 raise Tiles3dError(msg)
             continue

@@ -1,4 +1,4 @@
-"""The tile encoders behind the profile seam: strict and game.
+"""The tile encoders behind the profile seam.
 
 :class:`StrictEncoder` is the original, byte-frozen tiles3d
 representation extracted behind the
@@ -24,6 +24,12 @@ tile's quantized NAP height plane into a self-describing ``.hf`` chunk
 (:mod:`ahn_cli.tiles3d.heightfield`) and drapes it with the *same* baseline
 JPEG as the game profile, written **alongside** as a separate texture file
 — the first encoder whose ``EncodedTile.texture`` is not ``None``.
+
+:class:`SplatEncoder` encodes a tile as a 3D Gaussian Splatting cloud
+(:mod:`ahn_cli.tiles3d.splat`): one isotropic gaussian per mesh vertex,
+coloured by the sampled ortho pixel as an SH degree-0 coefficient — no
+separate texture (colour lives in the gaussians themselves), so
+``EncodedTile.texture`` is ``None`` like the two glTF encoders.
 """
 
 from __future__ import annotations
@@ -42,11 +48,17 @@ from ahn_cli.tiles3d.meshopt import (
 from ahn_cli.tiles3d.payload import EncodedTile
 from ahn_cli.tiles3d.png import encode_png
 from ahn_cli.tiles3d.quantize import quantize_positions, quantize_uvs
+from ahn_cli.tiles3d.splat import encode_splat
 
 if TYPE_CHECKING:
     from ahn_cli.tiles3d.payload import TilePayload
 
-__all__ = ["GameEncoder", "HeightfieldEncoder", "StrictEncoder"]
+__all__ = [
+    "GameEncoder",
+    "HeightfieldEncoder",
+    "SplatEncoder",
+    "StrictEncoder",
+]
 
 
 class StrictEncoder:
@@ -133,4 +145,29 @@ class GameEncoder:
         return EncodedTile(
             content=content,
             content_name=f"{payload.level}-{payload.tx}-{payload.ty}.glb",
+        )
+
+
+class SplatEncoder:
+    """Encode a tile as a zstd-wrapped binary 3DGS ``.ply`` gaussian cloud.
+
+    Contract:
+        - :meth:`encode` packs ``payload`` into a splat ``.ply`` blob
+          (:func:`ahn_cli.tiles3d.splat.encode_splat`), named
+          ``"<level>-<tx>-<ty>.ply"``. Colour lives in the gaussians'
+          SH coefficients, so there is no separate texture
+          (``EncodedTile.texture is None``).
+
+    Invariants:
+        - Deterministic: a pure function of the payload.
+        - Satisfies the :class:`~ahn_cli.tiles3d.payload.TileEncoder`
+          protocol.
+    """
+
+    def encode(self, payload: TilePayload) -> EncodedTile:
+        """Pack the payload's gaussians into a zstd-wrapped ``.ply``."""
+        content = encode_splat(payload)
+        return EncodedTile(
+            content=content,
+            content_name=f"{payload.level}-{payload.tx}-{payload.ty}.ply",
         )

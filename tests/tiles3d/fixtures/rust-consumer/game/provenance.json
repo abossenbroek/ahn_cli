@@ -1,0 +1,29 @@
+{
+  "encoders": {
+    "meshoptimizer": "0.2.30a0"
+  },
+  "jpeg": {
+    "optimize": false,
+    "pillow": "12.3.0",
+    "progressive": false,
+    "quality": 85,
+    "subsampling": 2
+  },
+  "pack": {
+    "alignment": 16,
+    "dataset_id": "68c7b96de55132765cc04528231a8130be1eb2f6b786b1433f69dca2fc80c6e8",
+    "format_version": 1,
+    "hash_algorithm": "sha256",
+    "magic": "AHNP"
+  },
+  "producer": {
+    "platform": "fixture-platform",
+    "python": "fixture-python"
+  },
+  "profile": "game",
+  "quantization": {
+    "position_bits": 16,
+    "scheme": "per-tile per-axis affine over the tile's actual data extents; round-half-even; KHR_mesh_quantization node scale/translation dequantization; a zero-extent axis uses the epsilon scale.",
+    "uv": "normalized-uint16"
+  }
+}

@@ -52,6 +52,27 @@ def test_transforms_are_deterministic() -> None:
         assert np.array_equal(a, b)
 
 
+def test_to_geodetic_from_ecef_inverts_to_ecef() -> None:
+    """ECEF -> geodetic reproduces the direct RD/NAP -> geodetic result.
+
+    The dequantized-position containment check reconstructs a game
+    tile's vertices in ECEF and needs their region coordinates; going
+    ECEF -> EPSG:4979 must agree with the direct EPSG:7415 -> EPSG:4979
+    pipeline to within pyproj's round-trip epsilon.
+    """
+    geodesy = Geodesy()
+    x = np.array([_RD_X, _RD_X + 40.0])
+    y = np.array([_RD_Y, _RD_Y - 30.0])
+    z = np.array([-2.0, 25.0])
+    direct = geodesy.to_geodetic_radians(x, y, z)
+    ex, ey, ez = geodesy.to_ecef(x, y, z)
+    via_ecef = geodesy.to_geodetic_from_ecef(ex, ey, ez)
+    for a, b in zip(direct, via_ecef, strict=True):
+        assert a.shape == (2,)
+        assert a.dtype == np.float64
+        assert np.allclose(a, b, rtol=0.0, atol=1e-6)
+
+
 def test_ecef_and_geodetic_paths_agree() -> None:
     """The two pyproj pipelines describe the same place.
 

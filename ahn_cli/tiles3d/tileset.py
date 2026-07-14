@@ -87,5 +87,11 @@ def render_tileset(document: dict[str, object]) -> str:
 
 
 def write_tileset(document: dict[str, object], path: Path) -> None:
-    """Write the tileset document deterministically."""
-    path.write_text(render_tileset(document), encoding="utf-8")
+    r"""Write the tileset document deterministically, LF on every platform.
+
+    Written via :meth:`~pathlib.Path.write_bytes` (not ``write_text``) so the
+    ``\\n`` separators :func:`render_tileset` emits are never translated to
+    ``\\r\\n`` by the platform's text mode — the sidecar the manifest hashes
+    must be byte-identical across OSes.
+    """
+    path.write_bytes(render_tileset(document).encode("utf-8"))

@@ -1,0 +1,90 @@
+{
+  "asset": {
+    "generator": "ahn_cli tiles3d",
+    "version": "1.1"
+  },
+  "geometricError": 8.0,
+  "root": {
+    "boundingVolume": {
+      "region": [
+        0.10000025,
+        -2.75e-06,
+        0.10000575,
+        2.75e-06,
+        -4.93294620513916,
+        38.80571365356445
+      ]
+    },
+    "children": [
+      {
+        "boundingVolume": {
+          "region": [
+            0.10000025,
+            2.5e-07,
+            0.10000275,
+            2.75e-06,
+            -3.634429693222046,
+            38.03202819824219
+          ]
+        },
+        "content": {
+          "uri": "tiles/1-0-0.glb"
+        },
+        "geometricError": 0.0
+      },
+      {
+        "boundingVolume": {
+          "region": [
+            0.10000275,
+            2.5e-07,
+            0.10000575,
+            2.75e-06,
+            -4.93294620513916,
+            38.80571365356445
+          ]
+        },
+        "content": {
+          "uri": "tiles/1-1-0.glb"
+        },
+        "geometricError": 0.0
+      },
+      {
+        "boundingVolume": {
+          "region": [
+            0.10000025,
+            -2.75e-06,
+            0.10000275,
+            2.5e-07,
+            -2.6652863025665283,
+            38.4354133605957
+          ]
+        },
+        "content": {
+          "uri": "tiles/1-0-1.glb"
+        },
+        "geometricError": 0.0
+      },
+      {
+        "boundingVolume": {
+          "region": [
+            0.10000275,
+            -2.75e-06,
+            0.10000575,
+            2.5e-07,
+            -4.11798095703125,
+            38.67514419555664
+          ]
+        },
+        "content": {
+          "uri": "tiles/1-1-1.glb"
+        },
+        "geometricError": 0.0
+      }
+    ],
+    "content": {
+      "uri": "tiles/0-0-0.glb"
+    },
+    "geometricError": 4.0,
+    "refine": "REPLACE"
+  }
+}

@@ -7,6 +7,7 @@ one check guards, and asserts that check's message.
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import json
 import struct
 from typing import TYPE_CHECKING, Any, cast
@@ -16,7 +17,11 @@ import pytest
 import ahn_cli.tiles3d.verify as verify_module
 from ahn_cli.tiles3d.build import build_tiles3d
 from ahn_cli.tiles3d.errors import Tiles3dError
+from ahn_cli.tiles3d.geodesy import Geodesy
+from ahn_cli.tiles3d.manifest import FileDigest, render_manifest
+from ahn_cli.tiles3d.pack import read_pack
 from ahn_cli.tiles3d.png import encode_png
+from ahn_cli.tiles3d.profile import Profile
 from ahn_cli.tiles3d.quadtree import TreePlan, plan_quadtree
 from ahn_cli.tiles3d.verify import verify_tiles3d
 from tests.tiles3d.conftest import (
@@ -44,6 +49,50 @@ def site(tmp_path: Path) -> tuple[Path, Path, Path]:
 def _verify(site: tuple[Path, Path, Path]) -> None:
     out, ortho, heights = site
     verify_tiles3d(out, ortho, heights, tile_pixels=8)
+
+
+def test_heightfield_containment_compares_nap_not_ellipsoidal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Heightfield containment compares NAP vertex heights against NAP regions.
+
+    Regression for the r3 verifier-datum blocker: on a machine WITH the
+    NLGEO2018 geoid grid, ``to_geodetic_radians`` returns ellipsoidal heights
+    ~43 m above NAP. The heightfield profile stores NAP regions, so if
+    ``_verify_containment`` compared the geodesy (ellipsoidal) height against
+    those NAP regions, every vertex would exceed the region by the undulation
+    and the profile would be **unbuildable** where the grid is installed. CI
+    has no grid (undulation ~= 0), so we force a large one on the geodesy
+    height to prove the check is grid-independent.
+
+    The mock offsets only the *height* return, which the NAP-native heightfield
+    path ignores everywhere (`nap_region` reads `payload.z`; `rtc_centre` uses
+    `to_ecef`), so the produced bytes are unchanged and the only code path the
+    offset can reach is the containment check. ``build_tiles3d`` runs the full
+    verifier (incl. containment + the byte-identity backstop) as its final
+    step, so a green build here is the guard: pre-fix this raised
+    ``Tiles3dError`` and deleted the deliverable.
+    """
+    real = Geodesy.to_geodetic_radians
+
+    def offset_height(
+        self: Geodesy,
+        x: object,
+        y: object,
+        z: object,
+    ) -> tuple[object, object, object]:
+        lon, lat, height = real(self, x, y, z)  # type: ignore[arg-type]
+        return lon, lat, height + 43.0
+
+    monkeypatch.setattr(Geodesy, "to_geodetic_radians", offset_height)
+
+    rgb = synth_rgb(20, 14, seed=13)
+    ortho = make_ortho(tmp_path / "ortho.tif", rgb)
+    heights = write_exr(tmp_path / "r.exr", grid_for_ortho(rgb))
+    out = tmp_path / "hf"
+    build_tiles3d(
+        ortho, heights, out, tile_pixels=8, profile=Profile.HEIGHTFIELD
+    )
 
 
 def _load(site: tuple[Path, Path, Path]) -> dict[str, Any]:
@@ -513,3 +562,54 @@ def test_uncovered_pixel_is_refused(
     monkeypatch.setattr(verify_module, "plan_quadtree", pruned_plan)
     with pytest.raises(Tiles3dError, match="do not cover"):
         _verify(site)
+
+
+@pytest.fixture
+def game_site(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """Build a valid two-level game tileset; return (out, ortho, heights)."""
+    rgb = synth_rgb(20, 14, seed=13)
+    ortho = make_ortho(tmp_path / "ortho.tif", rgb)
+    heights = write_exr(tmp_path / "r.exr", grid_for_ortho(rgb))
+    out = tmp_path / "out"
+    build_tiles3d(ortho, heights, out, tile_pixels=8, profile=Profile.GAME)
+    return out, ortho, heights
+
+
+def test_game_build_passes_the_game_verifier(
+    game_site: tuple[Path, Path, Path],
+) -> None:
+    """A pristine game build re-verifies under the game profile."""
+    out, ortho, heights = game_site
+    verify_tiles3d(out, ortho, heights, tile_pixels=8, profile=Profile.GAME)
+
+
+def test_game_provenance_corruption_is_refused(
+    game_site: tuple[Path, Path, Path],
+) -> None:
+    """A tampered provenance.json fails the game byte-identity backstop.
+
+    The manifest is rewritten to describe the tampered provenance (so the
+    manifest-recompute check, which runs earlier, still passes) — proving the
+    byte-identity backstop rejects a provenance that drifts from the source
+    rebuild even when the deliverable is internally self-consistent.
+    """
+    out, ortho, heights = game_site
+    tampered = b"{}\n"
+    (out / "provenance.json").write_bytes(tampered)
+    dataset_id = read_pack(out / "tiles.hfp").header.dataset_id.hex()
+    files = {
+        name: FileDigest(
+            sha256=hashlib.sha256(data).hexdigest(), size=len(data)
+        )
+        for name in ("tileset.json", "provenance.json", "tiles.hfp")
+        for data in ((out / name).read_bytes(),)
+    }
+    (out / "manifest.json").write_bytes(
+        render_manifest(files, dataset_id).encode("utf-8")
+    )
+    with pytest.raises(
+        Tiles3dError, match=r"provenance.json does not byte-equal"
+    ):
+        verify_tiles3d(
+            out, ortho, heights, tile_pixels=8, profile=Profile.GAME
+        )

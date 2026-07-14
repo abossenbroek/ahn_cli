@@ -1,0 +1,36 @@
+[package]
+name = "ahn-heightfield"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.77"
+description = "Decoder for the AHN heightfield (.hf) chunk and AHNP pack formats"
+license = "MIT"
+repository = "https://github.com/abossenbroek/ahn_cli"
+readme = "README.md"
+keywords = ["heightfield", "terrain", "zstd", "3d-tiles", "geospatial"]
+categories = ["encoding", "science::geo", "game-development"]
+
+[features]
+default = []
+# The optional `.hf` chunk encoder (semantic round-trip; not byte parity with
+# the Python producer). Pulls in no extra dependencies — it reuses zstd,
+# crc32fast, and thiserror, already present for the decoder.
+encode = []
+
+[dependencies]
+# Vendored libzstd via zstd-sys (MSVC-clean); decode_all verifies the RFC 8878
+# content checksum and the embedded content size.
+zstd = "0.13"
+# CRC-32/ISO-HDLC, bit-identical to Python's zlib.crc32.
+crc32fast = "1.4"
+# SHA-256 for the archive layer's dataset_id / per-blob verification.
+sha2 = "0.10"
+thiserror = "2"
+# Not called directly — a resolver constraint that ships with the manifest.
+# jobserver 0.1.35 (pulled transitively via cc -> zstd-sys) declares
+# rust-version 1.85, which breaks our declared 1.77 MSRV; cap it below that so
+# downstream 1.77 consumers resolve a compatible version too, not just our lock.
+jobserver = ">=0.1.30, <0.1.35"
+
+[package.metadata.docs.rs]
+all-features = true

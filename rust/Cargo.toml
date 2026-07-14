@@ -1,0 +1,10 @@
+[workspace]
+resolver = "2"
+members = ["ahn-heightfield"]
+# The `fuzz` crate carries its own `[workspace]` root so it never joins this
+# workspace's build/test gates; it is reached only via `cargo fuzz`.
+# `bevy_ahnp_ortho` carries its own `[workspace]` root too, so Bevy's
+# dependency tree never touches this workspace's MSRV 1.77 / cargo-deny /
+# `rust.yml` gates; it is built/tested via its own non-blocking CI job
+# (`.github/workflows/bevy_ahnp_ortho.yml`).
+exclude = ["ahn-heightfield/fuzz", "bevy_ahnp_ortho"]

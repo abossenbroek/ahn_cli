@@ -70,6 +70,7 @@ from ahn_cli.reconcile.reconcile import (
 from ahn_cli.reconcile.writers import OutputFormat
 from ahn_cli.tiles3d.build import build_tiles3d
 from ahn_cli.tiles3d.errors import Tiles3dError
+from ahn_cli.tiles3d.profile import Profile
 
 _GENERATION_REGISTRY = default_registry()
 """The default AHN generation registry backing the ``--ahn`` choice.
@@ -724,9 +725,30 @@ def copc_command(cloud: Path, out: Path, workdir: Path | None) -> None:
     "out",
     required=True,
     type=click.Path(file_okay=False, path_type=Path),
-    help="Directory receiving tileset.json and the tiles/ glbs.",
+    help=(
+        "Directory receiving the tileset: 'strict' writes tileset.json "
+        "and the tiles/ glbs; 'game'/'heightfield'/'splat' write a packed "
+        "tiles.hfp plus tileset.json, provenance.json and manifest.json "
+        "sidecars."
+    ),
 )
-def tiles3d_command(ortho: Path, heights: Path, out: Path) -> None:
+@click.option(
+    "--profile",
+    "profile_name",
+    default="strict",
+    show_default=True,
+    help=(
+        "Export profile: 'strict' (lossless float32 glTF + PNG), 'game' "
+        "(quantized, meshopt-compressed glTF + JPEG), 'heightfield' "
+        "(vendor .hf height chunk + sibling JPEG), or 'splat' (3D Gaussian "
+        "Splatting .ply cloud, no texture). The lossy 'game', 'heightfield' "
+        "and 'splat' profiles pack the tiles into a tiles.hfp plus "
+        "tileset.json, provenance.json and manifest.json sidecars."
+    ),
+)
+def tiles3d_command(
+    ortho: Path, heights: Path, out: Path, profile_name: str
+) -> None:
     """Convert the ortho map to an OGC 3D Tiles 1.1 tileset.
 
     Drapes the orthophoto over the reconciled per-pixel elevations as a
@@ -734,20 +756,39 @@ def tiles3d_command(ortho: Path, heights: Path, out: Path) -> None:
     inputs' dimensions must match perfectly — bit-exact pixel grid and
     colours — and any missing height is a hard error. Every written
     artifact is re-verified from disk against an independent rebuild
-    before the tileset is accepted.
+    before the tileset is accepted. ``--profile game`` emits the compact
+    runtime glTF representation, ``--profile heightfield`` emits the
+    vendor ``.hf`` height chunks with sibling JPEGs, and ``--profile splat``
+    emits a 3D Gaussian Splatting ``.ply`` cloud (one gaussian per vertex,
+    no texture); all three lossy profiles pack the tiles into a tiles.hfp
+    plus tileset.json, provenance.json and manifest.json sidecars.
+    ``--profile strict`` (the default) is the byte-frozen lossless profile.
     """
+    try:
+        profile = Profile.parse(profile_name)
+    except Tiles3dError as exc:
+        raise click.ClickException(str(exc)) from exc
     bar: tqdm[NoReturn] = tqdm(unit="tile", desc="tiles3d")
     with bar:
         try:
             result = build_tiles3d(
-                ortho, heights, out, progress=_tqdm_progress(bar)
+                ortho,
+                heights,
+                out,
+                profile=profile,
+                progress=_tqdm_progress(bar),
             )
         except Tiles3dError as exc:
             raise click.ClickException(str(exc)) from exc
+    # Both lossy profiles announce themselves; strict stays bare because it
+    # is the byte-identical default.
+    suffix = (
+        f" profile={profile.value}." if profile is not Profile.STRICT else ""
+    )
     click.echo(
         f"3D Tiles {result.tileset_path}: {result.tile_count} tile(s) "
         f"across {result.levels + 1} level(s), {result.vertices} "
-        f"vertices, {result.triangles} triangles; verified."
+        f"vertices, {result.triangles} triangles; verified.{suffix}"
     )
 
 

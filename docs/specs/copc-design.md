@@ -1,7 +1,7 @@
 # COPC export bounded context (`ahn_cli/copc/`) — design
 
 **Date:** 2026-07-11
-**Motivation:** `docs/bugs/2026-07-11-pdal-copc-xyz-bounds-flat-terrain.md` — PDAL's
+**Motivation:** `docs/bugs/pdal-copc-xyz-bounds-flat-terrain.md` — PDAL's
 `writers.copc` declares COPC cube bounds and LAS header bounds through two different
 float64 provenance paths; on flat, horizontally-huge Dutch terrain every point sits on
 the cube's Z-minimum face and a ~9e-14 epsilon fails `copc-validator`'s `xyz` check on

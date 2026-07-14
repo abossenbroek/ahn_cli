@@ -41,19 +41,28 @@ class Geodesy:
         - :meth:`to_geodetic_radians` maps the same to EPSG:4979
           longitude/latitude in **radians** plus ellipsoidal height in
           metres — the 3D Tiles ``region`` convention.
+        - :meth:`to_geodetic_from_ecef` maps ECEF (EPSG:4978) metres to
+          the same EPSG:4979 radians + height — the inverse of
+          :meth:`to_ecef`'s codomain — so a game tile's dequantized ECEF
+          vertices can be checked against their region.
 
     Invariants:
-        - Both methods are pure and deterministic for a given PROJ
-          installation; shapes are preserved.
+        - All methods are pure and deterministic for a given PROJ
+          installation; shapes are preserved. ``to_ecef`` then
+          ``to_geodetic_from_ecef`` reproduces ``to_geodetic_radians`` to
+          within pyproj's round-trip epsilon (nanometres in practice).
     """
 
     def __init__(self) -> None:
-        """Build the two pyproj transformers (always_xy ordering)."""
+        """Build the three pyproj transformers (always_xy ordering)."""
         self._ecef = Transformer.from_crs(
             "EPSG:7415", "EPSG:4978", always_xy=True
         )
         self._geodetic = Transformer.from_crs(
             "EPSG:7415", "EPSG:4979", always_xy=True
+        )
+        self._ecef_geodetic = Transformer.from_crs(
+            "EPSG:4978", "EPSG:4979", always_xy=True
         )
 
     def to_ecef(
@@ -73,6 +82,16 @@ class Geodesy:
     ) -> _Triple:
         """Transform RD/NAP coordinates to EPSG:4979 radians + height."""
         lon, lat, height = _transform(self._geodetic, x, y, z)
+        return (np.radians(lon), np.radians(lat), height)
+
+    def to_geodetic_from_ecef(
+        self,
+        x: npt.NDArray[np.float64],
+        y: npt.NDArray[np.float64],
+        z: npt.NDArray[np.float64],
+    ) -> _Triple:
+        """Transform ECEF (EPSG:4978) metres to EPSG:4979 radians + height."""
+        lon, lat, height = _transform(self._ecef_geodetic, x, y, z)
         return (np.radians(lon), np.radians(lat), height)
 
 

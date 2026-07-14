@@ -4,7 +4,7 @@ COPC requires a *cubic* octree volume. Dutch elevation data is the worst case
 for that constraint: kilometres of horizontal extent against a few dozen
 metres of Z, often dipping below NAP zero — so the cube side is forced by XY
 and every point lives in a thin slab pinned near the cube's Z floor. The bug
-in ``docs/bugs/2026-07-11-pdal-copc-xyz-bounds-flat-terrain.md`` was born at
+in ``docs/bugs/pdal-copc-xyz-bounds-flat-terrain.md`` was born at
 exactly that floor: PDAL declares cube and header bounds through two float64
 paths that disagree by an epsilon there.
 

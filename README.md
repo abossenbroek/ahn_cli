@@ -8,6 +8,8 @@
 
 AHN CLI acquires and prepares Dutch elevation data — AHN (Actueel Hoogtebestand Nederland) point clouds, plus matched DSM and orthophoto layers — for a site defined by a city name, a bounding box, or a GeoJSON polygon. It produces deterministic, ready-to-use deliverables: filtered/thinned point clouds, position maps, and — via `reconcile` — a single point cloud coloured from the orthophoto.
 
+> **New to Dutch geodata?** [`docs/overview.md`](docs/overview.md) explains the domain concepts (AHN, orthophotos, NAP, RD New) and the output formats (including the `AHNP` terrain pack) and where the package fits — a good starting point for understanding the broader use.
+
 The CLI is organized as a small pipeline of subcommands rather than one big command:
 
 ```
@@ -171,7 +173,7 @@ ahn_cli reconcile --ortho data/delft/ortho/ortho.tif --cloud data/delft/pointclo
 ahn_cli copc --cloud data/delft/reconciled/reconciled.laz --out data/delft/reconciled/reconciled.copc.laz
 ```
 
-The command exists because external COPC writers break on Dutch-shaped data (see `docs/bugs/2026-07-11-pdal-copc-xyz-bounds-flat-terrain.md`: PDAL's `writers.copc` declares cube and header bounds through two different float64 paths, and on flat, horizontally-huge terrain — where every point is pinned to the octree cube's Z-minimum face — the resulting sub-millimetre epsilon fails `copc-validator`'s `xyz` check on hundreds of nodes, including the root). `ahn_cli copc` instead:
+The command exists because external COPC writers break on Dutch-shaped data (see `docs/bugs/pdal-copc-xyz-bounds-flat-terrain.md`: PDAL's `writers.copc` declares cube and header bounds through two different float64 paths, and on flat, horizontally-huge terrain — where every point is pinned to the octree cube's Z-minimum face — the resulting sub-millimetre epsilon fails `copc-validator`'s `xyz` check on hundreds of nodes, including the root). `ahn_cli copc` instead:
 
 - **streams in bounded memory** (chunked reads → on-disk XY buckets → one bucket at a time), so nationwide-scale inputs work;
 - **preserves AHN's native 0.5 m coarseness**: it never thins below the source grid, and de-duplicates only when multiple points share one 0.5 m voxel — the survivor is chosen by outlier reasoning (median/MAD on Z, nearest-to-median wins), never synthesised;
@@ -183,6 +185,30 @@ Verify the result with `copc-validator` (no install needed, `npx` fetches it on 
 ```bash
 npx copc-validator -d reconciled.copc.laz
 ```
+
+## Exporting to 3D Tiles
+
+`ahn_cli tiles3d` drapes the orthophoto over `reconcile`'s EXR heights and writes an [OGC 3D Tiles 1.1](https://www.ogc.org/standard/3dtiles/) tileset — a quadtree of binary glTF terrain tiles that Cesium, deck.gl and other viewers stream and LOD. The ortho and EXR must match perfectly (bit-exact pixel grid and colours; every height finite), and every written artifact is re-verified from disk against an independent rebuild before the tileset is accepted:
+
+```bash
+ahn_cli tiles3d --ortho data/delft/ortho/ortho.tif --heights data/delft/reconciled/reconciled.exr --out data/delft/tiles3d
+```
+
+`--profile` selects the on-disk representation:
+
+- `strict` (default) — lossless float32 glTF with embedded PNG textures, written as a loose `tileset.json` + `tiles/` directory; writes no other sidecar.
+- `game` — the compact runtime profile: quantized (`KHR_mesh_quantization`) geometry, `EXT_meshopt_compression` streams and baseline JPEG textures.
+- `heightfield` — the vendor Approach-C profile: each tile is a self-describing `.hf` chunk (120-byte header + a zstd level-3, checksummed frame of 12-bit-quantized `uint16` NAP-height levels, 25mm absolute-error cap; format spec in `docs/specs/heightfield-chunk-format.md`) with a sibling baseline JPEG.
+
+Both `game` and `heightfield` bundle every tile's blobs into a single binary `tiles.hfp` **AHNP pack** — a self-describing scene index that is the runtime's only input besides its own blobs (format spec `docs/specs/hfp-pack-format.md`) — plus a demoted `tileset.json` debug/interop sidecar, a deterministic `provenance.json` (pinned quantization/JPEG/encoder/zstd settings and the pack's content-version `dataset_id`), and a `manifest.json` integrity sidecar hashing every loose file plus the pack. `.hf`/`tiles.hfp` are vendor content types the generic OGC validator does not recognize, so a `heightfield` tileset is validated by `ahn_cli`'s own post-write verifier rather than the generic one.
+
+```bash
+ahn_cli tiles3d --ortho data/delft/ortho/ortho.tif --heights data/delft/reconciled/reconciled.exr --out data/delft/tiles3d --profile game
+```
+
+### Rust consumer crate
+
+`rust/ahn-heightfield` is a `#![forbid(unsafe_code)]` Rust decoder for both the `.hf` chunk and the `AHNP` pack, coding against the two normative specs above rather than the Python source: a chunk layer (`Heightfield::decode`) and an archive layer (`Archive::open` over any positioned-read backing store) plus an optional, off-by-default `encode` feature for the chunk layer. MSRV is `1.77`, enforced in CI (`.github/workflows/rust.yml`) across Ubuntu/macOS/Windows at both `stable` and `1.77`, alongside a 3-OS Python↔Rust cross-language round-trip against committed fixtures; run the same gates locally with `make rust-check`. See `rust/ahn-heightfield/README.md` for the full API and its MSRV policy.
 
 ## AHN classification classes
 

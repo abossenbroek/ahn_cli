@@ -1,0 +1,158 @@
+# CI for the `bevy_ahnp_ortho` Bevy renderer crate — its own self-rooted
+# `[workspace]` (excluded from `rust/Cargo.toml`), so this job never touches
+# `ahn-heightfield`'s strict MSRV 1.77 / cargo-deny / `rust.yml` gates.
+#
+# Explicitly NON-BLOCKING (`continue-on-error: true`): Bevy's own build times
+# and this crate's early-stage API make it unsuitable as a merge gate yet.
+# Linux-only, stable-only (no MSRV pin, no multi-OS matrix).
+#
+# Split into independent jobs (rather than one long sequential job) so they
+# run concurrently — the repo is public, so Actions minutes are free and the
+# only cost is wall-clock. Each job gets its own Swatinem/rust-cache entry
+# (the action keys caches by job name automatically), which also avoids the
+# cache thrashing that came from alternating `cargo test`/`clippy`/`build`
+# modes against one shared target dir. The default-features test job passes
+# `--features bevy/dynamic_linking` (Bevy's own documented CI/dev speedup:
+# the engine becomes a shared lib, so linking the test binary against it is
+# fast instead of relinking the whole static archive) -- NOT the
+# --all-features job, since --all-features pulls in gpu_textures
+# (intel_tex_2, a C++/ISPC library) and dynamic linking's shared-lib link
+# config leaves libstdc++'s `__gxx_personality_v0` unresolved there.
+# The former "build --examples" step is now a `check` (no codegen/link;
+# `clippy --all-features --examples` already exercises the same code paths
+# for type errors, so `check` only needs to additionally validate the
+# splat,points-specific feature combo that clippy's all-features run
+# doesn't isolate).
+
+name: bevy_ahnp_ortho
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'rust/bevy_ahnp_ortho/**'
+      - 'rust/ahn-heightfield/**'
+      - '.github/workflows/bevy_ahnp_ortho.yml'
+  pull_request:
+    paths:
+      - 'rust/bevy_ahnp_ortho/**'
+      - 'rust/ahn-heightfield/**'
+      - '.github/workflows/bevy_ahnp_ortho.yml'
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  lint:
+    name: fmt + clippy (default features, non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust/bevy_ahnp_ortho
+      - name: install Bevy's Linux runtime deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      - name: cargo fmt --check
+        working-directory: rust/bevy_ahnp_ortho
+        run: cargo fmt --check
+      - name: cargo clippy --all-targets (default features)
+        working-directory: rust/bevy_ahnp_ortho
+        run: cargo clippy --all-targets -- -D warnings
+
+  clippy-all-features:
+    name: clippy (--all-features --examples, non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust/bevy_ahnp_ortho
+      - name: install Bevy's Linux runtime deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      - name: cargo clippy --all-features --examples
+        working-directory: rust/bevy_ahnp_ortho
+        run: cargo clippy --all-features --examples -- -D warnings
+
+  test-default:
+    name: cargo test (default features, non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust/bevy_ahnp_ortho
+      - name: install Bevy's Linux runtime deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      - name: cargo test --features bevy/dynamic_linking
+        working-directory: rust/bevy_ahnp_ortho
+        run: cargo test --features bevy/dynamic_linking
+
+  test-all-features:
+    name: cargo test (--all-features, non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust/bevy_ahnp_ortho
+      - name: install Bevy's Linux runtime deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      # NOT bevy/dynamic_linking here: --all-features pulls in gpu_textures
+      # (intel_tex_2, a C++/ISPC library), and dynamic linking's shared-lib
+      # link config leaves `__gxx_personality_v0` (libstdc++'s C++ exception
+      # ABI symbol) unresolved -- linking fails outright. Only test-default
+      # (no C++ deps) gets the dynamic_linking speedup.
+      - name: cargo test --all-features
+        working-directory: rust/bevy_ahnp_ortho
+        run: cargo test --all-features
+
+  examples-check:
+    name: cargo check --examples (splat,points, non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust/bevy_ahnp_ortho
+      - name: install Bevy's Linux runtime deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      - name: cargo check --examples --features splat,points
+        working-directory: rust/bevy_ahnp_ortho
+        run: cargo check --examples --features splat,points
+
+  cargo-deny:
+    name: cargo deny check (advisories, bans, licenses, sources, non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: cargo deny check (advisories, bans, licenses, sources)
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          manifest-path: rust/bevy_ahnp_ortho/Cargo.toml

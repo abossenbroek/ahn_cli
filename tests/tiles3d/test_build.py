@@ -9,9 +9,11 @@ from typing import Any, NoReturn, cast
 import pytest
 
 import ahn_cli.tiles3d.build as build_module
-import ahn_cli.tiles3d.emit as emit_module
+import ahn_cli.tiles3d.encoders as encoders_module
 from ahn_cli.tiles3d.build import build_tiles3d
 from ahn_cli.tiles3d.errors import Tiles3dError
+from ahn_cli.tiles3d.pack import read_pack
+from ahn_cli.tiles3d.profile import Profile
 from tests.tiles3d.conftest import (
     grid_for_ortho,
     make_ortho,
@@ -126,7 +128,7 @@ def test_failed_build_leaves_nothing_behind(
             raise Tiles3dError(msg)
         return b"unused"
 
-    monkeypatch.setattr(emit_module, "build_glb", explode)
+    monkeypatch.setattr(encoders_module, "build_glb", explode)
     with pytest.raises(Tiles3dError, match="injected failure"):
         build_tiles3d(ortho, heights, out, tile_pixels=8)
     assert not (out / "tileset.json").exists()
@@ -561,6 +563,88 @@ def test_gate_failure_preserves_the_previous_build(tmp_path: Path) -> None:
     assert after == before
 
 
+def _compact_write(document: dict[str, object], path: Path) -> None:
+    """Write a compact tileset the byte-identity verifier refuses."""
+    path.write_text(json.dumps(document, sort_keys=True))
+
+
+_PACKED_FILES = [
+    "manifest.json",
+    "provenance.json",
+    "tiles.hfp",
+    "tileset.json",
+]
+"""The complete packed lossy deliverable file set under ``out``."""
+
+
+def test_game_build_writes_and_verifies_provenance(tmp_path: Path) -> None:
+    """A game build lands the packed deliverable beside the verified tileset."""
+    ortho, heights = _make_inputs(tmp_path, 6, 6)
+    out = tmp_path / "out"
+    result = build_tiles3d(ortho, heights, out, profile=Profile.GAME)
+    assert result.tile_count == 1
+    assert (out / "provenance.json").is_file()
+    assert sorted(p.name for p in out.iterdir()) == _PACKED_FILES
+
+
+def test_strict_rebuild_over_game_drops_the_stale_packed_deliverable(
+    tmp_path: Path,
+) -> None:
+    """A strict rebuild over a game build removes the whole packed set."""
+    ortho, heights = _make_inputs(tmp_path, 6, 6)
+    out = tmp_path / "out"
+    build_tiles3d(ortho, heights, out, profile=Profile.GAME)
+    assert sorted(p.name for p in out.iterdir()) == _PACKED_FILES
+    build_tiles3d(ortho, heights, out, profile=Profile.STRICT)
+    assert not (out / "provenance.json").exists()
+    assert not (out / "tiles.hfp").exists()
+    assert not (out / "manifest.json").exists()
+    assert sorted(p.name for p in out.iterdir()) == [
+        "tiles",
+        "tileset.json",
+    ]
+
+
+def test_game_rebuild_over_strict_drops_the_stale_tiles_dir(
+    tmp_path: Path,
+) -> None:
+    """A game rebuild over a strict build removes the loose tiles/ subtree."""
+    ortho, heights = _make_inputs(tmp_path, 6, 6)
+    out = tmp_path / "out"
+    build_tiles3d(ortho, heights, out, profile=Profile.STRICT)
+    assert (out / "tiles").is_dir()
+    build_tiles3d(ortho, heights, out, profile=Profile.GAME)
+    assert not (out / "tiles").exists()
+    assert sorted(p.name for p in out.iterdir()) == _PACKED_FILES
+
+
+def test_failed_game_rebuild_restores_the_previous_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rejected game rebuild puts the old game deliverable back whole."""
+    ortho, heights = _make_inputs(tmp_path, 6, 6)
+    out = tmp_path / "out"
+    build_tiles3d(ortho, heights, out, profile=Profile.GAME)
+    good = _snapshot(out)
+    monkeypatch.setattr(build_module, "write_tileset", _compact_write)
+    with pytest.raises(Tiles3dError, match="byte-equal"):
+        build_tiles3d(ortho, heights, out, profile=Profile.GAME)
+    assert _snapshot(out) == good
+    assert (out / "provenance.json").is_file()
+
+
+def test_failed_game_build_removes_the_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A first game build the verifier rejects leaves nothing behind."""
+    ortho, heights = _make_inputs(tmp_path, 6, 6)
+    out = tmp_path / "out"
+    monkeypatch.setattr(build_module, "write_tileset", _compact_write)
+    with pytest.raises(Tiles3dError, match="byte-equal"):
+        build_tiles3d(ortho, heights, out, profile=Profile.GAME)
+    assert list(out.iterdir()) == []
+
+
 def test_unwritable_output_is_a_typed_error(tmp_path: Path) -> None:
     """An output path that cannot be a directory is refused."""
     ortho, heights = _make_inputs(tmp_path, 6, 6)
@@ -568,3 +652,168 @@ def test_unwritable_output_is_a_typed_error(tmp_path: Path) -> None:
     blocker.write_text("file, not dir")
     with pytest.raises(Tiles3dError, match="not writable"):
         build_tiles3d(ortho, heights, blocker)
+
+
+def test_heightfield_build_packs_chunks_textures_and_provenance(
+    tmp_path: Path,
+) -> None:
+    """A heightfield build packs one .hf + .jpg per tile, plus provenance."""
+    ortho, heights = _make_inputs(tmp_path, 20, 14)
+    out = tmp_path / "out"
+    result = build_tiles3d(
+        ortho, heights, out, tile_pixels=8, profile=Profile.HEIGHTFIELD
+    )
+    document = _tileset(out)
+    referenced: list[str] = []
+
+    def walk(entry: dict[str, Any]) -> None:
+        referenced.append(entry["content"]["uri"])
+        for child in entry.get("children", []):
+            walk(child)
+
+    walk(document["root"])
+    assert len(referenced) == result.tile_count
+    assert all(uri.endswith(".hf") for uri in referenced)
+    # No loose tiles/: every chunk + texture lives in the pack.
+    assert not (out / "tiles").exists()
+    pack = read_pack(out / "tiles.hfp")
+    assert pack.header.tile_count == result.tile_count
+    assert all(entry.texture_size > 0 for entry in pack.entries)
+    assert sorted(p.name for p in out.iterdir()) == _PACKED_FILES
+    assert '"profile": "heightfield"' in (out / "provenance.json").read_text()
+
+
+def test_splat_build_packs_gaussian_clouds_and_provenance(
+    tmp_path: Path,
+) -> None:
+    """A splat build packs one untextured .ply per tile, plus provenance."""
+    ortho, heights = _make_inputs(tmp_path, 20, 14)
+    out = tmp_path / "out"
+    result = build_tiles3d(
+        ortho, heights, out, tile_pixels=8, profile=Profile.SPLAT
+    )
+    document = _tileset(out)
+    referenced: list[str] = []
+
+    def walk(entry: dict[str, Any]) -> None:
+        referenced.append(entry["content"]["uri"])
+        for child in entry.get("children", []):
+            walk(child)
+
+    walk(document["root"])
+    assert len(referenced) == result.tile_count
+    assert all(uri.endswith(".ply") for uri in referenced)
+    # No loose tiles/: every gaussian cloud lives in the pack.
+    assert not (out / "tiles").exists()
+    pack = read_pack(out / "tiles.hfp")
+    assert pack.header.tile_count == result.tile_count
+    assert pack.header.content_kind == 2
+    assert all(entry.texture_size == 0 for entry in pack.entries)
+    assert sorted(p.name for p in out.iterdir()) == _PACKED_FILES
+    assert '"profile": "splat"' in (out / "provenance.json").read_text()
+
+
+# ---------------------------------------------------------------------------
+# Packed lossy deliverable: LF sidecars, cross-profile swaps, crash recovery.
+# ---------------------------------------------------------------------------
+
+
+def test_packed_build_writes_lf_only_text_sidecars(tmp_path: Path) -> None:
+    """Every packed text sidecar carries LF newlines, never CRLF (RED-2)."""
+    ortho, heights = _make_inputs(tmp_path, 6, 6)
+    out = tmp_path / "out"
+    build_tiles3d(ortho, heights, out, profile=Profile.GAME)
+    for name in ("tileset.json", "provenance.json", "manifest.json"):
+        assert b"\r" not in (out / name).read_bytes(), name
+
+
+@pytest.mark.parametrize(
+    "profile", [Profile.GAME, Profile.HEIGHTFIELD, Profile.SPLAT]
+)
+def test_packed_rebuild_over_packed_replaces_cleanly(
+    tmp_path: Path, profile: Profile
+) -> None:
+    """A packed rebuild over a game build leaves only the new packed set."""
+    ortho, heights = _make_inputs(tmp_path, 6, 6)
+    out = tmp_path / "out"
+    build_tiles3d(ortho, heights, out, profile=Profile.GAME)
+    build_tiles3d(ortho, heights, out, profile=profile)
+    assert sorted(p.name for p in out.iterdir()) == _PACKED_FILES
+    document = json.loads((out / "provenance.json").read_text())
+    assert document["profile"] == profile.value
+
+
+def test_failed_strict_rebuild_over_packed_restores_the_packed_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rejected strict rebuild over a game build restores the packed set."""
+    ortho, heights = _make_inputs(tmp_path, 6, 6)
+    out = tmp_path / "out"
+    build_tiles3d(ortho, heights, out, profile=Profile.GAME)
+    good = _snapshot(out)
+    monkeypatch.setattr(build_module, "write_tileset", _compact_write)
+    with pytest.raises(Tiles3dError, match="byte-equal"):
+        build_tiles3d(ortho, heights, out, profile=Profile.STRICT)
+    assert _snapshot(out) == good
+    assert (out / "tiles.hfp").is_file()
+    assert not (out / "tiles").exists()
+
+
+def test_failed_packed_rebuild_over_strict_restores_the_tiles_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A rejected game rebuild over a strict build restores the tiles/ tree."""
+    ortho, heights = _make_inputs(tmp_path, 6, 6)
+    out = tmp_path / "out"
+    build_tiles3d(ortho, heights, out, profile=Profile.STRICT)
+    good = _snapshot(out)
+    monkeypatch.setattr(build_module, "write_tileset", _compact_write)
+    with pytest.raises(Tiles3dError, match="byte-equal"):
+        build_tiles3d(ortho, heights, out, profile=Profile.GAME)
+    assert _snapshot(out) == good
+    assert (out / "tiles").is_dir()
+    assert not (out / "tiles.hfp").exists()
+    assert not (out / "manifest.json").exists()
+
+
+def _packed_hard_kill_after_hold(
+    tmp_path: Path,
+) -> tuple[Path, Path, Path, dict[Path, bytes]]:
+    """Build a game deliverable, then fake a SIGKILL between hold and restore.
+
+    The verified packed set is stranded in the backup while ``out`` proper
+    holds the killed run's unverified partial write of all four artifacts.
+    """
+    ortho, heights = _make_inputs(tmp_path, 6, 6)
+    out = tmp_path / "out"
+    build_tiles3d(ortho, heights, out, profile=Profile.GAME)
+    good = _snapshot(out)
+    backup = out / build_module.BACKUP_SUBDIR
+    backup.mkdir()
+    for name in _PACKED_FILES:
+        (out / name).rename(backup / name)
+    (out / "tiles.hfp").write_bytes(b"partial pack")
+    (out / "tileset.json").write_bytes(b"{}\n")
+    (out / "provenance.json").write_bytes(b"{}\n")
+    (out / "manifest.json").write_bytes(b"{}\n")
+    return ortho, heights, out, good
+
+
+def test_hard_killed_packed_rebuild_recovers_and_rebuilds(
+    tmp_path: Path,
+) -> None:
+    """The packed deliverable a hard kill stranded in backup is put back."""
+    ortho, heights, out, good = _packed_hard_kill_after_hold(tmp_path)
+    build_tiles3d(ortho, heights, out, profile=Profile.GAME)
+    assert _snapshot(out) == good
+
+
+def test_hard_kill_then_failed_packed_rebuild_still_restores(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Even a packed rebuild that fails after a hard kill restores the set."""
+    ortho, heights, out, good = _packed_hard_kill_after_hold(tmp_path)
+    monkeypatch.setattr(build_module, "write_tileset", _compact_write)
+    with pytest.raises(Tiles3dError, match="byte-equal"):
+        build_tiles3d(ortho, heights, out, profile=Profile.GAME)
+    assert _snapshot(out) == good

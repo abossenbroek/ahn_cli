@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 from ahn_cli.tiles3d.encoders import (
     GameEncoder,
     HeightfieldEncoder,
+    SplatEncoder,
     StrictEncoder,
 )
 from ahn_cli.tiles3d.errors import Tiles3dError
@@ -34,7 +35,9 @@ class Profile(enum.Enum):
         - ``STRICT`` (`"strict"`) is the lossless float32 + PNG profile;
           ``GAME`` (`"game"`) is the quantized + meshopt + JPEG profile;
           ``HEIGHTFIELD`` (`"heightfield"`) is the vendor ``.hf`` height
-          chunk + sibling JPEG profile.
+          chunk + sibling JPEG profile; ``SPLAT`` (`"splat"`) is the 3D
+          Gaussian Splatting ``.ply`` profile (no texture; colour lives in
+          the gaussians).
         - :meth:`encoder` returns a fresh :class:`TileEncoder` for the
           member; :meth:`parse` turns a CLI string into a member.
         - :meth:`content_suffix` / :meth:`texture_suffix` name the
@@ -51,6 +54,7 @@ class Profile(enum.Enum):
     STRICT = "strict"
     GAME = "game"
     HEIGHTFIELD = "heightfield"
+    SPLAT = "splat"
 
     @classmethod
     def parse(cls, text: str) -> Profile:
@@ -87,16 +91,19 @@ _ENCODERS = {
     Profile.STRICT: StrictEncoder,
     Profile.GAME: GameEncoder,
     Profile.HEIGHTFIELD: HeightfieldEncoder,
+    Profile.SPLAT: SplatEncoder,
 }
 
 _CONTENT_SUFFIX = {
     Profile.STRICT: ".glb",
     Profile.GAME: ".glb",
     Profile.HEIGHTFIELD: ".hf",
+    Profile.SPLAT: ".ply",
 }
 
 _TEXTURE_SUFFIX: dict[Profile, str | None] = {
     Profile.STRICT: None,
     Profile.GAME: None,
     Profile.HEIGHTFIELD: ".jpg",
+    Profile.SPLAT: None,
 }

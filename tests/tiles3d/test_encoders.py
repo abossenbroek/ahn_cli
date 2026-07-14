@@ -11,6 +11,7 @@ import numpy as np
 from ahn_cli.tiles3d.encoders import (
     GameEncoder,
     HeightfieldEncoder,
+    SplatEncoder,
     StrictEncoder,
 )
 from ahn_cli.tiles3d.geodesy import Geodesy
@@ -21,6 +22,7 @@ from ahn_cli.tiles3d.mesh import build_tile_mesh
 from ahn_cli.tiles3d.payload import EncodedTile, TileEncoder, TilePayload
 from ahn_cli.tiles3d.png import encode_png
 from ahn_cli.tiles3d.quadtree import geometric_error, plan_quadtree
+from ahn_cli.tiles3d.splat import decode_splat, encode_splat
 from tests.tiles3d.conftest import make_terrain
 
 
@@ -196,3 +198,50 @@ def test_heightfield_encoder_satisfies_the_protocol() -> None:
     """HeightfieldEncoder is usable through the ``TileEncoder`` seam."""
     encoder: TileEncoder = HeightfieldEncoder()
     assert encoder.encode(_payload()).content_name.endswith(".hf")
+
+
+def test_splat_encode_returns_an_untextured_ply() -> None:
+    """The encoder names the .ply and embeds no separate texture."""
+    payload = _payload()
+    encoded = SplatEncoder().encode(payload)
+    assert isinstance(encoded, EncodedTile)
+    assert encoded.content_name == "0-0-0.ply"
+    assert encoded.content == encode_splat(payload)
+    assert encoded.texture is None
+    assert encoded.texture_name is None
+    assert (
+        decode_splat(encoded.content).count == payload.mesh.positions.shape[0]
+    )
+
+
+def test_splat_content_name_tracks_the_tile_coordinates() -> None:
+    """The splat content name is ``<level>-<tx>-<ty>.ply`` for any tile."""
+    terrain = make_terrain(20, 14)
+    tree = plan_quadtree(20, 14, 8)
+    leaf = tree.root.children[0].children[0]
+    mesh = build_tile_mesh(terrain, leaf, Geodesy())
+    grid = np.ix_(mesh.rows, mesh.cols)
+    payload = TilePayload(
+        level=leaf.level,
+        tx=leaf.tx,
+        ty=leaf.ty,
+        stride=leaf.stride,
+        geometric_error=geometric_error(leaf.stride, 0.5),
+        mesh=mesh,
+        z=terrain.z[grid],
+        rgb=terrain.rgb[grid],
+    )
+    encoded = SplatEncoder().encode(payload)
+    assert encoded.content_name == f"{leaf.level}-{leaf.tx}-{leaf.ty}.ply"
+
+
+def test_splat_encode_is_deterministic() -> None:
+    """Encoding the same payload twice yields identical bytes."""
+    payload = _payload()
+    assert SplatEncoder().encode(payload) == SplatEncoder().encode(payload)
+
+
+def test_splat_encoder_satisfies_the_protocol() -> None:
+    """SplatEncoder is usable through the ``TileEncoder`` seam."""
+    encoder: TileEncoder = SplatEncoder()
+    assert encoder.encode(_payload()).content_name.endswith(".ply")

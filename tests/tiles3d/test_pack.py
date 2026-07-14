@@ -26,6 +26,7 @@ from ahn_cli.tiles3d.pack import (
     BLOB_ALIGNMENT,
     CONTENT_KIND_GAME,
     CONTENT_KIND_HEIGHTFIELD,
+    CONTENT_KIND_SPLAT,
     FORMAT_VERSION,
     HASH_RECORD_SIZE,
     HEADER_SIZE,
@@ -114,6 +115,35 @@ _GAME_BLOBS = {
 
 def _game_source(key: TileKey) -> tuple[bytes, bytes | None]:
     return _GAME_BLOBS[(key.level, key.tx, key.ty)], None
+
+
+def _splat_entries() -> list[PackEntry]:
+    return [
+        PackEntry(TileKey(1, 0, 0), (0.0, 0.0, 0.2, 0.4, 0.5, 2.5), 0.0),
+        PackEntry(TileKey(0, 0, 0), (0.0, 0.0, 0.5, 0.6, 0.0, 3.0), 4.0),
+    ]
+
+
+_SPLAT_BLOBS = {
+    (0, 0, 0): b"ply-root-bytes--",
+    (1, 0, 0): b"ply-child",
+}
+
+
+def _splat_source(key: TileKey) -> tuple[bytes, bytes | None]:
+    return _SPLAT_BLOBS[(key.level, key.tx, key.ty)], None
+
+
+def _write_splat() -> bytes:
+    buf = io.BytesIO()
+    write_pack(
+        buf,
+        _splat_entries(),
+        _splat_source,
+        root_geometric_error=8.0,
+        content_kind=CONTENT_KIND_SPLAT,
+    )
+    return buf.getvalue()
 
 
 def _write_hf(
@@ -295,6 +325,20 @@ def test_golden_game_byte_layout() -> None:
         assert record[1] == NO_TEXTURE_SHA256
 
 
+def test_golden_splat_byte_layout() -> None:
+    """A 2-tile splat pack zeroes the texture slots and sha, kind == 2."""
+    data = _write_splat()
+    assert struct.unpack_from("<I", data, _O_CONTENT_KIND)[0] == 2
+    hash_offset = struct.unpack_from("<Q", data, _O_HASH_OFFSET)[0]
+    entry_base = INDEX_OFFSET + 2 * 16
+    for index in range(2):
+        fields = struct.unpack_from(_ENTRY_FMT, data, entry_base + index * 96)
+        assert fields[12] == 0  # texture_offset
+        assert fields[14] == 0  # texture_size
+        record = struct.unpack_from(_HASH_FMT, data, hash_offset + index * 64)
+        assert record[1] == NO_TEXTURE_SHA256
+
+
 # --------------------------------------------------------------------------
 # Reader round-trip
 # --------------------------------------------------------------------------
@@ -332,6 +376,18 @@ def test_read_round_trips_game() -> None:
         assert (
             pack.primary_blob(index)
             == _GAME_BLOBS[(entry.level, entry.tx, entry.ty)]
+        )
+
+
+def test_read_round_trips_splat() -> None:
+    """A splat pack reads back with no texture blobs."""
+    pack = read_pack(_write_splat())
+    assert pack.header.content_kind == CONTENT_KIND_SPLAT
+    for index, entry in enumerate(pack.entries):
+        assert pack.texture_blob(index) is None
+        assert (
+            pack.primary_blob(index)
+            == _SPLAT_BLOBS[(entry.level, entry.tx, entry.ty)]
         )
 
 
@@ -639,6 +695,15 @@ def test_write_rejects_game_tile_with_texture() -> None:
         _write_one(entries, lambda _k: (b"glb", b"tex"), CONTENT_KIND_GAME)
 
 
+def test_write_rejects_splat_tile_with_texture() -> None:
+    """The writer refuses a splat tile carrying a texture."""
+    entries = [
+        PackEntry(TileKey(0, 0, 0), (0.0, 0.0, 1.0, 1.0, 0.0, 1.0), 0.0)
+    ]
+    with pytest.raises(Tiles3dError, match="no texture blob"):
+        _write_one(entries, lambda _k: (b"ply", b"tex"), CONTENT_KIND_SPLAT)
+
+
 def test_write_rejects_heightfield_without_texture() -> None:
     """The writer refuses a heightfield tile without a texture."""
     entries = [
@@ -832,9 +897,9 @@ def test_reject_non_zero_pad() -> None:
 
 
 def test_reject_unknown_content_kind() -> None:
-    """A content_kind outside {0, 1} is refused."""
+    """A content_kind outside {0, 1, 2} is refused."""
     data = bytearray(_write_hf())
-    struct.pack_into("<I", data, _O_CONTENT_KIND, 2)
+    struct.pack_into("<I", data, _O_CONTENT_KIND, 3)
     _fix_header_crc(data)
     with pytest.raises(Tiles3dError, match="content_kind"):
         read_pack(bytes(data))

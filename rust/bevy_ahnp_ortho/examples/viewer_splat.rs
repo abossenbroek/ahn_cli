@@ -12,8 +12,9 @@ use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin};
 use bevy::prelude::*;
 use bevy_ahnp_ortho::render::AhnpPack;
+use bevy_ahnp_ortho::splat::SplatSettings;
 use bevy_ahnp_ortho::{AhnpOrthoPlugin, Framing};
-use bevy_gaussian_splatting::GaussianSplattingPlugin;
+use bevy_gaussian_splatting::{CloudSettings, GaussianSplattingPlugin};
 
 fn main() {
     let path = std::env::args().nth(1).unwrap_or_else(|| {
@@ -35,10 +36,29 @@ fn main() {
         // so an app that never opens a splat pack never pays for it.
         .add_plugins(GaussianSplattingPlugin)
         .add_plugins(AhnpOrthoPlugin)
+        // Demonstrates the consumer-facing splat render API: the pack encoding
+        // is fixed, but the LOOK is ours to choose. Tune live without
+        // recompiling, e.g. `AHNP_SPLAT_SCALE=3 AHNP_SPLAT_OPACITY=0.6
+        // cargo run --example viewer_splat --features splat -- pack.hfp` —
+        // a larger scale overlaps the sparse gaussians on 2.5D wall faces.
+        .insert_resource(SplatSettings(CloudSettings {
+            global_scale: env_f32("AHNP_SPLAT_SCALE", 1.0),
+            global_opacity: env_f32("AHNP_SPLAT_OPACITY", 1.0),
+            ..default()
+        }))
         .insert_resource(PackPath(path))
         .add_systems(Startup, open_pack)
         .add_systems(Update, (frame_camera, orbit_camera).chain())
         .run();
+}
+
+/// Parse an `f32` from environment variable `key`, falling back to `default`
+/// when it is unset or unparseable.
+fn env_f32(key: &str, default: f32) -> f32 {
+    std::env::var(key)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
 }
 
 #[derive(Resource)]

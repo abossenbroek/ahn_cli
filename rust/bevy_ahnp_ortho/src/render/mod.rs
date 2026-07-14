@@ -91,7 +91,10 @@ impl Plugin for AhnpOrthoPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Update, (tag_ortho_camera, poll_tasks, stream_tiles).chain());
         #[cfg(feature = "splat")]
-        app.add_systems(Update, tag_gaussian_camera);
+        {
+            app.add_systems(Update, tag_gaussian_camera);
+            app.init_resource::<crate::splat::SplatSettings>();
+        }
     }
 }
 

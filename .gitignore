@@ -177,6 +177,10 @@ imgui.ini
 !tests/**/fixtures/*.laz
 !tests/**/fixtures/*.ply
 !tests/testdata/**
+# ...and bevy_ahnp_ortho's own small (~14 KB) COPC test fixture: plain git
+# object like its sibling tests/data/game_tile.glb, not LFS (this crate's
+# own workspace/CI never touches git-LFS).
+!rust/bevy_ahnp_ortho/tests/data/*.laz
 
 # Ad hoc local assets / agent config, not part of the package
 /assets

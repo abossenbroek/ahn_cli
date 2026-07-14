@@ -185,7 +185,7 @@ def test_orphan_pack_entry_is_refused(packed_site: _Site) -> None:
     del document["root"]["children"][0]["children"][0]
     _dump_tileset(out, document)
     with pytest.raises(
-        Tiles3dError, match="has no matching tileset.json entry"
+        Tiles3dError, match=r"has no matching tileset.json entry"
     ):
         _verify(packed_site)
 

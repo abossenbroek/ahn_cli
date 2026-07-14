@@ -336,7 +336,7 @@ def test_error_cap_is_enforced(
     exceeds :data:`~ahn_cli.tiles3d.heightfield.MAX_AXIS_ERROR_M`.
     """
     monkeypatch.setattr(verify_hf_module, "MAX_AXIS_ERROR_M", 1e-12)
-    with pytest.raises(Tiles3dError, match="exceeds the .* m absolute cap"):
+    with pytest.raises(Tiles3dError, match=r"exceeds the .* m absolute cap"):
         _verify(hf_site)
 
 

@@ -756,7 +756,7 @@ def test_write_rejects_oversized_primary_blob() -> None:
     entries = [
         PackEntry(TileKey(0, 0, 0), (0.0, 0.0, 1.0, 1.0, 0.0, 1.0), 0.0)
     ]
-    with pytest.raises(Tiles3dError, match="primary_size .* out of range"):
+    with pytest.raises(Tiles3dError, match=r"primary_size .* out of range"):
         _write_one(
             entries,
             lambda _k: (_HugeBytes(), b"y"),
@@ -769,7 +769,7 @@ def test_write_rejects_oversized_texture_blob() -> None:
     entries = [
         PackEntry(TileKey(0, 0, 0), (0.0, 0.0, 1.0, 1.0, 0.0, 1.0), 0.0)
     ]
-    with pytest.raises(Tiles3dError, match="texture_size .* out of range"):
+    with pytest.raises(Tiles3dError, match=r"texture_size .* out of range"):
         _write_one(
             entries,
             lambda _k: (b"hf", _HugeBytes()),

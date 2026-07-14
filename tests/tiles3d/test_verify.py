@@ -608,7 +608,7 @@ def test_game_provenance_corruption_is_refused(
         render_manifest(files, dataset_id).encode("utf-8")
     )
     with pytest.raises(
-        Tiles3dError, match="provenance.json does not byte-equal"
+        Tiles3dError, match=r"provenance.json does not byte-equal"
     ):
         verify_tiles3d(
             out, ortho, heights, tile_pixels=8, profile=Profile.GAME

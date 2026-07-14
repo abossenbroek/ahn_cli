@@ -175,7 +175,7 @@ def test_encode_refuses_a_tile_beyond_the_error_cap() -> None:
     # A 300 m extent gives z_scale/2 ~= 0.037 m > the 0.025 m cap.
     tall = np.zeros_like(payload.z)
     tall.reshape(-1)[0] = 300.0
-    with pytest.raises(Tiles3dError, match="exceeds the 0.025 m error cap"):
+    with pytest.raises(Tiles3dError, match=r"exceeds the 0.025 m error cap"):
         encode_heightfield(_replace_z(payload, tall))
 
 
@@ -300,7 +300,7 @@ def test_decode_rejects_a_non_finite_header_float() -> None:
 def test_decode_rejects_a_non_positive_z_scale() -> None:
     """A finite but non-positive z_scale is refused (crc re-patched)."""
     data = _corrupt(encode_heightfield(_payload()), _F_Z_SCALE, -1.0)
-    with pytest.raises(Tiles3dError, match="z_scale -1.0 must be positive"):
+    with pytest.raises(Tiles3dError, match=r"z_scale -1.0 must be positive"):
         decode_heightfield(data)
 
 

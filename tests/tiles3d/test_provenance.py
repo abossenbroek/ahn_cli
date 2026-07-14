@@ -122,6 +122,7 @@ def test_heightfield_document_sources_jpeg_and_chunk_versions() -> None:
     assert document["chunk"] == {
         "magic": heightfield.MAGIC.decode("ascii"),
         "version": heightfield.VERSION,
+        "vertical_datum": heightfield.VERTICAL_DATUM,
         "zstd_level": heightfield.ZSTD_LEVEL,
         "zstandard": heightfield.zstandard_version(),
     }

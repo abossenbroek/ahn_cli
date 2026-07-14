@@ -47,8 +47,9 @@ if TYPE_CHECKING:
 
 _PREFIX_FMT = "<4sIII" + "d" * 11 + "Q"
 _HEADER_FMT = _PREFIX_FMT + "II"
-_F_Z_SCALE, _F_RTC_X, _F_REGION_W, _F_PAYLOAD_LEN, _F_PAD = 5, 6, 9, 15, 17
+_F_Z_SCALE, _F_RTC_X, _F_REGION_W, _F_PAYLOAD_LEN = 5, 6, 9, 15
 _F_REGION_MIN, _F_REGION_MAX = 13, 14
+_F_VERTICAL_DATUM = 16  # v3: offset 112, inside the CRC span [0, 116)
 
 _LEAF_KEY = TileKey(2, 0, 0)
 """The leaf tile whose blobs the corruption tests target inside the pack."""
@@ -106,10 +107,17 @@ def _repack_texture(site: tuple[Path, Path, Path], texture: bytes) -> None:
 
 
 def _rebuild(fields: list[object], frame: bytes) -> bytes:
-    """Repack a header from ``fields`` with a valid crc, then the frame."""
-    prefix = struct.pack(_PREFIX_FMT, *fields[:16])
-    crc = zlib.crc32(prefix) & 0xFFFFFFFF
-    return prefix + struct.pack("<II", crc, fields[_F_PAD]) + frame
+    """Repack a v3 header from ``fields`` with a valid crc, then the frame.
+
+    The crc is recomputed over the ``[0, 116)`` span (prefix + the
+    ``vertical_datum`` field), so a downstream verifier check — not the
+    decoder's crc guard — attributes any injected failure.
+    """
+    body = struct.pack(_PREFIX_FMT, *fields[:16]) + struct.pack(
+        "<I", fields[_F_VERTICAL_DATUM]
+    )
+    crc = zlib.crc32(body) & 0xFFFFFFFF
+    return body + struct.pack("<I", crc) + frame
 
 
 def _patch_header(chunk: bytes, index: int, value: object) -> bytes:

@@ -1,9 +1,10 @@
 # ahn-heightfield
 
-A Rust **decoder** for the AHN heightfield (`.hf`) chunk format and the `AHNP`
-pack container. It reads the artifacts produced by the `ahn_cli` Python tool's
-`tiles3d --profile heightfield` / `--profile game` commands, coding against the
-two normative specifications, not against the Python source:
+A Rust **decoder** — and, behind the optional `encode` feature, an encoder for
+the chunk layer — for the AHN heightfield (`.hf`) chunk format and the `AHNP`
+(`tiles.hfp`) pack container. It reads the artifacts produced by the `ahn_cli`
+Python tool's `tiles3d --profile heightfield` / `game` / `splat` commands,
+coding against the two normative specifications, not against the Python source:
 
 - the `.hf` chunk format —
   [`docs/specs/2026-07-12-heightfield-chunk-format.md`](../../docs/specs/2026-07-12-heightfield-chunk-format.md)
@@ -112,16 +113,25 @@ let tile = Heightfield::decode(&bytes)?; // round-trips its own output
 # Ok::<(), ahn_heightfield::HfError>(())
 ```
 
-## Sibling texture convention
+## Content kinds and the sibling texture convention
 
-A `.hf` height chunk carries only geometry. The draped texture is a **baseline
-sequential JPEG** stored alongside it: for a loose tile `<level>-<tx>-<ty>.hf`
-the texture is `<level>-<tx>-<ty>.jpg` (same base name); inside an `AHNP` pack
-the `.hf` blob is the entry's *primary* blob and the `.jpg` is its *texture*
-blob. A `game` pack (`content_kind == 1`) instead carries a single `.glb`
-primary blob per tile with its texture embedded and **no** separate texture
-blob. This crate decodes the `.hf` geometry; the JPEG and the `.glb` are opaque
-blobs a runtime hands to its own image / glTF decoder.
+A pack's `content_kind` (in the `AHNP` header, `archive.header().content_kind`)
+fixes the primary/texture blob layout for every tile in it:
+
+- **`0` (heightfield)** — primary blob is a `.hf` chunk; texture blob is a
+  baseline-sequential `.jpg`.
+- **`1` (game)** — primary blob is a `.glb` with its texture embedded; **no**
+  separate texture blob.
+- **`2` (splat)** — primary blob is a zstd-wrapped 3DGS `.ply`; **no** texture
+  blob (colour lives in the gaussians). `decode_tile` returns a typed error for
+  this kind — it is not a heightfield — but the archive still opens and its
+  blobs are readable.
+
+A `.hf` height chunk carries only geometry; the draped texture is stored
+alongside it (for a loose tile `<level>-<tx>-<ty>.hf` the texture is
+`<level>-<tx>-<ty>.jpg`, same base name). This crate decodes the `.hf`
+geometry; the JPEG, the `.glb`, and the `.ply` are opaque blobs a runtime
+hands to its own image / glTF / splat decoder.
 
 ## Examples
 

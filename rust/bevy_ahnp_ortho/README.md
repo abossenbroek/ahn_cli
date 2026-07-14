@@ -7,6 +7,10 @@ command](../../ahn_cli/tiles3d/) (`--profile game` / `--profile heightfield` /
 selected each frame by screen-space error, draping tiles with their ortho
 texture.
 
+**Fastest way to see it:** `cargo run --example demo -- path/to/tiles.hfp` —
+a runnable app *and* a top-to-bottom integration tutorial (live FPS, lighting/
+LOD/splat sliders, runtime pack switching). See [`demo`](#demo--the-recommended-starting-point) below.
+
 ## Status
 
 - **`content_kind = 0` (heightfield):** implemented. Decodes the tile's `.hf`

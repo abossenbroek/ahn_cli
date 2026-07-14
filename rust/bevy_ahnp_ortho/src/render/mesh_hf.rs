@@ -1,9 +1,11 @@
 //! Builds a Bevy grid `Mesh` from a decoded `content_kind = 0` (heightfield)
 //! tile: one vertex per height-grid sample, ECEF -> the source's anchored
-//! world frame, texel UVs 0..1 across the tile (the GPU handles texture
-//! resampling; no manual texel-centre offset is needed here — that only
-//! matters when sampling a raw image buffer by hand, as `splat`'s per-vertex
-//! colour lookup does).
+//! world frame, texel-centre UVs (matching `ahn_cli.tiles3d.mesh`'s
+//! `_texel_centre_uvs` convention: vertex `(j, i)` maps to the *centre* of
+//! texel `(j, i)` in the same-size `tw x th` texture, `((j+0.5)/tw,
+//! (i+0.5)/th)` — not the naive corner-to-corner `0..1` span, which would
+//! place the outermost vertices exactly on the texture's edge instead of half
+//! a texel inside it).
 
 use ahn_heightfield::Heightfield;
 use bevy::asset::RenderAssetUsages;
@@ -34,7 +36,7 @@ pub fn build_mesh(source: &AhnpSource, heightfield: &Heightfield) -> Mesh {
             let world = source.world_pos(DVec3::new(x, y, z));
             positions.push(world.to_array());
             normals.push([0.0f32, 1.0, 0.0]);
-            uvs.push([c as f32 / (tw - 1) as f32, r as f32 / (th - 1) as f32]);
+            uvs.push([(c as f32 + 0.5) / tw as f32, (r as f32 + 0.5) / th as f32]);
         }
     }
 

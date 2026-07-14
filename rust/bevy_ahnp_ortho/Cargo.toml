@@ -48,6 +48,8 @@ bevy = { version = "0.18", default-features = false, features = [
 ahn-heightfield = { path = "../ahn-heightfield" }
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 thiserror = "2"
+# `game` profile (content_kind = 1) glb JSON chunk parsing — core, always on.
+serde_json = "1"
 
 # `splat` feature.
 bevy_gaussian_splatting = { version = "7", default-features = false, features = [

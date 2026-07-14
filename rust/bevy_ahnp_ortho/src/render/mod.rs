@@ -7,6 +7,7 @@
 //! Track C report).
 
 pub mod material;
+pub mod mesh_glb;
 pub mod mesh_hf;
 
 use std::collections::HashSet;
@@ -136,19 +137,23 @@ fn stream_tiles(
                     texture,
                 }) => {
                     let mesh = meshes.add(mesh_hf::build_mesh(source, &heightfield));
-                    let material_handle = match texture.as_deref().map(material::decode_jpeg) {
-                        Some(Ok(image)) => {
-                            materials.add(material::ortho_material(images.add(image)))
-                        }
-                        Some(Err(e)) => {
-                            warn!(
-                                "tile ({}, {}, {}) texture decode failed, using flat grey: {e}",
-                                node.key.level, node.key.tx, node.key.ty
-                            );
-                            materials.add(material::untextured_material())
-                        }
-                        None => materials.add(material::untextured_material()),
-                    };
+                    let material_handle =
+                        textured_material(&mut materials, &mut images, texture.as_deref(), node);
+                    let entity = commands
+                        .spawn((
+                            Mesh3d(mesh),
+                            MeshMaterial3d(material_handle),
+                            Transform::IDENTITY,
+                            Visibility::Hidden,
+                        ))
+                        .id();
+                    entities[req.tile] = Some(entity);
+                    content[req.tile] = TileContent::Ready;
+                }
+                Ok(DecodedContent::Game(tile)) => {
+                    let mesh = meshes.add(mesh_glb::build_mesh(source, &tile));
+                    let material_handle =
+                        textured_material(&mut materials, &mut images, Some(&tile.texture), node);
                     let entity = commands
                         .spawn((
                             Mesh3d(mesh),
@@ -187,5 +192,27 @@ fn stream_tiles(
             }
         }
         history.absorb(&sel, source.tree.len());
+    }
+}
+
+/// Decode `texture` (if present) into an unlit ortho material, falling back
+/// to flat grey on a missing or undecodable JPEG (logged as a `warn!`, never
+/// a hard failure — a bad texture shouldn't sink an otherwise-good tile).
+fn textured_material(
+    materials: &mut Assets<StandardMaterial>,
+    images: &mut Assets<Image>,
+    texture: Option<&[u8]>,
+    node: &crate::engine::tree::TileNode,
+) -> Handle<StandardMaterial> {
+    match texture.map(material::decode_jpeg) {
+        Some(Ok(image)) => materials.add(material::ortho_material(images.add(image))),
+        Some(Err(e)) => {
+            warn!(
+                "tile ({}, {}, {}) texture decode failed, using flat grey: {e}",
+                node.key.level, node.key.tx, node.key.ty
+            );
+            materials.add(material::untextured_material())
+        }
+        None => materials.add(material::untextured_material()),
     }
 }

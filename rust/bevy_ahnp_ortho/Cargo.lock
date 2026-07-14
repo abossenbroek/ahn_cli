@@ -383,6 +383,7 @@ dependencies = [
  "bevy_interleave",
  "image",
  "intel_tex_2",
+ "serde_json",
  "thiserror 2.0.18",
  "zstd",
 ]

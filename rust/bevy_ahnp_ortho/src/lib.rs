@@ -5,7 +5,8 @@
 //! see [`engine::tree`]), with optional COPC point-cloud rendering (`points`
 //! feature) and optional 3D Gaussian Splatting (`splat` feature: renders both
 //! this pack format's own `content_kind = 2` tiles and external `.ply`/
-//! `.spz` clouds via `bevy_gaussian_splatting`).
+//! `.gcloud` clouds via `bevy_gaussian_splatting`'s own `io_ply`/
+//! `io_bincode2` `AssetLoader` — see [`splat::spawn_external_ply`]).
 //!
 //! Ported building blocks (tile-tree/LOD selection, geodesy, the meshopt
 //! decoder) come from github.com/Arvikasoft/bevy_3d_tiles (dual

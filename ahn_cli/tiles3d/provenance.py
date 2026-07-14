@@ -1,18 +1,19 @@
 """The lossy-profile provenance sidecar: a deterministic settings record.
 
 The strict profile is lossless and byte-frozen, so it writes no sidecar.
-The two lossy profiles — game and heightfield — are version-pinned, so
-each records exactly *how* a tile was packed next to the tileset: the
-quantization scheme, the JPEG settings, and the encoder library versions
-that fix the bytes. A consumer (or a future audit) reads
-``provenance.json`` to know which lossy profile produced the deliverable
-and at what pinned settings.
+The three lossy profiles — game, heightfield and splat — are
+version-pinned, so each records exactly *how* a tile was packed next to
+the tileset: the quantization scheme, the JPEG settings (game and
+heightfield), and the encoder library versions that fix the bytes. A
+consumer (or a future audit) reads ``provenance.json`` to know which
+lossy profile produced the deliverable and at what pinned settings.
 
 Every field is sourced from the encoder-layer modules that own it — the
 quantization bit depth from :mod:`ahn_cli.tiles3d.quantize`, the JPEG
 constants and Pillow version from :mod:`ahn_cli.tiles3d.jpeg`, the
 meshopt version from :mod:`ahn_cli.tiles3d.meshopt`, the ``.hf`` magic /
-version / zstd settings from :mod:`ahn_cli.tiles3d.heightfield` — never
+version / zstd settings from :mod:`ahn_cli.tiles3d.heightfield`, the
+splat ``.ply``/zstd settings from :mod:`ahn_cli.tiles3d.splat` — never
 re-derived here, so the record cannot drift from the code that produced
 the bytes.
 
@@ -49,6 +50,9 @@ from ahn_cli.tiles3d.pack import BLOB_ALIGNMENT, FORMAT_VERSION
 from ahn_cli.tiles3d.pack import MAGIC as PACK_MAGIC
 from ahn_cli.tiles3d.profile import Profile
 from ahn_cli.tiles3d.quantize import UINT16_MAX
+from ahn_cli.tiles3d.splat import OPACITY, SH_DC0
+from ahn_cli.tiles3d.splat import ZSTD_LEVEL as SPLAT_ZSTD_LEVEL
+from ahn_cli.tiles3d.splat import zstandard_version as splat_zstandard_version
 
 __all__ = [
     "PROVENANCE_NAME",
@@ -59,6 +63,8 @@ __all__ = [
     "render_game_provenance",
     "render_heightfield_provenance",
     "render_provenance",
+    "render_splat_provenance",
+    "splat_provenance_document",
 ]
 
 PROVENANCE_NAME = "provenance.json"
@@ -94,6 +100,16 @@ _HEIGHTFIELD_QUANTIZATION_SCHEME = (
     "a zero-extent (flat) axis uses the epsilon scale."
 )
 """One stable prose note of the heightfield height-axis quantization."""
+
+_SPLAT_GAUSSIAN_SCHEME = (
+    "one isotropic gaussian per tile vertex; position copied as-is (no "
+    "quantization); colour is the sampled ortho pixel as an SH degree-0 "
+    "coefficient (no sRGB decode); scale is the tile's measured cell "
+    "spacing, log-stored (isotropic, one value for every axis); opacity "
+    "is a fixed logit(OPACITY) and rotation is the identity quaternion "
+    "for every gaussian."
+)
+"""One stable prose note of the splat per-gaussian construction."""
 
 
 def _jpeg_block() -> dict[str, object]:
@@ -230,15 +246,63 @@ def render_heightfield_provenance(dataset_id: str) -> str:
     )
 
 
+def splat_provenance_document(dataset_id: str) -> dict[str, object]:
+    """Return the splat profile's provenance document (pre-serialisation).
+
+    Contract:
+        - ``profile`` is ``"splat"``; ``gaussian`` records the fixed
+          opacity (:data:`~ahn_cli.tiles3d.splat.OPACITY`), the SH
+          degree-0 normalization constant
+          (:data:`~ahn_cli.tiles3d.splat.SH_DC0`) and the one-line
+          per-gaussian construction note; ``ply`` records the pinned zstd
+          level and the ``zstandard`` version that fix the blob bytes;
+          ``pack`` records the ``AHNP`` container pins and ``dataset_id``;
+          ``producer`` records the producing host.
+        - Pure and deterministic given the pinned library version and the
+          host — no timestamps or environment reads beyond the version /
+          producer helpers.
+    """
+    return {
+        "profile": "splat",
+        "gaussian": {
+            "opacity": OPACITY,
+            "sh_dc0": SH_DC0,
+            "scheme": _SPLAT_GAUSSIAN_SCHEME,
+        },
+        "ply": {
+            "zstd_level": SPLAT_ZSTD_LEVEL,
+            "zstandard": splat_zstandard_version(),
+        },
+        "pack": _pack_block(dataset_id),
+        "producer": _producer_block(),
+    }
+
+
+def render_splat_provenance(dataset_id: str) -> str:
+    """Serialise the splat provenance deterministically (sorted keys).
+
+    Contract:
+        - Returns sorted-key, two-space-indented JSON with a trailing
+          newline; byte-identical for identical pinned versions, host and
+          ``dataset_id``.
+    """
+    return (
+        json.dumps(
+            splat_provenance_document(dataset_id), sort_keys=True, indent=2
+        )
+        + "\n"
+    )
+
+
 def render_provenance(
     profile: Profile, *, dataset_id: str | None = None
 ) -> str | None:
     """Return ``profile``'s provenance JSON, or ``None`` if it writes none.
 
     Contract:
-        - The lossy ``game`` and ``heightfield`` profiles return their
-          deterministic sidecar text (embedding ``dataset_id``, which is
-          required for them); the byte-frozen ``strict`` profile returns
+        - The lossy ``game``, ``heightfield`` and ``splat`` profiles return
+          their deterministic sidecar text (embedding ``dataset_id``, which
+          is required for them); the byte-frozen ``strict`` profile returns
           ``None`` (it writes no sidecar and ignores ``dataset_id``). The
           build writes exactly this and the verifier recomputes it for the
           byte-identity check.
@@ -249,6 +313,10 @@ def render_provenance(
         )
     if profile is Profile.HEIGHTFIELD:
         return render_heightfield_provenance(
+            _require_dataset_id(dataset_id, profile)
+        )
+    if profile is Profile.SPLAT:
+        return render_splat_provenance(
             _require_dataset_id(dataset_id, profile)
         )
     return None

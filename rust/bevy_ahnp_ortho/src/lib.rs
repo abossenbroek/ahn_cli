@@ -16,6 +16,7 @@
 pub mod ahnp;
 pub mod engine;
 pub mod errors;
+pub mod frame;
 pub mod render;
 
 #[cfg(feature = "points")]
@@ -24,4 +25,5 @@ pub mod points;
 pub mod splat;
 
 pub use errors::AhnpError;
+pub use frame::{DEFAULT_FOV_Y, Framing};
 pub use render::AhnpOrthoPlugin;

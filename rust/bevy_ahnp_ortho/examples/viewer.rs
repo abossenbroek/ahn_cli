@@ -9,8 +9,8 @@
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin};
 use bevy::prelude::*;
-use bevy_ahnp_ortho::AhnpOrthoPlugin;
 use bevy_ahnp_ortho::render::AhnpPack;
+use bevy_ahnp_ortho::{AhnpOrthoPlugin, Framing};
 
 fn main() {
     let path = std::env::args().nth(1).unwrap_or_else(|| {
@@ -30,8 +30,8 @@ fn main() {
         .add_plugins(LogDiagnosticsPlugin::default())
         .add_plugins(AhnpOrthoPlugin)
         .insert_resource(PackPath(path))
-        .add_systems(Startup, (open_pack, setup_camera))
-        .add_systems(Update, orbit_camera)
+        .add_systems(Startup, open_pack)
+        .add_systems(Update, (frame_camera, orbit_camera).chain())
         .run();
 }
 
@@ -50,28 +50,45 @@ fn open_pack(mut commands: Commands, path: Res<PackPath>) {
     }
 }
 
-/// A generic-distance orbit: since the tree's own extent isn't known before
-/// the pack opens, the camera starts a reasonable distance out and the user
-/// dollies with the scroll wheel in a fuller app; this viewer keeps the
-/// orbit fixed so it's a deterministic, no-input FPS/visual smoke test.
-const ORBIT_RADIUS_M: f32 = 400.0;
+/// The pack's [`Framing`], computed once the pack is open — the reusable
+/// library helper does the actual fit; the viewer just sweeps its azimuth.
+#[derive(Resource)]
+struct Orbit(Framing);
 
-fn setup_camera(mut commands: Commands) {
+/// Elevation the camera holds while orbiting (radians up from horizontal).
+const ELEVATION: f32 = 0.6;
+
+/// Spawn the camera once, framed on the pack's full world AABB via
+/// [`Framing::fit_default`], and store the framing. Runs every frame but
+/// no-ops after the first (guarded by the `Orbit` resource) — the pack
+/// entity isn't visible until the first `Update`, since `open_pack`'s spawn
+/// command applies at the Startup sync point.
+fn frame_camera(mut commands: Commands, packs: Query<&AhnpPack>, orbit: Option<Res<Orbit>>) {
+    if orbit.is_some() {
+        return;
+    }
+    let Some(pack) = packs.iter().next() else {
+        return;
+    };
+    let framing = Framing::fit_default(pack.world_aabb());
     commands.spawn((
         Camera3d::default(),
-        Transform::from_xyz(0.0, ORBIT_RADIUS_M * 0.7, ORBIT_RADIUS_M * 0.7)
-            .looking_at(Vec3::ZERO, Vec3::Y),
+        framing.orbit_transform(0.0, ELEVATION),
         Tonemapping::None,
     ));
+    commands.insert_resource(Orbit(framing));
 }
 
-fn orbit_camera(time: Res<Time>, mut q: Query<&mut Transform, With<Camera3d>>) {
-    let a = time.elapsed_secs() * 0.15;
-    let (x, z) = (
-        a.sin() * ORBIT_RADIUS_M * 0.75,
-        a.cos() * ORBIT_RADIUS_M * 0.75,
-    );
+fn orbit_camera(
+    time: Res<Time>,
+    orbit: Option<Res<Orbit>>,
+    mut q: Query<&mut Transform, With<Camera3d>>,
+) {
+    let Some(orbit) = orbit else {
+        return;
+    };
+    let azimuth = time.elapsed_secs() * 0.15;
     for mut t in &mut q {
-        *t = Transform::from_xyz(x, ORBIT_RADIUS_M * 0.7, z).looking_at(Vec3::ZERO, Vec3::Y);
+        *t = orbit.0.orbit_transform(azimuth, ELEVATION);
     }
 }

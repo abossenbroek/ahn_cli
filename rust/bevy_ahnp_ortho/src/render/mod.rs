@@ -73,6 +73,15 @@ impl AhnpPack {
             source: Arc::new(source),
         })
     }
+
+    /// World-space `(min, max)` axis-aligned bounding box of the pack — lets
+    /// a host frame the camera on the pack's real extent instead of guessing
+    /// an orbit radius (pair with [`crate::frame::Framing::fit`]). Delegates
+    /// to [`crate::ahnp::source::AhnpSource::world_aabb`]; exists on the
+    /// public component because `source` is private.
+    pub fn world_aabb(&self) -> (Vec3, Vec3) {
+        self.source.world_aabb()
+    }
 }
 
 /// The plugin: registers [`stream_tiles`] and [`tag_ortho_camera`].

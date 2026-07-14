@@ -8,6 +8,7 @@
 use bevy::core_pipeline::tonemapping::Tonemapping;
 use bevy::diagnostic::{FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin};
 use bevy::prelude::*;
+use bevy_ahnp_ortho::Framing;
 use bevy_ahnp_ortho::points::{LodSelection, load_points};
 use bevy_ahnp_ortho::render::mesh_points;
 
@@ -28,7 +29,7 @@ fn main() {
         .add_plugins(FrameTimeDiagnosticsPlugin::default())
         .add_plugins(LogDiagnosticsPlugin::default())
         .insert_resource(PointsPath(path))
-        .add_systems(Startup, (spawn_points, setup_camera))
+        .add_systems(Startup, spawn_points)
         .add_systems(Update, orbit_camera)
         .run();
 }
@@ -36,7 +37,12 @@ fn main() {
 #[derive(Resource)]
 struct PointsPath(String);
 
-const ORBIT_RADIUS_M: f32 = 30.0;
+/// The cloud's [`Framing`], computed at load.
+#[derive(Resource)]
+struct Orbit(Framing);
+
+/// Elevation the camera holds while orbiting (radians up from horizontal).
+const ELEVATION: f32 = 0.6;
 
 fn spawn_points(
     mut commands: Commands,
@@ -52,30 +58,31 @@ fn spawn_points(
         }
     };
     println!("loaded {} points", cloud.positions.len());
+    let framing = Framing::fit_default(cloud.world_aabb());
     let mesh = meshes.add(mesh_points::build_mesh(&cloud));
     let material = materials.add(StandardMaterial {
         unlit: true,
         ..default()
     });
     commands.spawn((Mesh3d(mesh), MeshMaterial3d(material), Transform::IDENTITY));
-}
-
-fn setup_camera(mut commands: Commands) {
     commands.spawn((
         Camera3d::default(),
-        Transform::from_xyz(0.0, ORBIT_RADIUS_M * 0.7, ORBIT_RADIUS_M * 0.7)
-            .looking_at(Vec3::ZERO, Vec3::Y),
+        framing.orbit_transform(0.0, ELEVATION),
         Tonemapping::None,
     ));
+    commands.insert_resource(Orbit(framing));
 }
 
-fn orbit_camera(time: Res<Time>, mut q: Query<&mut Transform, With<Camera3d>>) {
-    let a = time.elapsed_secs() * 0.15;
-    let (x, z) = (
-        a.sin() * ORBIT_RADIUS_M * 0.75,
-        a.cos() * ORBIT_RADIUS_M * 0.75,
-    );
+fn orbit_camera(
+    time: Res<Time>,
+    orbit: Option<Res<Orbit>>,
+    mut q: Query<&mut Transform, With<Camera3d>>,
+) {
+    let Some(orbit) = orbit else {
+        return;
+    };
+    let azimuth = time.elapsed_secs() * 0.15;
     for mut t in &mut q {
-        *t = Transform::from_xyz(x, ORBIT_RADIUS_M * 0.7, z).looking_at(Vec3::ZERO, Vec3::Y);
+        *t = orbit.0.orbit_transform(azimuth, ELEVATION);
     }
 }

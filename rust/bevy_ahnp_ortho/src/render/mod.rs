@@ -185,6 +185,16 @@ fn poll_tasks(
                 }
                 Ok(DecodedContent::Game(tile)) => {
                     let mesh = meshes.add(mesh_glb::build_mesh(source, &tile));
+                    // The producer's glTF material declares `doubleSided:
+                    // true` (`gltf_quant.py`), but `textured_material`
+                    // builds a default `StandardMaterial` (`cull_mode:
+                    // Some(Face::Back)`, single-sided) -- a deliberate
+                    // simplification here, not an oversight: every tile's
+                    // winding faces up (nadir terrain), so back-face
+                    // culling never hides anything for this renderer's own
+                    // content. Set `cull_mode: None` on the returned
+                    // material if a host also feeds it externally-authored,
+                    // possibly-flipped geometry.
                     let material_handle =
                         textured_material(&mut materials, &mut images, Some(&tile.texture), &node);
                     let entity = commands
@@ -311,7 +321,10 @@ fn textured_material(
     let decoded = texture.map(material::decode_jpeg);
 
     match decoded {
-        Some(Ok(image)) => materials.add(material::ortho_material(images.add(image))),
+        Some(Ok(tex)) => materials.add(material::ortho_material(
+            images.add(tex.image),
+            tex.uv_scale,
+        )),
         Some(Err(e)) => {
             warn!(
                 "tile ({}, {}, {}) texture decode failed, using flat grey: {e}",

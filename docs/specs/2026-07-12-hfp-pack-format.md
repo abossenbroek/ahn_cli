@@ -73,7 +73,7 @@ arithmetic in `u64`, mirroring the chunk spec's `width * height * 2` rule.
 | 64     | 32   | `u8[32]`   | `dataset_id`           | SHA-256 over the **hash section** bytes `[hash_offset, hash_offset + hash_size)`. The content version (Merkle-style root). |
 | 96     | 4    | `uint32`   | `index_crc32`          | CRC-32/ISO-HDLC over the **index region** bytes `[index_offset, index_offset + index_size)`. Mismatch is rejected. |
 | 100    | 4    | `uint32`   | `reserved`             | Reserved; must be `0`. Any other value is rejected. (Vacated by moving `header_crc32` to offset 124; see *Header CRC*.) |
-| 104    | 4    | `uint32`   | `content_kind`         | `0` = heightfield, `1` = game. Any other value is rejected. See *Content kind*. |
+| 104    | 4    | `uint32`   | `content_kind`         | `0` = heightfield, `1` = game, `2` = splat. Any other value is rejected. See *Content kind*. |
 | 108    | 16   | `u8[16]`   | `pad`                  | Reserved; every byte must be `0`. Any non-zero byte is rejected.        |
 | 124    | 4    | `uint32`   | `header_crc32`         | CRC-32/ISO-HDLC over header bytes `[0, 124)`. Mismatch is rejected.     |
 
@@ -105,10 +105,23 @@ kind):
 |---:|---|---|---|
 | `0` | heightfield | `.hf` chunk (see the chunk spec) | baseline JPEG (`.jpg`) — always present, `texture_size > 0` |
 | `1` | game | binary glTF (`.glb`), texture embedded in the glb | **none**: `texture_offset = 0` and `texture_size = 0` |
+| `2` | splat | `.ply` (3DGS, zstd-wrapped) | **none**: `texture_offset = 0` and `texture_size = 0` (colour lives in the gaussians' SH coefficients) |
 
 Any other `content_kind` value is rejected. The reader uses
 `content_kind` to resolve the URI↔key file extension (see *URI ↔ key
 mapping*) and to know whether a texture blob exists.
+
+> **Revision note (splat, non-breaking).** `content_kind = 2` (splat) was
+> added after this document's initial version, alongside every other
+> `content_kind ∈ {1, 2} ⇒ no texture` rule above. This is a **non-breaking
+> addition**, not a format-version bump: `format_version` stays `1`, the
+> container layout is unchanged, and `content_kind` was always inside the
+> `header_crc32` span (see *Header CRC*) — a pack written before this
+> revision simply never had a tile with `content_kind = 2`. A conforming
+> reader built against the pre-splat `{0, 1}` set must be updated to accept
+> `2` and to treat it as a no-texture kind (like `1`); it otherwise needs no
+> other change, since a splat pack's primary blob is opaque bytes to the
+> container exactly like a `.hf` chunk or a `.glb` is.
 
 ### `dataset_id` (content version)
 
@@ -214,10 +227,10 @@ horizontal-bit-equal + height-containment + the per-blob SHA-256 below.
   padding.
 - Blobs do not overlap and lie wholly within `[blob_region_start,
   file_size)`.
-- For `content_kind = 1` (game) every entry has `texture_offset = 0` and
-  `texture_size = 0` (no texture blob is stored). For `content_kind = 0`
-  (heightfield) every entry has a texture blob (`texture_size > 0`, offset
-  16-aligned).
+- For `content_kind = 1` (game) or `content_kind = 2` (splat) every entry
+  has `texture_offset = 0` and `texture_size = 0` (no texture blob is
+  stored). For `content_kind = 0` (heightfield) every entry has a texture
+  blob (`texture_size > 0`, offset 16-aligned).
 
 ## Hash section (`tile_count × 64 B`)
 
@@ -228,13 +241,14 @@ At `hash_offset`, one 64-byte record per tile in index order:
 | 0                      | 32   | `u8[32]`  | `primary_sha256` | SHA-256 of the tile's primary blob bytes.                     |
 | 32                     | 32   | `u8[32]`  | `texture_sha256` | SHA-256 of the tile's texture blob bytes, or a sentinel when there is no texture (below). |
 
-**No-texture sentinel (decided).** When `content_kind = 1` (game) there is
-no texture blob, so `texture_sha256` is **32 zero bytes** (all-zeros),
-matching the zeroed `texture_offset` / `texture_size` slots. The absence of
-a texture is signalled uniformly by zeros; a verifier checks `content_kind
-= 1 ⇒ texture_sha256 == 0…0` directly, without hashing an empty input.
-(The alternative — SHA-256 of the empty string — was rejected as implying a
-present-but-empty texture and requiring a hash to express "no texture".)
+**No-texture sentinel (decided).** When `content_kind = 1` (game) or
+`content_kind = 2` (splat) there is no texture blob, so `texture_sha256` is
+**32 zero bytes** (all-zeros), matching the zeroed `texture_offset` /
+`texture_size` slots. The absence of a texture is signalled uniformly by
+zeros; a verifier checks `content_kind ∈ {1, 2} ⇒ texture_sha256 == 0…0`
+directly, without hashing an empty input. (The alternative — SHA-256 of the
+empty string — was rejected as implying a present-but-empty texture and
+requiring a hash to express "no texture".)
 
 The hash section is **cold**: it is read only by install/repair and by the
 verifier's per-blob integrity pass, never on the play-time open path. It is
@@ -257,6 +271,7 @@ where the value is zero), and `<ext>` is fixed by `content_kind`:
 |---:|---|
 | `0` (heightfield) | `hf` |
 | `1` (game) | `glb` |
+| `2` (splat) | `ply` |
 
 `tz` is `0` in this version and does **not** appear in the URI. A parse is
 strict: the leading `tiles/` segment, the two `-` separators, a `.`
@@ -284,7 +299,7 @@ length:
 - `root_geometric_error` is non-finite (`NaN` / `±Inf`);
 - `reserved` (offset 100) `!= 0`; any byte of `pad` (offset `[108, 124)`)
   `!= 0`;
-- `content_kind` not in `{0, 1}`;
+- `content_kind` not in `{0, 1, 2}`;
 - `index_offset != 128`;
 - `index_size != level_count * 16 + tile_count * 96`;
 - `hash_offset != index_offset + index_size`;
@@ -321,9 +336,9 @@ length:
   blob scan does not equal `file_size` (a conforming pack ends exactly at
   its final blob, so any trailing bytes or trailing gap is rejected);
 - non-zero inter-blob padding;
-- for `content_kind = 1`: any entry with `texture_offset != 0` or
-  `texture_size != 0`; for `content_kind = 0`: any entry with
-  `texture_size == 0`;
+- for `content_kind = 1` or `content_kind = 2`: any entry with
+  `texture_offset != 0` or `texture_size != 0`; for `content_kind = 0`:
+  any entry with `texture_size == 0`;
 - a blob whose decoded content does not match its entry (e.g. a `.hf` blob
   whose chunk-header region is not horizontally bit-equal to and
   height-contained within the entry region — a semantic cross-check the
@@ -333,7 +348,7 @@ length:
 
 - any `primary_sha256` / `texture_sha256` that does not match the SHA-256
   of the corresponding blob (a `texture_sha256` for a `content_kind = 1`
-  tile must be 32 zero bytes);
+  or `content_kind = 2` tile must be 32 zero bytes);
 - `dataset_id` not equal to SHA-256 of the hash section.
 
 **Truncation** at any point (mid-header, mid-directory, mid-index,
@@ -395,8 +410,8 @@ added, is held to semantic equivalence, not byte parity.
 
 ## Deliverable root layout
 
-Both lossy profiles (game and heightfield) write the same set of files;
-only `content_kind` and the blob contents differ:
+All three lossy profiles (game, heightfield and splat) write the same set
+of files; only `content_kind` and the blob contents differ:
 
 ```
 out/

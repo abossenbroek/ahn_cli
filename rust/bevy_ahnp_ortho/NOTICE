@@ -1,0 +1,34 @@
+bevy_ahnp_ortho
+Copyright (c) 2026 Anton Bossenbroek
+
+This crate is licensed under the terms of either the MIT license
+(LICENSE-MIT) or the Apache License, Version 2.0 (LICENSE-APACHE), at your
+option. This dual license applies to this crate only — the `ahn_cli`
+repository root is licensed under the MIT license (TU Delft), unchanged.
+
+== Third-party attribution ==
+
+`src/engine/tree.rs`, `src/engine/geo.rs`, `src/engine/geodesy.rs`, and
+`src/engine/meshopt.rs` are ported from:
+
+    bevy_3d_tiles
+    Copyright (c) 2024 Arvikasoft AB
+    https://github.com/Arvikasoft/bevy_3d_tiles
+    Licensed under MIT OR Apache-2.0
+
+  - `tree.rs` ports `src/traversal.rs`'s tile-tree model and per-frame
+    screen-space-error selection algorithm (`select`, `History`,
+    `Selection`, `Priority`) near-verbatim; `TileTree::build`/`graft` (which
+    parsed a `tileset.json` schema) are replaced by `build_from_entries`,
+    which builds directly from an AHNP pack's flat entry list.
+  - `geo.rs` and `geodesy.rs` port `src/geo.rs` and `src/geodesy.rs`
+    verbatim (region -> ECEF bounding volumes; WGS84 geodetic <-> ECEF and
+    the ECEF -> Bevy-world ENU anchor transform).
+  - `meshopt.rs` ports `src/meshopt.rs` verbatim: a pure-Rust
+    `EXT_meshopt_compression` decoder, itself a faithful port of the
+    reference decoder bundled with the meshoptimizer encoder
+    (`meshopt_decoder_reference.js`, by Jasper St. Pierre / Arseny
+    Kapoulkine, MIT).
+
+Each ported file carries its own header comment naming the specific upstream
+file it was ported from.

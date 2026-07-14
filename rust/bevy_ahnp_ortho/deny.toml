@@ -1,0 +1,57 @@
+# cargo-deny policy for the self-rooted bevy_ahnp_ortho workspace. Checked
+# with `cargo deny --manifest-path rust/bevy_ahnp_ortho/Cargo.toml check`.
+# Deliberately permissive vs. rust/deny.toml (the strict ahn-heightfield
+# gate): a Bevy dependency tree pulls a much wider set of permissive
+# licenses than the small, hand-picked ahn-heightfield graph, and this
+# crate's CI job is non-blocking while the crate is early-stage.
+
+[graph]
+all-features = true
+
+[advisories]
+yanked = "deny"
+ignore = [
+    # paste (unmaintained, RUSTSEC-2024-0436): transitive via
+    # metal -> wgpu-hal -> wgpu -> bevy_render, i.e. Bevy's own rendering
+    # stack, not a dependency this crate chose directly. It is a small,
+    # long-stable proc-macro crate (no unsafe, no I/O, no network) with no
+    # known vulnerability -- "unmaintained" here means "archived", not
+    # "unsound". No upstream fix is available (metal/wgpu would have to drop
+    # it); accepted as a known, low-risk supply-chain item rather than a
+    # reason to pin an older wgpu/Bevy.
+    "RUSTSEC-2024-0436",
+]
+
+[licenses]
+# Every current dependency resolves to one of these (or an OR-alternative
+# covered by one of these, e.g. "X OR Apache-2.0"). All are OSI-approved
+# permissive licenses or public-domain-equivalent dedications.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Unicode-3.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "CC0-1.0",
+    "MIT-0",
+    "ISC",
+    "Zlib",
+    "Unlicense",
+]
+confidence-threshold = 0.9
+
+[bans]
+# A large, fast-moving dependency tree (Bevy + its render backends) carries
+# genuine duplicate versions; that's expected and not this gate's concern.
+multiple-versions = "allow"
+# Unlike rust/deny.toml (ahn-heightfield has no path deps, so it can afford
+# "deny" here), this crate has a genuine, intentional unversioned path
+# dependency on its sibling crate (`ahn-heightfield = { path = "../ahn-
+# heightfield" }`) -- exactly what cargo-deny's own default ("allow") exists
+# to permit; "deny" would flag that normal workspace-adjacent dependency as
+# if it were an accidental unpinned `*` version requirement on crates.io.
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

@@ -47,6 +47,24 @@ pub struct PointCloud {
     pub colors: Vec<[f32; 3]>,
 }
 
+impl PointCloud {
+    /// World-space axis-aligned bounding box of the cloud as `(min, max)`.
+    /// Pair with [`crate::frame::Framing::fit`] to frame a camera on it. An
+    /// empty cloud yields an inverted (`+inf`, `-inf`) box, which
+    /// [`crate::frame::Framing::fit`]'s one-metre floor still turns into a
+    /// finite, if arbitrary, camera distance.
+    pub fn world_aabb(&self) -> (bevy::math::Vec3, bevy::math::Vec3) {
+        let mut lo = bevy::math::Vec3::splat(f32::INFINITY);
+        let mut hi = bevy::math::Vec3::splat(f32::NEG_INFINITY);
+        for p in &self.positions {
+            let v = bevy::math::Vec3::from_array(*p);
+            lo = lo.min(v);
+            hi = hi.max(v);
+        }
+        (lo, hi)
+    }
+}
+
 /// Load every point at `level` from `path`, re-centred at the COPC octree's
 /// own centre (`CopcInfo.center_{x,y,z}`) so coordinates land near the Bevy
 /// origin instead of at the source CRS's native magnitude (RD New X/Y are

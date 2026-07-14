@@ -60,4 +60,34 @@ impl AhnpSource {
     pub fn world_pos(&self, ecef: DVec3) -> bevy::math::Vec3 {
         self.world_from_ecef.transform_point3(ecef).as_vec3()
     }
+
+    /// This pack's world-space `(min, max)` axis-aligned bounding box, for
+    /// framing a camera around the whole thing without assuming any
+    /// particular pack size.
+    ///
+    /// The root entry's region alone is enough: per `engine::tree`'s doc
+    /// comment, a tile's region is its *enclosing* envelope — its own mesh
+    /// region unioned with every descendant's — so the root (index 0; every
+    /// AHNP pack's entries are sorted `(level, tz, ty, tx)` with the root
+    /// first) already encloses every other tile's region. Projects all 8
+    /// geodetic corners (not just 2) through `world_pos`, since the ECEF
+    /// projection of a lon/lat/height box is not itself axis-aligned.
+    pub fn world_aabb(&self) -> (bevy::math::Vec3, bevy::math::Vec3) {
+        use crate::engine::geodesy::geodetic_to_ecef;
+
+        let [west, south, east, north, min_h, max_h] = self.archive.entries()[0].region;
+        let mut lo = bevy::math::Vec3::splat(f32::INFINITY);
+        let mut hi = bevy::math::Vec3::splat(f32::NEG_INFINITY);
+        for lon in [west, east] {
+            for lat in [south, north] {
+                for h in [min_h, max_h] {
+                    let (x, y, z) = geodetic_to_ecef(lat.to_degrees(), lon.to_degrees(), h);
+                    let p = self.world_pos(DVec3::new(x, y, z));
+                    lo = lo.min(p);
+                    hi = hi.max(p);
+                }
+            }
+        }
+        (lo, hi)
+    }
 }

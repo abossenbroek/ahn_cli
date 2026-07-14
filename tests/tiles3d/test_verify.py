@@ -17,6 +17,7 @@ import pytest
 import ahn_cli.tiles3d.verify as verify_module
 from ahn_cli.tiles3d.build import build_tiles3d
 from ahn_cli.tiles3d.errors import Tiles3dError
+from ahn_cli.tiles3d.geodesy import Geodesy
 from ahn_cli.tiles3d.manifest import FileDigest, render_manifest
 from ahn_cli.tiles3d.pack import read_pack
 from ahn_cli.tiles3d.png import encode_png
@@ -48,6 +49,50 @@ def site(tmp_path: Path) -> tuple[Path, Path, Path]:
 def _verify(site: tuple[Path, Path, Path]) -> None:
     out, ortho, heights = site
     verify_tiles3d(out, ortho, heights, tile_pixels=8)
+
+
+def test_heightfield_containment_compares_nap_not_ellipsoidal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Heightfield containment compares NAP vertex heights against NAP regions.
+
+    Regression for the r3 verifier-datum blocker: on a machine WITH the
+    NLGEO2018 geoid grid, ``to_geodetic_radians`` returns ellipsoidal heights
+    ~43 m above NAP. The heightfield profile stores NAP regions, so if
+    ``_verify_containment`` compared the geodesy (ellipsoidal) height against
+    those NAP regions, every vertex would exceed the region by the undulation
+    and the profile would be **unbuildable** where the grid is installed. CI
+    has no grid (undulation ~= 0), so we force a large one on the geodesy
+    height to prove the check is grid-independent.
+
+    The mock offsets only the *height* return, which the NAP-native heightfield
+    path ignores everywhere (`nap_region` reads `payload.z`; `rtc_centre` uses
+    `to_ecef`), so the produced bytes are unchanged and the only code path the
+    offset can reach is the containment check. ``build_tiles3d`` runs the full
+    verifier (incl. containment + the byte-identity backstop) as its final
+    step, so a green build here is the guard: pre-fix this raised
+    ``Tiles3dError`` and deleted the deliverable.
+    """
+    real = Geodesy.to_geodetic_radians
+
+    def offset_height(
+        self: Geodesy,
+        x: object,
+        y: object,
+        z: object,
+    ) -> tuple[object, object, object]:
+        lon, lat, height = real(self, x, y, z)  # type: ignore[arg-type]
+        return lon, lat, height + 43.0
+
+    monkeypatch.setattr(Geodesy, "to_geodetic_radians", offset_height)
+
+    rgb = synth_rgb(20, 14, seed=13)
+    ortho = make_ortho(tmp_path / "ortho.tif", rgb)
+    heights = write_exr(tmp_path / "r.exr", grid_for_ortho(rgb))
+    out = tmp_path / "hf"
+    build_tiles3d(
+        ortho, heights, out, tile_pixels=8, profile=Profile.HEIGHTFIELD
+    )
 
 
 def _load(site: tuple[Path, Path, Path]) -> dict[str, Any]:

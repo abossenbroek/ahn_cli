@@ -6,6 +6,23 @@
 //! (i+0.5)/th)` — not the naive corner-to-corner `0..1` span, which would
 //! place the outermost vertices exactly on the texture's edge instead of half
 //! a texel inside it).
+//!
+//! # Known limitation: 2.5D wall smearing (uncorrected by design)
+//!
+//! This builds a *continuous* grid — every adjacent cell pair is joined by
+//! two triangles, unconditionally. Where the height jumps sharply (a roof
+//! edge dropping to ground) those joining triangles stand nearly vertical,
+//! and since the ortho is a nadir photo with no side-of-building pixels, the
+//! roof/ground texel gets stretched down them — the vertical "curtain"
+//! smears visible along building edges. That is a faithful rendering of the
+//! source: AHN is one height per cell (2.5D, no wall geometry) draped with a
+//! straight-down photo. We deliberately do **not** cull skirts or threshold
+//! discontinuities to hide it — the renderer shows the raw data and its true
+//! artifacts. Genuinely fixing it needs input with side-facing appearance
+//! (stereo/oblique imagery → real wall pixels + geometry); this note is left
+//! open for that. See the crate README's "Known limitations". (The `splat`
+//! profile sidesteps it structurally — discrete gaussians, no bridging
+//! triangles.)
 
 use ahn_heightfield::Heightfield;
 use bevy::asset::RenderAssetUsages;

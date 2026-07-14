@@ -56,6 +56,25 @@ cargo run --example viewer -- path/to/tiles.hfp
 cargo run --example viewer_splat --features splat -- path/to/splat_tiles.hfp
 ```
 
+## Known limitations
+
+- **2.5D wall smearing (heightfield & game profiles) — intentionally not
+  corrected.** The AHN source carries one height per cell — a 2.5D surface
+  with no vertical wall geometry — and the ortho is a nadir (straight-down)
+  photo with no side-of-building pixels. The renderer builds a *continuous*
+  grid mesh, so at every large height discontinuity (a roof edge dropping to
+  ground) it bridges the two cells with a near-vertical triangle onto which
+  the roof/ground texel is stretched, producing vertical "curtain" smears
+  down building edges. This is a faithful consequence of the input data, and
+  it is **left uncorrected by design**: the renderer shows the raw data and
+  its true artifacts rather than beautifying over a data limitation (no skirt
+  culling, no discontinuity thresholding, no seam hiding). It is only
+  genuinely resolvable with input that carries side-facing appearance — e.g.
+  stereo or oblique imagery yielding real wall pixels and geometry — and this
+  note is deliberately left open for whoever introduces that. The `splat`
+  profile avoids the smear by construction (discrete gaussians, no bridging
+  triangles) but is not a substitute for actual wall data.
+
 ## Workspace / CI
 
 This crate is its **own self-rooted `[workspace]`**, excluded from

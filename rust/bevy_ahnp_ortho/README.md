@@ -51,6 +51,35 @@ With the `splat` feature, also add `bevy_gaussian_splatting::GaussianSplattingPl
 yourself (this crate doesn't add it implicitly, so an app that never opens a
 splat pack never pays for it) — see `examples/viewer_splat.rs`.
 
+### `demo` — the recommended starting point
+
+`examples/demo.rs` is both a runnable app and an integration tutorial (read
+top-to-bottom, it walks through the same four steps as the snippet above,
+with pointers to exactly where each one lives in the file). It adds, on top
+of the minimal integration: a live FPS readout, sliders for lighting (sun
+azimuth/elevation/illuminance, ambient brightness, an unlit-vs-lit toggle)
+and level-of-detail (`render::SseThreshold`), splat `global_scale`/
+`global_opacity` sliders that restyle already-spawned tiles live, and a
+runtime file loader (a text field plus any paths passed on the command line
+as one-click buttons) that can switch between heightfield/game/splat packs
+without restarting. `viewer`/`viewer_splat`/`viewer_points` remain as
+narrower, single-purpose references.
+
+```bash
+cargo run --example demo
+cargo run --example demo -- path/to/tiles.hfp
+cargo run --example demo --features splat -- path/to/splat_tiles.hfp
+cargo run --example demo --features "splat gpu_textures" -- a.hfp b.hfp c.hfp
+```
+
+The demo's UI is built with [`bevy_egui`](https://github.com/vladbat00/bevy_egui)
+(a `dev-dependency`, so it never affects the library's own build), pinned to
+`0.39.x` specifically — bevy_egui tracks Bevy release-for-release, and 0.39.x
+is the last line whose own `bevy_ecs`/`bevy_app` are `"0.18.0"` (0.40+ already
+moved to Bevy 0.19).
+
+### The other example viewers
+
 ```bash
 cargo run --example viewer -- path/to/tiles.hfp
 cargo run --example viewer_splat --features splat -- path/to/splat_tiles.hfp

@@ -20,6 +20,18 @@ ignore = [
     # it); accepted as a known, low-risk supply-chain item rather than a
     # reason to pin an older wgpu/Bevy.
     "RUSTSEC-2024-0436",
+    # ttf-parser (unmaintained, RUSTSEC-2026-0192): transitive via the demo
+    # example's `bevy_egui` dev-dependency (egui's `default_fonts` feature
+    # -> epaint -> ab_glyph -> owned_ttf_parser -> ttf-parser), not a
+    # dependency this crate chose directly. Same shape as RUSTSEC-2024-0436
+    # above: the upstream author calls it "unmaintained" (archived, no
+    # further fixes), not "unsound" -- no advisory of an actual
+    # vulnerability, and it only parses font glyph outlines for the demo's
+    # on-screen UI text, with no untrusted-input surface this crate exposes.
+    # No safe upgrade exists (egui's own dependency, not ours to bump); the
+    # dev-only demo example is the sole consumer, so this never reaches
+    # `ahn-heightfield`'s own strict gate either.
+    "RUSTSEC-2026-0192",
 ]
 
 [licenses]

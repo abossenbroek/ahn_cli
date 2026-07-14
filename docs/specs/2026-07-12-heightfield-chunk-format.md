@@ -1,4 +1,4 @@
-# The `.hf` heightfield chunk format (version 2) — normative
+# The `.hf` heightfield chunk format (version 3) — normative
 
 This document is **normative**: the Rust runtime decoder (the
 `ahn-heightfield` crate) codes against *this specification*, not against
@@ -19,7 +19,9 @@ and reconstructed from the header — see *Grid-reconstruction contract*.
 All multi-byte integers and floats are **little-endian**. Floats are IEEE
 754 (`float64` = binary64). There is no padding *inside* the field block:
 the header is exactly `120` bytes, laid out with the equivalent of Python
-`struct.pack("<4sIII" + "d" * 11 + "Q" + "II", ...)`.
+`struct.pack("<4sIII" + "d" * 11 + "Q" + "II", ...)`. In v3 the two trailing
+`uint32` fields are `vertical_datum` (offset `112`) then `header_crc32`
+(offset `116`); the v2 `pad` field is gone.
 
 ## v1 → v2 delta (v1 never shipped)
 
@@ -54,7 +56,64 @@ normative, consumed-by-Rust version. The differences from the v1 draft:
    which is contained within — not always equal to — the enclosing
    `tileset.json` / pack-index region. See *Region semantics*.
 
+## v2 → v3 delta
+
+Version 3 makes the profile's vertical datum **explicit and self-consistent**.
+v2 stored **NAP** heights in the plane but labelled the header `region`
+heights **ellipsoidal** (they were produced through the EPSG:7415→4979
+transform), a latent contradiction: the reconstructed vertices did not lie
+inside their own declared region, and on a real globe the tile sat ~43 m (the
+NLGEO2018 geoid undulation in NL) below the ellipsoidal `strict`/`game`/`splat`
+profiles. v3 resolves this **NAP-native** — the stored plane stays NAP (the
+authoritative height for this Dutch dataset) and the region is brought into the
+same datum, rather than converting the plane to ellipsoidal. Differences from
+v2 (the header stays exactly 120 bytes):
+
+1. **`version` field value is `3`.** A `version` of `2` (or anything else) is a
+   decode error. There is no cross-version compatibility: a v3 decoder reads
+   only v3 chunks.
+2. **`region[4]` / `region[5]` are NAP heights**, not ellipsoidal. They are the
+   min/max **NAP** height of the tile's own sampled vertices — the same datum,
+   and (for a leaf) the same values, as the stored plane. The `tileset.json`
+   and pack-index enclosing regions for a heightfield build are likewise NAP
+   (see *Region semantics*), so the whole heightfield deliverable is internally
+   one datum and each region **contains** its geometry.
+3. **New `vertical_datum` header field** (`uint32`, offset `112`), an EPSG CRS
+   code naming the datum of the plane and the region heights. It is `5709`
+   (EPSG:5709 = *NAP height*) for every chunk this producer writes; a decoder
+   rejects any other value (this producer emits nothing else). This makes the
+   pack bytes self-describing — a consumer knows the heights are NAP without
+   reading `provenance.json`.
+4. **`header_crc32` moves to offset `116`; its span grows to `[0, 116)`.** The
+   CRC now covers `vertical_datum` too, so the datum tag is integrity-protected.
+   The v2 `pad` field (offset `116`, "must be `0`") is **removed** — its 4 bytes
+   are now `header_crc32`.
+5. **New decode rejects:** `version != 3`; `vertical_datum != 5709`;
+   `header_crc32` mismatch over the new `[0, 116)` span. The v2 `pad != 0`
+   reject is gone (there is no `pad`). See *Decode errors*.
+
+Everything else — magic, dims, the quantizer (12-bit / 25 mm cap), zstd framing
+(level 3, checksum, content size, one-shot), the implicit grid-reconstruction
+contract, the sibling JPEG — is **unchanged from v2**.
+
 ## Coordinate contract (load-bearing — read this first)
+
+> **VERTICAL DATUM — NAP, LOUD AND CLEAR.** Every height in a `.hf` chunk —
+> the stored plane, `z_offset`, and `region[4]/[5]` — is a **NAP** height
+> (*Normaal Amsterdams Peil*, the Dutch national vertical datum;
+> **EPSG:5709**), **not** a WGS84 ellipsoidal height. This is deliberate: the
+> heightfield profile is a Netherlands-specific product where NAP is the
+> meaningful height. The `vertical_datum` header field (`= 5709`) states this
+> in the bytes themselves. **Consequence a consumer MUST understand:** if a
+> `.hf` vertex is reconstructed as `(lon, lat, h_NAP)` and placed on the WGS84
+> ellipsoid without a geoid correction, it lands ~43 m (the NLGEO2018 geoid
+> undulation in NL) below its true ellipsoidal position — so heightfield tiles
+> do **not** co-register on a globe with the ellipsoidal `strict`/`game`/`splat`
+> profiles. That is expected and self-consistent: within the heightfield
+> deliverable the plane and every region are the same NAP datum, so each region
+> contains its own geometry. A consumer that needs ellipsoidal placement must
+> apply a NAP→ellipsoidal geoid undulation itself; this format does not carry
+> one.
 
 The stored plane is the **quantized NAP height plane** — the genuine
 sampled source heights (`payload.z`, EPSG:7415 vertical / NAP metres),
@@ -63,12 +122,12 @@ ECEF-swizzled mesh axis. This is the defining difference from the
 `strict`/`game` (Approach A) profiles, whose glTF stores all three
 quantized ECEF-RTC axes:
 
-- A heightfield tile is a **geodetic-grid product**. The tile's geodetic
-  footprint (longitude/latitude extent and the min/max ellipsoidal
-  height) travels in the header `region`. The runtime reconstructs each
-  vertex's geodetic position `(lon, lat, h)` from `region` + the implicit
-  uniform vertex grid + the dequantized height `h`, then transforms to
-  whatever frame it renders in.
+- A heightfield tile is a **geodetic-grid product**. The tile's footprint
+  (longitude/latitude extent and the min/max **NAP** height) travels in the
+  header `region`. The runtime reconstructs each vertex's position
+  `(lon, lat, h_NAP)` from `region` + the implicit uniform vertex grid + the
+  dequantized NAP height `h`, then transforms to whatever frame it renders in
+  (applying a geoid undulation itself if it needs true ellipsoidal placement).
 - `rtc_centre` is carried in the header **only as a convenience anchor**:
   it is the ECEF y-up RTC centre of the *same tile in the A profile*, so
   a consumer can align a heightfield tile with an A-profile tile without
@@ -84,7 +143,7 @@ size target of ~1–1.5 bytes/pixel.
 | Offset | Size | Type       | Field           | Meaning                                                                 |
 |-------:|-----:|------------|-----------------|-------------------------------------------------------------------------|
 | 0      | 4    | `char[4]`  | `magic`         | ASCII `AHNH` (`0x41 0x48 0x4E 0x48`). Any other value is a decode error. |
-| 4      | 4    | `uint32`   | `version`       | Format version. This document is version `2`. Any other value is a decode error. |
+| 4      | 4    | `uint32`   | `version`       | Format version. This document is version `3`. Any other value is a decode error. |
 | 8      | 4    | `uint32`   | `width`         | Vertex-grid column count (number of sampled columns). `0` is a decode error. |
 | 12     | 4    | `uint32`   | `height`        | Vertex-grid row count (number of sampled rows). `0` is a decode error.  |
 | 16     | 8    | `float64`  | `z_offset`      | Height-axis quantizer translation (metres). See *Quantization*.         |
@@ -96,22 +155,37 @@ size target of ~1–1.5 bytes/pixel.
 | 64     | 8    | `float64`  | `region[1]`     | South latitude, radians.                                                |
 | 72     | 8    | `float64`  | `region[2]`     | East longitude, radians.                                                |
 | 80     | 8    | `float64`  | `region[3]`     | North latitude, radians.                                                |
-| 88     | 8    | `float64`  | `region[4]`     | Minimum ellipsoidal height, metres.                                     |
-| 96     | 8    | `float64`  | `region[5]`     | Maximum ellipsoidal height, metres.                                     |
+| 88     | 8    | `float64`  | `region[4]`     | Minimum **NAP** height, metres (EPSG:5709; see *Vertical datum*).        |
+| 96     | 8    | `float64`  | `region[5]`     | Maximum **NAP** height, metres.                                         |
 | 104    | 8    | `uint64`   | `payload_len`   | Byte length of the zstandard frame that follows the header.             |
-| 112    | 4    | `uint32`   | `header_crc32`  | CRC-32/ISO-HDLC over header bytes `[0, 112)`. Mismatch is a decode error. |
-| 116    | 4    | `uint32`   | `pad`           | Reserved; must be `0`. Any other value is a decode error.               |
+| 112    | 4    | `uint32`   | `vertical_datum`| EPSG CRS code of the height datum. Always `5709` (NAP height); any other value is a decode error. |
+| 116    | 4    | `uint32`   | `header_crc32`  | CRC-32/ISO-HDLC over header bytes `[0, 116)`. Mismatch is a decode error. |
 
 `region` uses the OGC 3D Tiles region ordering
-`(west, south, east, north, minHeight, maxHeight)`.
+`(west, south, east, north, minHeight, maxHeight)`, with the two height
+components in **NAP** metres (not the ellipsoidal height the ordering's OGC
+definition assumes — see *Vertical datum* and *Coordinate contract*).
+
+### Vertical datum (`vertical_datum`)
+
+`vertical_datum` is the EPSG code of the datum that **every** height in the
+chunk is expressed in — the stored plane, `z_offset`, and `region[4]/[5]`.
+This producer always writes `5709` (EPSG:5709, *NAP height*), and a conforming
+decoder **rejects any other value** (there is no other datum this format
+carries). It is inside the `header_crc32` span `[0, 116)`, so a bit-flip in the
+datum tag is a decode error, not a silent misinterpretation. The field exists
+so a consumer reading only the pack bytes — without `provenance.json` — knows
+the heights are NAP and can decide whether it needs a geoid correction for
+ellipsoidal placement (see *Coordinate contract*).
 
 ### `header_crc32` (integrity of the fixed header)
 
 `header_crc32` is the CRC-32/ISO-HDLC checksum (the polynomial and
 reflection of `zlib.crc32` in Python and the `crc32fast` crate in Rust —
-the two are bit-identical) computed over the **first 112 header bytes**,
-i.e. every field from `magic` through `payload_len` inclusive, *excluding*
-`header_crc32` and `pad` themselves.
+the two are bit-identical) computed over the **first 116 header bytes**,
+i.e. every field from `magic` through `vertical_datum` inclusive, *excluding*
+only `header_crc32` itself. (In v2 the span was `[0, 112)` and excluded a
+trailing `pad`; v3 grows it to `[0, 116)` to cover the new `vertical_datum`.)
 
 A conforming decoder **must verify `header_crc32` before trusting
 `width`, `height` or `payload_len`** — in particular before allocating any
@@ -258,13 +332,20 @@ height extent, so this cap never rejects genuine data; it exists to make
 an over-tall (therefore under-resolved) tile a hard error rather than a
 silently lossy one.
 
-## Region semantics (corrected in v2)
+## Region semantics (corrected in v2; datum clarified in v3)
 
-The header `region` is the tile's **own** mesh region — the geodetic
-bounding volume of *this tile's* sampled vertices
-(`ahn_cli/tiles3d/mesh.py`'s `Region`). It is a **distinct quantity** from
-the enclosing region that the `tileset.json` sidecar and the pack index
-carry for the same tile:
+All region heights in this section — both the header region and the
+enclosing `tileset.json`/pack-index region — are **NAP** heights (v3; see
+*Vertical datum*). The heightfield deliverable is single-datum end to end:
+the enclosing regions are the NAP union of NAP tile regions, so a parent
+region contains its NAP children exactly as the 3D Tiles containment rule
+requires, and each region contains its own NAP geometry.
+
+The header `region` is the tile's **own** mesh region — the bounding
+volume of *this tile's* sampled vertices (`ahn_cli/tiles3d/mesh.py`'s
+`Region`), with its height component taken in NAP. It is a **distinct
+quantity** from the enclosing region that the `tileset.json` sidecar and the
+pack index carry for the same tile:
 
 - **`tileset.json` / pack-index region** = the *union* region: a tile's
   own region unioned with all its descendants' regions, because a parent
@@ -317,10 +398,16 @@ profiles render the same surface:
 - **Vertices**: a uniform `width × height` grid. Vertex `(r, c)` maps to a
   geodetic position whose longitude/latitude come from the tile's
   `region` by uniform spacing across the sampled span, and whose height is
-  the dequantized `level[r * width + c]`. (The exact per-vertex geodetic
-  X/Y are the sampled EPSG:28992 pixel centres of the A profile; a runtime
-  that only needs a rendered surface may interpolate them uniformly across
-  `region`.)
+  the dequantized `level[r * width + c]` (a **NAP** height — v3). **Caveat
+  (X/Y are geodetic-linear, not exact RD):** the true sample positions are
+  the A-profile's EPSG:28992 (RD New / stereographic) pixel centres;
+  interpolating longitude/latitude *linearly* across `region` is an
+  approximation of that projected grid. The deviation is sub-millimetre at
+  leaf stride and only grows to centimetre–decimetre scale on coarse
+  parent tiles (which are replaced by finer children on zoom-in), so a
+  runtime that needs a rendered surface may interpolate uniformly; a runtime
+  that needs the exact sampled ground positions must reproject through
+  EPSG:28992, not read them off `region`.
 - **Texture coordinates**: implicit **texel-centre** UVs. Vertex `(r, c)`
   has `u = (c + 0.5) / width`, `v = (r + 0.5) / height`. The draped
   texture is the sibling `.jpg` file.
@@ -355,10 +442,13 @@ loose files, the `.jpg` is referenced only by this reconstruction contract
 ## Manifest (`tileset.json`)
 
 The heightfield profile writes the same `tileset.json`-shaped index as the
-A profiles: a quadtree of tiles with `REPLACE` refinement, exact EPSG:4979
-`region` bounding volumes (the *union*/enclosing regions per *Region
-semantics*), and per-tile `geometricError` (leaves `0`). The only
-difference is each tile's `content.uri` ends in `.hf`. The file remains
+A profiles: a quadtree of tiles with `REPLACE` refinement, `region`
+bounding volumes (the *union*/enclosing regions per *Region semantics*)
+with radian lon/lat and **NAP** height components, and per-tile
+`geometricError` (leaves `0`). The only difference from the A profiles is
+each tile's `content.uri` ends in `.hf` **and** the region height datum is
+NAP, not ellipsoidal — so a generic globe viewer places a heightfield
+tileset ~43 m low but self-consistently (see *Coordinate contract*). The file remains
 valid 3D Tiles 1.1 JSON and is written with **LF (`\n`) newlines on every
 platform** (no CR/CRLF), UTF-8, sorted keys, 2-space indent, trailing
 newline — a hard byte-determinism requirement for any file the pack
@@ -375,11 +465,11 @@ an order that never trusts an unverified length:
 
 - input shorter than the 120-byte header;
 - `magic != "AHNH"`;
-- `version != 2`;
-- **`header_crc32` does not match** the CRC-32/ISO-HDLC of bytes `[0, 112)`
+- `version != 3`;
+- **`header_crc32` does not match** the CRC-32/ISO-HDLC of bytes `[0, 116)`
   — checked **before** `width`/`height`/`payload_len` are trusted or used
   to size any allocation;
-- `pad != 0`;
+- `vertical_datum != 5709` (the only datum this format carries);
 - `width == 0` or `height == 0`;
 - any **non-finite** value (`NaN`, `+Inf`, `-Inf`) in a `float64` header
   field (`z_offset`, `z_scale`, the three `rtc_centre` components, or any
@@ -416,12 +506,13 @@ of any codec or quantization choice:
 
 The **format-instance vectors** below were produced during the interop
 spike under the spike's settings (zstd **level 19**, 16-bit height
-quantization) and are **illustrative, not v2-normative byte values** — the
-v2 codec pins zstd level 3 and 12-bit quantization, so the exact frame
-size, the `.hf` `header_crc32`, and any pack `dataset_id` change under the
-final settings. The **definitive v2 instance vectors are regenerated by
-the Phase 3 Python producer under the pinned settings and committed as
-binary fixtures**; the Phase 4 Rust tests recompute and byte-compare
+quantization) and are **illustrative, not v3-normative byte values** — the
+v3 codec pins zstd level 3 and 12-bit quantization, writes NAP region
+heights, and adds the `vertical_datum` field with the CRC over `[0, 116)`,
+so the exact frame size, the `.hf` `header_crc32`, and any pack `dataset_id`
+all change under the final settings. The **definitive v3 instance vectors
+are regenerated by the Python producer under the pinned settings and
+committed as binary fixtures**; the Rust tests recompute and byte-compare
 against those committed fixtures (not against the spike-era numbers below):
 
 | Vector (spike-era, illustrative) | Input | Spike value |
@@ -429,7 +520,7 @@ against those committed fixtures (not against the spike-era numbers below):
 | zstd frame, checksum on, **level 19** | 33×33 `uint16` ramp `arange%500` | 727 B, sha256 `e3c8788c…490cbc70` |
 | `.hf` `header_crc32`, **level 19 / 16-bit** | `chunk_v2.hf` bytes `[0, 112)` | `0x6ffe3f40`, `pad = 0` |
 
-The structural shape these illustrate is normative (the header CRC covers
-`[0, 112)`; `pad = 0`; the frame carries a content checksum and embedded
-size); only their concrete bytes are settings-dependent and superseded by
-the committed v2 fixtures.
+The structural shape these illustrate is normative (the header CRC now
+covers `[0, 116)`, including `vertical_datum`; the frame carries a content
+checksum and embedded size); only their concrete bytes are
+settings-dependent and superseded by the committed v3 fixtures.

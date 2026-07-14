@@ -39,6 +39,16 @@ use crate::engine::geodesy::geodetic_to_ecef;
 pub fn build_mesh(source: &AhnpSource, heightfield: &Heightfield) -> Mesh {
     let tw = heightfield.width() as usize;
     let th = heightfield.height() as usize;
+    // The producer's quadtree plan floors every tile at 2 samples per axis
+    // (`ahn_cli.tiles3d.quadtree`'s 2-sample-per-axis floor — the same
+    // invariant `splat.py`'s cell-spacing measurement relies on), so a
+    // genuine tile never underflows the `th - 1` / `tw - 1` divisions below.
+    // A 0/1-sized tile could only reach here from a corrupted or
+    // hand-crafted pack, not this producer.
+    debug_assert!(
+        tw >= 2 && th >= 2,
+        "degenerate tile grid {tw}x{th}, producer invariant violated"
+    );
     let [west, south, east, north, ..] = heightfield.header().region;
 
     let mut positions = Vec::with_capacity(tw * th);

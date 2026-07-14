@@ -69,17 +69,24 @@ impl AhnpSource {
     /// comment, a tile's region is its *enclosing* envelope — its own mesh
     /// region unioned with every descendant's — so the root (index 0; every
     /// AHNP pack's entries are sorted `(level, tz, ty, tx)` with the root
-    /// first) already encloses every other tile's region. Projects all 8
-    /// geodetic corners (not just 2) through `world_pos`, since the ECEF
-    /// projection of a lon/lat/height box is not itself axis-aligned.
+    /// first) already encloses every other tile's region. Samples a 3x3
+    /// lon/lat grid at both height extremes (18 points, not just the 8
+    /// corners) — the same grid `engine::geo::region_to_ecef_volume` samples
+    /// for its OBB — since the ECEF projection of a lon/lat/height box bulges
+    /// ellipsoidally along its edges; corners alone under-cover that bulge
+    /// and can clip a sliver of a large root out of the framed view.
     pub fn world_aabb(&self) -> (bevy::math::Vec3, bevy::math::Vec3) {
         use crate::engine::geodesy::geodetic_to_ecef;
 
         let [west, south, east, north, min_h, max_h] = self.archive.entries()[0].region;
+        let span_lon = east - west;
+        let span_lat = north - south;
         let mut lo = bevy::math::Vec3::splat(f32::INFINITY);
         let mut hi = bevy::math::Vec3::splat(f32::NEG_INFINITY);
-        for lon in [west, east] {
-            for lat in [south, north] {
+        for i in 0..3 {
+            for j in 0..3 {
+                let lat = south + span_lat * f64::from(i) / 2.0;
+                let lon = west + span_lon * f64::from(j) / 2.0;
                 for h in [min_h, max_h] {
                     let (x, y, z) = geodetic_to_ecef(lat.to_degrees(), lon.to_degrees(), h);
                     let p = self.world_pos(DVec3::new(x, y, z));

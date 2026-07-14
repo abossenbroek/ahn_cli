@@ -7,9 +7,9 @@ Python tool's `tiles3d --profile heightfield` / `game` / `splat` commands,
 coding against the two normative specifications, not against the Python source:
 
 - the `.hf` chunk format —
-  [`docs/specs/2026-07-12-heightfield-chunk-format.md`](../../docs/specs/2026-07-12-heightfield-chunk-format.md)
+  [`docs/specs/heightfield-chunk-format.md`](../../docs/specs/heightfield-chunk-format.md)
 - the `AHNP` pack format —
-  [`docs/specs/2026-07-12-hfp-pack-format.md`](../../docs/specs/2026-07-12-hfp-pack-format.md)
+  [`docs/specs/hfp-pack-format.md`](../../docs/specs/hfp-pack-format.md)
 
 The crate is `#![forbid(unsafe_code)]`; every multi-byte field is read with
 explicit little-endian byte reads (no `repr(C)` / `bytemuck` casts), so

@@ -11,7 +11,7 @@
 //! [`NAP_VERTICAL_DATUM`] and the spec's *Coordinate contract*.
 //!
 //! The normative byte layout is
-//! `docs/specs/2026-07-12-heightfield-chunk-format.md`.
+//! `docs/specs/heightfield-chunk-format.md`.
 
 use crate::error::{Format, HfError};
 

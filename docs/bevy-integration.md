@@ -93,7 +93,7 @@ SHA-256 (an install/repair-time check; skip it on the hot path).
 `Archive::decode_tile(entry)` does the ranged read + zstd decode + validation and returns a
 `Heightfield`: a `width × height` grid of `u16` levels plus the header. Geometry is
 **implicit** — you rebuild the vertex grid from the tile's region exactly as the spec
-describes ([`heightfield-chunk-format.md`](specs/2026-07-12-heightfield-chunk-format.md),
+describes ([`heightfield-chunk-format.md`](specs/heightfield-chunk-format.md),
 "Grid-reconstruction contract").
 
 Per vertex `(r, c)` (row `r` from the **top/north**, column `c` from the **west**):
@@ -289,8 +289,8 @@ systems").
 
 - Crate: [`rust/ahn-heightfield`](../rust/ahn-heightfield) — README, examples
   (`list_archive`, `dump_header`, `decode_to_pgm`), and the `Archive` / `Heightfield` API.
-- Normative byte formats: [`docs/specs/2026-07-12-hfp-pack-format.md`](specs/2026-07-12-hfp-pack-format.md)
-  and [`docs/specs/2026-07-12-heightfield-chunk-format.md`](specs/2026-07-12-heightfield-chunk-format.md).
+- Normative byte formats: [`docs/specs/hfp-pack-format.md`](specs/hfp-pack-format.md)
+  and [`docs/specs/heightfield-chunk-format.md`](specs/heightfield-chunk-format.md).
 - Domain background: [`docs/overview.md`](overview.md).
 - Bevy point clouds: [`bevy_pointcloud`](https://crates.io/crates/bevy_pointcloud).
 - Reprojection: [`proj`](https://crates.io/crates/proj); COPC reading: `copc-rs` / `las` + `laz`.

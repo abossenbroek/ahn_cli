@@ -11,7 +11,7 @@ producer/reader (`ahn_cli/tiles3d/pack.py`) and verifier implement exactly
 what follows.
 
 The individual `.hf` height chunks a heightfield pack carries are specified
-in [`2026-07-12-heightfield-chunk-format.md`](2026-07-12-heightfield-chunk-format.md);
+in [`heightfield-chunk-format.md`](heightfield-chunk-format.md);
 this document specifies only the container.
 
 All multi-byte integers and floats are **little-endian**. Floats are IEEE

@@ -10,7 +10,7 @@ byte-stable input to test its `.glb` / `.hf` / `.jpg` readers against.
 Both lossy profiles now write a single **`AHNP` pack** (`tiles.hfp`) that
 bundles every content blob plus the binary scene index — the pack *is* the
 runtime's scene (see
-`docs/specs/2026-07-12-hfp-pack-format.md`, the normative byte
+`docs/specs/hfp-pack-format.md`, the normative byte
 layout the Rust `Archive` decoder codes against). The `tileset.json`,
 `provenance.json` and `manifest.json` files are demoted to deterministic
 debug / provenance / integrity sidecars; there is **no loose `tiles/`
@@ -22,7 +22,7 @@ directory**.
   `provenance.json` (with the `pack` + `producer` blocks), `manifest.json`.
 - `heightfield/` — a `--profile heightfield` deliverable: `tiles.hfp` (five
   `.hf` height chunks — see
-  `docs/specs/2026-07-12-heightfield-chunk-format.md` — each with
+  `docs/specs/heightfield-chunk-format.md` — each with
   a sibling baseline `.jpg` texture blob, `content_kind = 0`),
   `tileset.json`, `provenance.json`, `manifest.json`.
 

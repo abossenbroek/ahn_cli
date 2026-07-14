@@ -34,7 +34,7 @@ textures.
   and CRC32-protected header and index.
 - **Self-contained sidecars**: `tileset.json` (interoperability),
   `manifest.json` (integrity), and `provenance.json` (build reproducibility).
-- Normative spec: `docs/specs/2026-07-12-hfp-pack-format.md`.
+- Normative spec: `docs/specs/hfp-pack-format.md`.
 
 ### `ahn-heightfield` Rust crate
 

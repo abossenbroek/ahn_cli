@@ -11,15 +11,16 @@
 
 use std::path::PathBuf;
 
-/// Recomputes and writes `header_crc32` over bytes `[0, 112)`, so that a
-/// header patched anywhere in the CRC span still has a matching CRC (only the
+/// Recomputes and writes `header_crc32` over bytes `[0, 116)` (v3: grown from
+/// v2's `[0, 112)` to also cover `vertical_datum`), so that a header patched
+/// anywhere in the CRC span still has a matching CRC (only the
 /// deliberately-corrupted-outside-or-target field then fires).
 pub fn resign_chunk_crc(bytes: &mut [u8]) {
-    let crc = crc32fast::hash(&bytes[..112]);
-    bytes[112..116].copy_from_slice(&crc.to_le_bytes());
+    let crc = crc32fast::hash(&bytes[..116]);
+    bytes[116..120].copy_from_slice(&crc.to_le_bytes());
 }
 
-/// Builds a complete, valid v2 `.hf` chunk from an explicit level plane, using
+/// Builds a complete, valid v3 `.hf` chunk from an explicit level plane, using
 /// `zstd::encode_all` for the frame. For test inputs only — the normative
 /// producer is the Python one-shot compressor.
 pub fn synth_chunk(
@@ -38,7 +39,7 @@ pub fn synth_chunk(
 
     let mut hf = vec![0u8; 120];
     hf[0..4].copy_from_slice(b"AHNH");
-    hf[4..8].copy_from_slice(&2u32.to_le_bytes());
+    hf[4..8].copy_from_slice(&3u32.to_le_bytes());
     hf[8..12].copy_from_slice(&width.to_le_bytes());
     hf[12..16].copy_from_slice(&height.to_le_bytes());
     hf[16..24].copy_from_slice(&z_offset.to_le_bytes());
@@ -50,6 +51,7 @@ pub fn synth_chunk(
         hf[off..off + 8].copy_from_slice(&v.to_le_bytes());
     }
     hf[104..112].copy_from_slice(&(frame.len() as u64).to_le_bytes());
+    hf[112..116].copy_from_slice(&5709u32.to_le_bytes()); // vertical_datum = NAP_VERTICAL_DATUM
     resign_chunk_crc(&mut hf);
     hf.extend_from_slice(&frame);
     hf

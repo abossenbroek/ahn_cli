@@ -93,6 +93,7 @@ from ahn_cli.tiles3d.sources import load_terrain
 from ahn_cli.tiles3d.tileset import render_tileset
 from ahn_cli.tiles3d.verify_game import verify_game_tile
 from ahn_cli.tiles3d.verify_heightfield import verify_heightfield_tile
+from ahn_cli.tiles3d.verify_splat import verify_splat_tile
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -152,9 +153,11 @@ def verify_tiles3d(
           float32/PNG glTF/texture/containment checks; the game profile's
           four quantized/meshopt/JPEG families plus dequantized-vertex
           containment (:func:`~ahn_cli.tiles3d.verify_game.verify_game_tile`);
-          or the heightfield profile's ``.hf``/JPEG checks plus
-          containment
-          (:func:`~ahn_cli.tiles3d.verify_heightfield.verify_heightfield_tile`).
+          the heightfield profile's ``.hf``/JPEG checks plus containment
+          (:func:`~ahn_cli.tiles3d.verify_heightfield.verify_heightfield_tile`);
+          or the splat profile's decode/position/colour/opacity/scale/
+          rotation checks plus containment
+          (:func:`~ahn_cli.tiles3d.verify_splat.verify_splat_tile`).
 
     Failure modes:
         - :class:`Tiles3dError` naming the first failed check.
@@ -240,6 +243,11 @@ def _verify_tile_content(
             verify_heightfield_tile(
                 content_root, uri, texture, terrain, tile, geodesy
             )
+            _verify_containment(
+                terrain, tile, enclosing_regions, geodesy, uri
+            )
+        elif profile is Profile.SPLAT:
+            verify_splat_tile(content_root, uri, terrain, tile, geodesy)
             _verify_containment(
                 terrain, tile, enclosing_regions, geodesy, uri
             )

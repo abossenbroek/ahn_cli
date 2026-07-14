@@ -30,7 +30,7 @@ A `tiles.hfp` file is five contiguous regions in this fixed order:
 | Header | `0` | `128` | Fixed pack header (below). |
 | Index | `index_offset` (`= 128`) | `index_size` | Level directory (`level_count × 16 B`) immediately followed by the index entries (`tile_count × 96 B`). |
 | Hash section | `hash_offset` | `hash_size` (`= tile_count × 64 B`) | Per-tile `primary_sha256` + `texture_sha256`, in index order. Cold: read only for install/repair, never at open. |
-| Blob region | first 16-aligned offset `>= hash_offset + hash_size` | to EOF | Every content blob, concatenated in **index order**, each 16-byte aligned with zero inter-blob padding. |
+| Blob region | `hash_offset + hash_size` | to EOF | Every content blob, concatenated in **index order**, each 16-byte aligned with zero inter-blob padding. (`hash_offset + hash_size` is itself 16-aligned by construction — see *Blob offsets*.) |
 
 with the invariants:
 
@@ -60,7 +60,7 @@ arithmetic in `u64`, mirroring the chunk spec's `width * height * 2` rule.
 
 | Offset | Size | Type       | Field                  | Meaning / reject condition                                              |
 |-------:|-----:|------------|------------------------|------------------------------------------------------------------------|
-| 0      | 4    | `char[4]`  | `magic`                | ASCII `AHNP` (`0x41 0x48 0x4E 0x50`). Any other value is rejected.      |
+| 0      | 4    | `u8[4]`    | `magic`                | The four ASCII bytes `AHNP` (`0x41 0x48 0x4E 0x50`). Any other value is rejected. |
 | 4      | 4    | `uint32`   | `format_version`       | Pack format version. This document is version `1`. Any other value is rejected. |
 | 8      | 4    | `uint32`   | `tile_count`           | Number of tiles = number of index entries = number of hash records.    |
 | 12     | 4    | `uint32`   | `level_count`          | Number of quadtree levels = number of level-directory records.         |
@@ -72,7 +72,7 @@ arithmetic in `u64`, mirroring the chunk spec's `width * height * 2` rule.
 | 56     | 8    | `float64`  | `root_geometric_error` | Bit-equal to the `tileset.json` document's top-level `geometricError`. Lets SSE traversal start with no JSON. |
 | 64     | 32   | `u8[32]`   | `dataset_id`           | SHA-256 over the **hash section** bytes `[hash_offset, hash_offset + hash_size)`. The content version (Merkle-style root). |
 | 96     | 4    | `uint32`   | `index_crc32`          | CRC-32/ISO-HDLC over the **index region** bytes `[index_offset, index_offset + index_size)`. Mismatch is rejected. |
-| 100    | 4    | `uint32`   | `reserved`             | Reserved; must be `0`. Any other value is rejected. (Vacated by moving `header_crc32` to offset 124; see *Header CRC*.) |
+| 100    | 4    | `uint32`   | `reserved`             | Reserved; all 4 bytes must be `0`. Any non-zero value is rejected. (Vacated by moving `header_crc32` to offset 124; see *Header CRC*.) |
 | 104    | 4    | `uint32`   | `content_kind`         | `0` = heightfield, `1` = game, `2` = splat. Any other value is rejected. See *Content kind*. |
 | 108    | 16   | `u8[16]`   | `pad`                  | Reserved; every byte must be `0`. Any non-zero byte is rejected.        |
 | 124    | 4    | `uint32`   | `header_crc32`         | CRC-32/ISO-HDLC over header bytes `[0, 124)`. Mismatch is rejected.     |
@@ -97,7 +97,7 @@ trusting any count and before sizing any allocation from `tile_count` /
 
 ### Content kind
 
-`content_kind` selects the on-disk representation of both blob slots for
+`content_kind` selects the on-disk representation for the primary and texture blobs of
 **every** tile in the pack (a pack is homogeneous — all tiles share one
 kind):
 
@@ -168,6 +168,7 @@ must not assume `entry_count == tx_count * ty_count`.
 ## Index entry (`96 B` each) — one per tile
 
 The index entries follow the level directory, at `128 + level_count * 16`.
+The four-tuple `(level, tx, ty, tz)` is a tile's unique **key**.
 There is exactly one entry per tile, **sorted ascending by
 `(level, tz, ty, tx)`** — level-major then row-major — so altitude-driven
 look-ahead queries over a level are contiguous scans.
@@ -332,9 +333,9 @@ length:
 - blob offsets not strictly ascending in index order, blob ranges
   overlapping, or any range extending past `file_size` or starting before
   the blob region;
-- bytes present after the last blob — the read cursor at the end of the
-  blob scan does not equal `file_size` (a conforming pack ends exactly at
-  its final blob, so any trailing bytes or trailing gap is rejected);
+- trailing bytes after the final blob — the end of the last blob (its
+  offset plus its size) must exactly equal `file_size`, so any trailing
+  bytes or trailing gap is rejected;
 - non-zero inter-blob padding;
 - for `content_kind = 1` or `content_kind = 2`: any entry with
   `texture_offset != 0` or `texture_size != 0`; for `content_kind = 0`:

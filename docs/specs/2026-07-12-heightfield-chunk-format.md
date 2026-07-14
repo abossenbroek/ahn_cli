@@ -23,78 +23,9 @@ the header is exactly `120` bytes, laid out with the equivalent of Python
 `uint32` fields are `vertical_datum` (offset `112`) then `header_crc32`
 (offset `116`); the v2 `pad` field is gone.
 
-## v1 → v2 delta (v1 never shipped)
-
-Version 1 of this format was specified but **never shipped** (no `.hf`
-chunk produced by a released tool is version 1). Version 2 is the first
-normative, consumed-by-Rust version. The differences from the v1 draft:
-
-1. **Header grows 112 → 120 bytes.** All v1 fields keep their v1 offsets.
-   Two `uint32` fields are appended: `header_crc32` at offset `112`
-   (CRC-32/ISO-HDLC over header bytes `[0, 112)`) and `pad` at offset
-   `116` (must be `0`). The header stays an 8-byte multiple.
-2. **`version` field value is `2`.** A `version` of `1` (or anything
-   else) is a decode error.
-3. **Payload codec: zstd level 19 → level 3, with the RFC 8878 content
-   checksum now written.** The frame is still exactly one zstandard frame,
-   but produced with `write_checksum=True` at level `3`. The checksum is a
-   new integrity layer verified natively by libzstd on decode.
-4. **Height quantization: 16-bit → 12-bit levels.** The affine scheme is
-   unchanged, but the maximum quantization level is `4095` (not `65535`),
-   so `z_scale = extent / 4095`. Levels are still stored as `uint16` LE in
-   the same 2-bytes-per-sample container.
-5. **New absolute-error cap (normative reject).** A tile whose exported
-   height bound `z_scale / 2` exceeds `0.025 m` is refused by the producer
-   and the verifier (see *Quantization*).
-6. **New decode rejects:** `width == 0` or `height == 0`; `header_crc32`
-   mismatch; `pad != 0`; zstd content-checksum mismatch; any stored level
-   `> 4095`. See *Decode errors*.
-7. **Region-semantics correction.** The v1 text claimed the header
-   `region` is "bit-for-bit the same six doubles as this tile's
-   `tileset.json` bounding volume." This is **false for parent tiles** and
-   is corrected here: the header `region` is the tile's *own* mesh region,
-   which is contained within — not always equal to — the enclosing
-   `tileset.json` / pack-index region. See *Region semantics*.
-
-## v2 → v3 delta
-
-Version 3 makes the profile's vertical datum **explicit and self-consistent**.
-v2 stored **NAP** heights in the plane but labelled the header `region`
-heights **ellipsoidal** (they were produced through the EPSG:7415→4979
-transform), a latent contradiction: the reconstructed vertices did not lie
-inside their own declared region, and on a real globe the tile sat ~43 m (the
-NLGEO2018 geoid undulation in NL) below the ellipsoidal `strict`/`game`/`splat`
-profiles. v3 resolves this **NAP-native** — the stored plane stays NAP (the
-authoritative height for this Dutch dataset) and the region is brought into the
-same datum, rather than converting the plane to ellipsoidal. Differences from
-v2 (the header stays exactly 120 bytes):
-
-1. **`version` field value is `3`.** A `version` of `2` (or anything else) is a
-   decode error. There is no cross-version compatibility: a v3 decoder reads
-   only v3 chunks.
-2. **`region[4]` / `region[5]` are NAP heights**, not ellipsoidal. They are the
-   min/max **NAP** height of the tile's own sampled vertices — the same datum,
-   and (for a leaf) the same values, as the stored plane. The `tileset.json`
-   and pack-index enclosing regions for a heightfield build are likewise NAP
-   (see *Region semantics*), so the whole heightfield deliverable is internally
-   one datum and each region **contains** its geometry.
-3. **New `vertical_datum` header field** (`uint32`, offset `112`), an EPSG CRS
-   code naming the datum of the plane and the region heights. It is `5709`
-   (EPSG:5709 = *NAP height*) for every chunk this producer writes; a decoder
-   rejects any other value (this producer emits nothing else). This makes the
-   pack bytes self-describing — a consumer knows the heights are NAP without
-   reading `provenance.json`.
-4. **`header_crc32` moves to offset `116`; its span grows to `[0, 116)`.** The
-   CRC now covers `vertical_datum` too, so the datum tag is integrity-protected.
-   The v2 `pad` field (offset `116`, "must be `0`") is **removed** — its 4 bytes
-   are now `header_crc32`.
-5. **New decode rejects:** `version != 3`; `vertical_datum != 5709`;
-   `header_crc32` mismatch over the new `[0, 116)` span. The v2 `pad != 0`
-   reject is gone (there is no `pad`). See *Decode errors*.
-
-Everything else — magic, dims, the quantizer (12-bit / 25 mm cap), zstd framing
-(level 3, checksum, content size, one-shot), the implicit grid-reconstruction
-contract, the sibling JPEG — is **unchanged from v2**.
+This document specifies **version 3**. The per-version history (what changed
+from v1→v2 and v2→v3, and why) lives in *Appendix A: Version history* so the
+normative body reads straight through; a v3 decoder never needs it.
 
 ## Coordinate contract (load-bearing — read this first)
 
@@ -334,26 +265,25 @@ silently lossy one.
 
 ## Region semantics (corrected in v2; datum clarified in v3)
 
-All region heights in this section — both the header region and the
-enclosing `tileset.json`/pack-index region — are **NAP** heights (v3; see
-*Vertical datum*). The heightfield deliverable is single-datum end to end:
-the enclosing regions are the NAP union of NAP tile regions, so a parent
-region contains its NAP children exactly as the 3D Tiles containment rule
-requires, and each region contains its own NAP geometry.
+Two region quantities appear throughout this section, and they are distinct:
 
-The header `region` is the tile's **own** mesh region — the bounding
-volume of *this tile's* sampled vertices (`ahn_cli/tiles3d/mesh.py`'s
-`Region`), with its height component taken in NAP. It is a **distinct
-quantity** from the enclosing region that the `tileset.json` sidecar and the
-pack index carry for the same tile:
+- **own region** — the bounding volume of *this tile's own* vertices; this is
+  what the `.hf` header `region` carries.
+- **enclosing region** — the union of a tile's own region with all its
+  descendants' regions; this is what `tileset.json` and the pack index carry,
+  so a parent bounding volume encloses its children (a hard 3D Tiles rule).
 
-- **`tileset.json` / pack-index region** = the *union* region: a tile's
-  own region unioned with all its descendants' regions, because a parent
-  bounding volume must enclose its children (a hard 3D Tiles validity
-  rule). This is what culling / LOD selection needs.
-- **`.hf` header region** = the tile's own region only.
+All region heights in this section — both the own region and the enclosing
+region — are **NAP** heights (v3; see *Vertical datum*). The heightfield
+deliverable is single-datum end to end: the enclosing regions are the NAP
+union of NAP own regions, so a parent region contains its NAP children exactly
+as the 3D Tiles containment rule requires, and each region contains its own
+NAP geometry. (The own region is `ahn_cli/tiles3d/mesh.py`'s `Region` with its
+height taken in NAP; the enclosing region is what culling / LOD selection
+needs.)
 
-Their exact relationship (verified across all spike fixtures):
+The own region and the enclosing region relate as follows (verified across
+all spike fixtures):
 
 - The **4 horizontal doubles** (`west, south, east, north`) are
   **bit-equal** between the header region and the enclosing region for
@@ -524,3 +454,81 @@ The structural shape these illustrate is normative (the header CRC now
 covers `[0, 116)`, including `vertical_datum`; the frame carries a content
 checksum and embedded size); only their concrete bytes are
 settings-dependent and superseded by the committed v3 fixtures.
+
+## Appendix A: Version history
+
+Non-normative. A v3 decoder reads only v3 chunks; this records how the format
+reached v3.
+
+### v2 → v3 delta
+
+Version 3 makes the profile's vertical datum **explicit and self-consistent**.
+v2 stored **NAP** heights in the plane but labelled the header `region`
+heights **ellipsoidal** (they were produced through the EPSG:7415→4979
+transform), a latent contradiction: the reconstructed vertices did not lie
+inside their own declared region, and on a real globe the tile sat ~43 m (the
+NLGEO2018 geoid undulation in NL) below the ellipsoidal `strict`/`game`/`splat`
+profiles. v3 resolves this **NAP-native** — the stored plane stays NAP (the
+authoritative height for this Dutch dataset) and the region is brought into the
+same datum, rather than converting the plane to ellipsoidal. Differences from
+v2 (the header stays exactly 120 bytes):
+
+1. **`version` field value is `3`.** A `version` of `2` (or anything else) is a
+   decode error. There is no cross-version compatibility: a v3 decoder reads
+   only v3 chunks.
+2. **`region[4]` / `region[5]` are NAP heights**, not ellipsoidal. They are the
+   min/max **NAP** height of the tile's own sampled vertices — the same datum,
+   and (for a leaf) the same values, as the stored plane. The `tileset.json`
+   and pack-index enclosing regions for a heightfield build are likewise NAP
+   (see *Region semantics*), so the whole heightfield deliverable is internally
+   one datum and each region **contains** its geometry.
+3. **New `vertical_datum` header field** (`uint32`, offset `112`), an EPSG CRS
+   code naming the datum of the plane and the region heights. It is `5709`
+   (EPSG:5709 = *NAP height*) for every chunk this producer writes; a decoder
+   rejects any other value (this producer emits nothing else). This makes the
+   pack bytes self-describing — a consumer knows the heights are NAP without
+   reading `provenance.json`.
+4. **`header_crc32` moves to offset `116`; its span grows to `[0, 116)`.** The
+   CRC now covers `vertical_datum` too, so the datum tag is integrity-protected.
+   The v2 `pad` field (offset `116`, "must be `0`") is **removed** — its 4 bytes
+   are now `header_crc32`.
+5. **New decode rejects:** `version != 3`; `vertical_datum != 5709`;
+   `header_crc32` mismatch over the new `[0, 116)` span. The v2 `pad != 0`
+   reject is gone (there is no `pad`). See *Decode errors*.
+
+Everything else — magic, dims, the quantizer (12-bit / 25 mm cap), zstd framing
+(level 3, checksum, content size, one-shot), the implicit grid-reconstruction
+contract, the sibling JPEG — is **unchanged from v2**.
+
+### v1 → v2 delta (v1 never shipped)
+
+Version 1 of this format was specified but **never shipped** (no `.hf`
+chunk produced by a released tool is version 1). Version 2 was the first
+normative, consumed-by-Rust version. The differences from the v1 draft:
+
+1. **Header grows 112 → 120 bytes.** All v1 fields keep their v1 offsets.
+   Two `uint32` fields are appended: `header_crc32` at offset `112`
+   (CRC-32/ISO-HDLC over header bytes `[0, 112)`) and `pad` at offset
+   `116` (must be `0`). The header stays an 8-byte multiple.
+2. **`version` field value is `2`.** A `version` of `1` (or anything
+   else) is a decode error.
+3. **Payload codec: zstd level 19 → level 3, with the RFC 8878 content
+   checksum now written.** The frame is still exactly one zstandard frame,
+   but produced with `write_checksum=True` at level `3`. The checksum is a
+   new integrity layer verified natively by libzstd on decode.
+4. **Height quantization: 16-bit → 12-bit levels.** The affine scheme is
+   unchanged, but the maximum quantization level is `4095` (not `65535`),
+   so `z_scale = extent / 4095`. Levels are still stored as `uint16` LE in
+   the same 2-bytes-per-sample container.
+5. **New absolute-error cap (normative reject).** A tile whose exported
+   height bound `z_scale / 2` exceeds `0.025 m` is refused by the producer
+   and the verifier (see *Quantization*).
+6. **New decode rejects:** `width == 0` or `height == 0`; `header_crc32`
+   mismatch; `pad != 0`; zstd content-checksum mismatch; any stored level
+   `> 4095`. See *Decode errors*.
+7. **Region-semantics correction.** The v1 text claimed the header
+   `region` is "bit-for-bit the same six doubles as this tile's
+   `tileset.json` bounding volume." This is **false for parent tiles** and
+   was corrected in v2: the header `region` is the tile's *own* mesh region,
+   which is contained within — not always equal to — the enclosing
+   `tileset.json` / pack-index region. See *Region semantics*.

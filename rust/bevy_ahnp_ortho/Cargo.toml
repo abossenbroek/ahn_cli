@@ -82,6 +82,19 @@ bevy = { version = "0.18", default-features = false, features = [
     "tonemapping_luts",
     "x11",
 ] }
+# Pinned to 0.39.x specifically (not the latest 0.41.x): bevy_egui tracks
+# Bevy release-for-release, and 0.39.x is the last line whose own
+# `bevy_ecs`/`bevy_app` deps are "0.18.0" — 0.40+ already moved to Bevy 0.19.
+# Trimmed to just the two features `demo` actually needs (no clipboard/URL/
+# picking/bevy_ui integration).
+bevy_egui = { version = "=0.39.1", default-features = false, features = [
+    "render",
+    "default_fonts",
+] }
+
+[[example]]
+name = "demo"
+path = "examples/demo.rs"
 
 [[example]]
 name = "viewer"

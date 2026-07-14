@@ -24,6 +24,8 @@ use std::path::Path;
 use std::sync::Arc;
 
 use bevy::core_pipeline::tonemapping::Tonemapping;
+use bevy::ecs::lifecycle::HookContext;
+use bevy::ecs::world::DeferredWorld;
 use bevy::log::warn;
 use bevy::math::DVec3;
 use bevy::prelude::*;
@@ -49,13 +51,36 @@ type DecodeTask = Task<(TileNode, Result<DecodedContent, AhnpError>)>;
 /// `Send + Sync` whenever `R` is (it is, for `std::fs::File`) by design, so
 /// concurrent tile decodes from the same open archive are exactly what the
 /// underlying crate expects.
+///
+/// The `on_remove` hook ([`despawn_pack_tiles`]) is what makes swapping packs
+/// at runtime safe: the tile mesh/material entities [`poll_tasks`] spawns are
+/// plain siblings tracked only in `entities` below, not ECS children of this
+/// entity, so nothing else would despawn them when a host removes/replaces a
+/// pack (see `examples/demo.rs`'s file-switcher for the intended use).
 #[derive(Component)]
+#[component(on_remove = despawn_pack_tiles)]
 pub struct AhnpPack {
     source: Arc<AhnpSource>,
     content: Vec<TileContent>,
     history: History,
     entities: Vec<Option<Entity>>,
     tasks: Vec<Option<DecodeTask>>,
+}
+
+/// `on_remove` hook for [`AhnpPack`]: despawns every tile entity it spawned
+/// (via [`poll_tasks`]), so despawning the pack's own entity — or just
+/// removing the component — never leaks its already-decoded tiles into the
+/// world. Hooks run before the component is actually removed, so the read
+/// here always sees the pack's final `entities` list.
+fn despawn_pack_tiles(mut world: DeferredWorld, ctx: HookContext) {
+    let Some(pack) = world.get::<AhnpPack>(ctx.entity) else {
+        return;
+    };
+    let tiles: Vec<Entity> = pack.entities.iter().filter_map(|e| *e).collect();
+    let mut commands = world.commands();
+    for tile in tiles {
+        commands.entity(tile).despawn();
+    }
 }
 
 impl AhnpPack {
@@ -225,6 +250,20 @@ fn poll_tasks(
     }
 }
 
+/// Screen-space-error threshold (pixels) below which a tile is considered
+/// detailed enough — lower means "load finer detail sooner" (more tiles, more
+/// load), higher means coarser tiles stay selected longer. Reads as
+/// [`DEFAULT_SSE_THRESHOLD_PX`] when absent, so inserting this resource is
+/// opt-in; `examples/demo.rs` wires a slider to it.
+#[derive(Resource, Clone, Copy, Debug)]
+pub struct SseThreshold(pub f64);
+
+impl Default for SseThreshold {
+    fn default() -> Self {
+        Self(DEFAULT_SSE_THRESHOLD_PX)
+    }
+}
+
 /// Per-frame: select the LOD cut for every open [`AhnpPack`] against the
 /// first `Camera3d` found, spawn decode tasks for newly-selected `Pending`
 /// tiles, and show/hide already-decoded entities to match the selection.
@@ -232,6 +271,7 @@ fn stream_tiles(
     mut commands: Commands,
     mut packs: Query<&mut AhnpPack>,
     cameras: Query<(&GlobalTransform, &Projection, &Camera), With<Camera3d>>,
+    sse_threshold: Option<Res<SseThreshold>>,
 ) {
     let Some((cam_gt, proj, camera)) = cameras.iter().next() else {
         return;
@@ -243,6 +283,7 @@ fn stream_tiles(
         return;
     };
     let k_px = f64::from(viewport.y) / (2.0 * (f64::from(persp.fov) / 2.0).tan());
+    let sse_threshold_px = sse_threshold.map_or(DEFAULT_SSE_THRESHOLD_PX, |t| t.0);
 
     for mut pack in &mut packs {
         let AhnpPack {
@@ -265,7 +306,7 @@ fn stream_tiles(
             cam_pos,
             cam_forward,
             k_px,
-            sse_threshold_px: DEFAULT_SSE_THRESHOLD_PX,
+            sse_threshold_px,
             detail_falloff_m: 0.0,
             cam_height_m: 0.0,
         };

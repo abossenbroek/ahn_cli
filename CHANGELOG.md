@@ -536,6 +536,53 @@
   values); WP12 positions.exr float32 → ~3cm granularity on absolute EPSG:28992
   coords, not spelled out in the contract docstring}.
 
+### 2026-07-14 — tiles3d compression profiles + `bevy_ahnp_ortho` renderer (PR #26)
+- **Producer — three `tiles3d --profile` representations** beside the lossless
+  `strict` default, each deterministic + byte-frozen: `game` (quantized glTF —
+  `KHR_mesh_quantization` + `EXT_meshopt_compression` + baseline JPEG);
+  `heightfield` (compact 2.5D `.hf` chunk — 12-bit / ≤25 mm-capped zstd height
+  plane + sibling JPEG); `splat` (one isotropic 3DGS `.ply`/tile, colour as SH
+  deg-0, zstd, untextured — a geometric encoding, not a trained radiance field).
+- **`tiles.hfp` AHNP pack** bundles each profile's tile blobs into one
+  self-describing binary quadtree index (Merkle-rooted `dataset_id`, per-blob
+  SHA-256, CRC'd header/index) + demoted `tileset.json` interop, `provenance.json`,
+  `manifest.json` sidecars. Normative specs under `docs/specs/2026-07-12-*`.
+- **`.hf` format → v3, NAP-native.** Heightfield stores heights (plane *and*
+  every region: `.hf` header + `tileset.json` + pack index) in NAP (EPSG:5709),
+  tagged in a new `vertical_datum` header field. Fixes a latent v2 mix (NAP plane
+  vs ellipsoidal region → vertices outside their own bounding volume). Documented
+  trade-off: heightfield sits ~43 m off the WGS84 ellipsoid, does not co-register
+  with the ellipsoidal `game`/`splat`/`strict`.
+- **KTX2 → renderer.** No deterministic KTX2/Basis encoder installs across the CI
+  matrix, so producer stays JPEG-only; GPU-native BC1 transcode happens at load in
+  the renderer (`gpu_textures` feature).
+- **Rust `ahn-heightfield` crate** — `no-unsafe` `.hf`/`.hfp` decoder (optional
+  `encode` feature), coded against the specs; MSRV 1.77; CI = lint/clippy/
+  cargo-deny/doc + 3-OS × {stable,1.77} matrix + Python↔Rust round-trip fixtures.
+- **Rust `bevy_ahnp_ortho` renderer crate (Bevy 0.18)** — streams AHNP packs by
+  screen-space error; renders heightfield/game/splat + optional COPC points;
+  features `splat`/`points`/`gpu_textures` (zero-cost off); API `AhnpOrthoPlugin`/
+  `AhnpPack`/`Framing`/`SplatSettings`; async decode; dual MIT/Apache-2.0
+  (crate-scoped), ports LOD/geodesy/meshopt from `bevy_3d_tiles`. Ships an
+  `examples/demo.rs` integration tutorial (live FPS, lighting/LOD/splat sliders,
+  runtime pack file-switcher).
+- Known limitations (documented, by design): 2.5D wall-smearing on
+  `heightfield`/`game` (one height per cell + nadir ortho → stretched façades;
+  needs stereo/oblique imagery to resolve; `splat` unaffected); `points` pins
+  `copc-rs 0.3.0` (later versions don't compile — upstream `las`/`laz` conflict),
+  opt-in / off by default.
+- Gate: reviewed by **4 independent adversarial domain experts** (Python, Rust,
+  3D-graphics, geodesy), each **5/5** (math · programming/ergonomics · docs) on the
+  final commit — the geodesy expert caught the NAP-vs-ellipsoidal datum bug (twice:
+  producer + a relocated copy in the containment verifier), both fixed. Green:
+  Python `make check` (1198 passed, 100% branch cov, ruff + pyright strict) +
+  ahn-heightfield `make rust-check` + bevy_ahnp_ortho clippy `-D`/test/fmt/deny.
+  Per-PR changelog: `docs/changelogs/2026-07-13-tiles3d-profiles-renderer.md`.
+- STATE: open-PR={#26 → main, pushed, not merged} gate=4-adversarial-reviews(all
+  5/5)+green(Python make check 1198/100% · rust make rust-check · bevy crate
+  clippy/test/fmt/deny) merge-authority=stakeholder(manual). pending-user={merge
+  #26; `copc-rs 0.3.0` pin decision — keep / vendor / gate-off}.
+
 ## [0.2.1] - 2024-05-04
 ### Changed
 * feat: Add validation for exclusive arguments

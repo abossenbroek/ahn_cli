@@ -1,0 +1,56 @@
+# CI for the `bevy_ahnp_ortho` Bevy renderer crate — its own self-rooted
+# `[workspace]` (excluded from `rust/Cargo.toml`), so this job never touches
+# `ahn-heightfield`'s strict MSRV 1.77 / cargo-deny / `rust.yml` gates.
+#
+# Explicitly NON-BLOCKING (`continue-on-error: true`): Bevy's own build times
+# and this crate's early-stage API make it unsuitable as a merge gate yet.
+# Linux-only, stable-only (no MSRV pin, no multi-OS matrix).
+
+name: bevy_ahnp_ortho
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'rust/bevy_ahnp_ortho/**'
+      - 'rust/ahn-heightfield/**'
+      - '.github/workflows/bevy_ahnp_ortho.yml'
+  pull_request:
+    paths:
+      - 'rust/bevy_ahnp_ortho/**'
+      - 'rust/ahn-heightfield/**'
+      - '.github/workflows/bevy_ahnp_ortho.yml'
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build-and-test:
+    name: build + test (ubuntu, stable, non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust/bevy_ahnp_ortho
+      - name: install Bevy's Linux runtime deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      - name: cargo test (default features)
+        working-directory: rust/bevy_ahnp_ortho
+        run: cargo test
+      - name: cargo test (--features splat)
+        working-directory: rust/bevy_ahnp_ortho
+        run: cargo test --features splat
+      - name: cargo clippy (default features)
+        working-directory: rust/bevy_ahnp_ortho
+        run: cargo clippy --all-targets -- -D warnings
+      - name: cargo build --examples --features splat
+        working-directory: rust/bevy_ahnp_ortho
+        run: cargo build --examples --features splat

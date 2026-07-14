@@ -1,0 +1,85 @@
+[package]
+name = "bevy_ahnp_ortho"
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "Bevy renderer for AHNP (tiles.hfp) terrain packs: ortho-draped heightfield/glTF tiles, optional COPC points and gaussian splatting"
+repository = "https://github.com/abossenbroek/ahn_cli"
+readme = "README.md"
+keywords = ["bevy", "3d-tiles", "terrain", "gaussian-splatting", "geospatial"]
+categories = ["game-development", "rendering", "science::geo"]
+
+# Self-rooted workspace: this crate is NOT a member of `../Cargo.toml` (see
+# that file's `exclude`), so Bevy's dependency tree never touches
+# ahn-heightfield's MSRV 1.77 / cargo-deny / `rust.yml` gates. Mirrors the
+# `ahn-heightfield/fuzz` precedent one level up.
+[workspace]
+members = ["."]
+
+[features]
+default = []
+# COPC point-cloud rendering (`.copc.laz` -> point-cloud entities). Reserved:
+# the feature flag exists (so downstream `Cargo.toml`s can depend on the name
+# now) but `src/points/` is not yet implemented — see its module doc.
+points = []
+# Gaussian-splat rendering: our own `content_kind = 2` packs AND external
+# `.ply`/`.spz` clouds. The camera MUST carry `GaussianCamera` or the splat
+# pass silently draws nothing (see `render/mod.rs`).
+splat = [
+    "dep:bevy_gaussian_splatting",
+    "dep:bevy_interleave",
+    "dep:zstd",
+]
+# GPU-native texture transcode at load (BCn via intel_tex_2). Falls back to
+# plain Rgba8UnormSrgb when off; the pack's JPEG stays the wire format either
+# way (Python producer stays JPEG-only).
+gpu_textures = ["dep:intel_tex_2"]
+
+[dependencies]
+bevy = { version = "0.18", default-features = false, features = [
+    "bevy_asset",
+    "bevy_pbr",
+    "bevy_render",
+    "bevy_color",
+    "bevy_image",
+    "bevy_log",
+    "zstd_rust",
+] }
+ahn-heightfield = { path = "../ahn-heightfield" }
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+thiserror = "2"
+
+# `splat` feature.
+bevy_gaussian_splatting = { version = "7", default-features = false, features = [
+    "buffer_storage",
+    "planar",
+    "sh0",
+    "io_ply",
+    "io_bincode2",
+    "sort_std",
+], optional = true }
+bevy_interleave = { version = "0.9", optional = true }
+zstd = { version = "0.13", optional = true }
+
+# `gpu_textures` feature.
+intel_tex_2 = { version = "0.4", optional = true }
+
+[dev-dependencies]
+bevy = { version = "0.18", default-features = false, features = [
+    "bevy_winit",
+    "bevy_core_pipeline",
+    "tonemapping_luts",
+    "x11",
+] }
+
+[[example]]
+name = "viewer"
+path = "examples/viewer.rs"
+
+[[example]]
+name = "viewer_splat"
+path = "examples/viewer_splat.rs"
+required-features = ["splat"]
+
+[profile.dev.package."*"]
+opt-level = 2

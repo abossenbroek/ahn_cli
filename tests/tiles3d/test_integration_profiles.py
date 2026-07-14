@@ -367,13 +367,13 @@ def test_cli_heightfield_end_to_end(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Double-build determinism (strict, game, heightfield).
+# Double-build determinism (strict, game, heightfield, splat).
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
     "profile",
-    [Profile.STRICT, Profile.GAME, Profile.HEIGHTFIELD],
+    [Profile.STRICT, Profile.GAME, Profile.HEIGHTFIELD, Profile.SPLAT],
 )
 def test_double_build_is_deterministic(
     tmp_path: Path, profile: Profile

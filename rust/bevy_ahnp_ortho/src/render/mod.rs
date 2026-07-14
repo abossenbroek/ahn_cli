@@ -6,6 +6,8 @@
 //! documented follow-up, not a design constraint of this module (see the
 //! Track C report).
 
+#[cfg(feature = "gpu_textures")]
+pub mod gpu_texture;
 pub mod material;
 pub mod mesh_glb;
 pub mod mesh_hf;
@@ -204,7 +206,12 @@ fn textured_material(
     texture: Option<&[u8]>,
     node: &crate::engine::tree::TileNode,
 ) -> Handle<StandardMaterial> {
-    match texture.map(material::decode_jpeg) {
+    #[cfg(feature = "gpu_textures")]
+    let decoded = texture.map(gpu_texture::decode_jpeg_bc1);
+    #[cfg(not(feature = "gpu_textures"))]
+    let decoded = texture.map(material::decode_jpeg);
+
+    match decoded {
         Some(Ok(image)) => materials.add(material::ortho_material(images.add(image))),
         Some(Err(e)) => {
             warn!(

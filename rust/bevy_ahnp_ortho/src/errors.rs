@@ -24,22 +24,14 @@ pub enum AhnpError {
         source: ahn_heightfield::HfError,
     },
 
-    #[error("decoding tile ({level}, {tx}, {ty}) texture: {source}")]
-    DecodeTexture {
+    #[error("decoding tile ({level}, {tx}, {ty}) glb: {source}")]
+    Glb {
         level: u32,
         tx: u32,
         ty: u32,
         #[source]
-        source: image::ImageError,
+        source: crate::ahnp::glb::GlbError,
     },
-
-    #[error(
-        "tile ({level}, {tx}, {ty}): content_kind = 1 (`game` profile, quantized \
-         glTF + EXT_meshopt_compression) rendering is not yet implemented in this \
-         crate — only content_kind 0 (heightfield) and 2 (splat, `splat` feature) \
-         are supported so far; see the Track C report for status"
-    )]
-    GameProfileNotYetSupported { level: u32, tx: u32, ty: u32 },
 
     #[cfg(feature = "splat")]
     #[error("tile ({level}, {tx}, {ty}): splat ply is not valid: {reason}")]

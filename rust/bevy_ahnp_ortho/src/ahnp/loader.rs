@@ -4,8 +4,9 @@
 //! selection); handing this off to `AsyncComputeTaskPool` is a follow-up (see
 //! the Track C report) rather than a design constraint of this module.
 
-use ahn_heightfield::Heightfield;
+use ahn_heightfield::{Entry, Heightfield};
 
+use crate::ahnp::glb::{self, GlbTile};
 use crate::ahnp::source::AhnpSource;
 use crate::engine::tree::TileNode;
 use crate::errors::AhnpError;
@@ -17,6 +18,8 @@ pub enum DecodedContent {
         heightfield: Heightfield,
         texture: Option<Vec<u8>>,
     },
+    /// `content_kind = 1`: a dequantized glb mesh + its embedded JPEG.
+    Game(GlbTile),
     /// `content_kind = 2` (`splat` feature): a parsed gaussian cloud.
     #[cfg(feature = "splat")]
     Splat(bevy_gaussian_splatting::PlanarGaussian3d),
@@ -25,11 +28,10 @@ pub enum DecodedContent {
 /// Decode `node`'s content from `source`.
 ///
 /// # Errors
-/// - [`AhnpError::DecodeTile`] / [`AhnpError::DecodeTexture`]: the pack's
-///   bytes for this tile failed to decode.
-/// - [`AhnpError::GameProfileNotYetSupported`]: `content_kind == 1` (the
-///   `game` profile's quantized glTF + `EXT_meshopt_compression`) — not yet
-///   implemented in this crate.
+/// - [`AhnpError::DecodeTile`]: the pack's heightfield/texture bytes for this
+///   tile failed to decode.
+/// - [`AhnpError::Glb`]: `content_kind == 1`'s glb container/meshopt/dequant
+///   failed.
 /// - [`AhnpError::SplatFeatureDisabled`]: `content_kind == 2` but this crate
 ///   was built without the `splat` feature.
 pub fn decode_tile(source: &AhnpSource, node: &TileNode) -> Result<DecodedContent, AhnpError> {
@@ -65,16 +67,41 @@ pub fn decode_tile(source: &AhnpSource, node: &TileNode) -> Result<DecodedConten
                 texture,
             })
         }
-        1 => Err(AhnpError::GameProfileNotYetSupported {
-            level: node.key.level,
-            tx: node.key.tx,
-            ty: node.key.ty,
-        }),
-        2 => decode_splat(source, node),
+        1 => decode_game(source, node, entry),
+        2 => decode_splat(source, node, entry),
         other => {
             unreachable!("Archive::open only accepts content_kind in {{0, 1, 2}}, got {other}")
         }
     }
+}
+
+/// `content_kind = 1`: decode the glb blob (JSON + meshopt + KHR dequant —
+/// see `ahnp::glb`'s doc comment for the exact wire contract). The glb
+/// already carries the tile's own RTC placement in its node
+/// `translation`/`scale`, so `glb::decode_glb` returns positions already
+/// un-swizzled to raw ECEF — no separate centre lookup needed here (unlike
+/// the splat path below, which has to reconstruct one).
+fn decode_game(
+    source: &AhnpSource,
+    node: &TileNode,
+    entry: &Entry,
+) -> Result<DecodedContent, AhnpError> {
+    let bytes = source
+        .archive
+        .read_primary(entry)
+        .map_err(|source_err| AhnpError::DecodeTile {
+            level: node.key.level,
+            tx: node.key.tx,
+            ty: node.key.ty,
+            source: source_err,
+        })?;
+    let tile = glb::decode_glb(&bytes).map_err(|source_err| AhnpError::Glb {
+        level: node.key.level,
+        tx: node.key.tx,
+        ty: node.key.ty,
+        source: source_err,
+    })?;
+    Ok(DecodedContent::Game(tile))
 }
 
 /// `ahn_cli.tiles3d.mesh`'s producer stores each tile's vertices (and,
@@ -95,7 +122,11 @@ pub fn decode_tile(source: &AhnpSource, node: &TileNode) -> Result<DecodedConten
 /// producer's placement, but exact enough to render coherently alongside
 /// this crate's heightfield tiles in the same anchored world frame.
 #[cfg(feature = "splat")]
-fn decode_splat(source: &AhnpSource, node: &TileNode) -> Result<DecodedContent, AhnpError> {
+fn decode_splat(
+    source: &AhnpSource,
+    node: &TileNode,
+    entry: &Entry,
+) -> Result<DecodedContent, AhnpError> {
     use std::io::Cursor;
 
     use bevy::math::DVec3;
@@ -103,7 +134,6 @@ fn decode_splat(source: &AhnpSource, node: &TileNode) -> Result<DecodedContent, 
 
     use crate::engine::geodesy::geodetic_to_ecef;
 
-    let entry = source.archive.find(node.key).expect("checked by caller");
     let primary =
         source
             .archive
@@ -152,7 +182,11 @@ fn decode_splat(source: &AhnpSource, node: &TileNode) -> Result<DecodedContent, 
 }
 
 #[cfg(not(feature = "splat"))]
-fn decode_splat(_source: &AhnpSource, node: &TileNode) -> Result<DecodedContent, AhnpError> {
+fn decode_splat(
+    _source: &AhnpSource,
+    node: &TileNode,
+    _entry: &Entry,
+) -> Result<DecodedContent, AhnpError> {
     Err(AhnpError::SplatFeatureDisabled {
         level: node.key.level,
         tx: node.key.tx,

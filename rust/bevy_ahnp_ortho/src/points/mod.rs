@@ -19,7 +19,7 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
-use bevy::math::Vec3;
+use bevy::math::DVec3;
 pub use copc_rs::LodSelection;
 use copc_rs::{BoundsSelection, CopcReader};
 use las::point::Classification;
@@ -88,11 +88,13 @@ pub fn load_points(path: impl AsRef<Path>, level: LodSelection) -> Result<PointC
         })?;
 
     let info = reader.copc_info();
-    let center = Vec3::new(
-        info.center_x as f32,
-        info.center_z as f32,
-        -(info.center_y as f32),
-    );
+    // f64 throughout: RD-New X/Y are ~1e5-1e6 in magnitude, so casting to f32
+    // *before* subtracting the centre (as an earlier version of this function
+    // did) would bake in ~1-2 cm of avoidable rounding error at that
+    // magnitude — the same f64-cancel discipline `engine::geodesy`/
+    // `ahnp::source::world_pos` already follow for ECEF. Only the final,
+    // already-small (metre-scale) difference is cast to f32.
+    let center = DVec3::new(info.center_x, info.center_z, -info.center_y);
 
     let points = reader
         .points(level, BoundsSelection::All)
@@ -104,8 +106,8 @@ pub fn load_points(path: impl AsRef<Path>, level: LodSelection) -> Result<PointC
     let mut positions = Vec::new();
     let mut colors = Vec::new();
     for point in points {
-        let world = Vec3::new(point.x as f32, point.z as f32, -(point.y as f32));
-        positions.push((world - center).to_array());
+        let world = DVec3::new(point.x, point.z, -point.y);
+        positions.push((world - center).as_vec3().to_array());
         colors.push(point_color(point.color, point.classification));
     }
     Ok(PointCloud { positions, colors })

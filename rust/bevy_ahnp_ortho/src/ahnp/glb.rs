@@ -74,6 +74,16 @@ pub fn decode_glb(bytes: &[u8]) -> Result<GlbTile, GlbError> {
     let position_stream = meshopt_stream(buffer_views, 0, bin)?;
     let uv_stream = meshopt_stream(buffer_views, 1, bin)?;
     let index_stream = meshopt_stream(buffer_views, 2, bin)?;
+    // meshopt's own decoder only requires byte_stride > 0 and a multiple of 4
+    // (vertex modes) or 2/4 (index mode) — it has no notion of what THIS
+    // reader then does with the decoded bytes. Without this check, a
+    // malformed/adversarial glb declaring e.g. byteStride 4 for POSITION
+    // (valid per meshopt, but too small for the 3x uint16 = 6 bytes this
+    // reader indexes per vertex below) would panic on an out-of-bounds slice
+    // read instead of returning a clean error.
+    require_min_stride("POSITION", position_stream.byte_stride, 6)?;
+    require_min_stride("TEXCOORD_0", uv_stream.byte_stride, 4)?;
+    require_min_stride("indices", index_stream.byte_stride, 4)?;
 
     let position_bytes = decode_buffer_view(
         &position_stream.mode,
@@ -293,6 +303,19 @@ fn meshopt_stream<'a>(
     })
 }
 
+/// Reject a `byteStride` too small for the fixed-width fields this reader
+/// indexes per element (see the call sites in [`decode_glb`]) — turns a
+/// would-be out-of-bounds slice panic on malformed/adversarial input into a
+/// clean [`GlbError::Malformed`].
+fn require_min_stride(name: &str, byte_stride: usize, min: usize) -> Result<(), GlbError> {
+    if byte_stride < min {
+        return Err(GlbError::Malformed(format!(
+            "{name} byteStride {byte_stride} is smaller than its component size (need >= {min})"
+        )));
+    }
+    Ok(())
+}
+
 fn f64_triple(node: &serde_json::Value, key: &str) -> Result<[f64; 3], GlbError> {
     let arr = node
         .get(key)
@@ -394,5 +417,43 @@ mod tests {
     #[test]
     fn rejects_truncated_input() {
         assert!(decode_glb(&GAME_TILE[..8]).is_err());
+    }
+
+    /// A malformed glb declaring `byteStride: 4` for POSITION (a value
+    /// meshopt's own vertex-buffer decoder happily accepts — it only
+    /// requires a positive multiple of 4 — but too small for the 3x uint16
+    /// = 6 bytes this reader indexes per vertex) must return
+    /// `GlbError::Malformed`, not panic on an out-of-bounds slice read.
+    #[test]
+    fn rejects_stride_too_small_for_its_component() {
+        let mut bytes = GAME_TILE.to_vec();
+        let json_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let json_start = 20;
+        let json = &mut bytes[json_start..json_start + json_len];
+        // POSITION's stride is 8 in both the (ignored) top-level bufferView
+        // field and the EXT_meshopt_compression one this reader reads; same
+        // digit count in and out keeps the chunk length/padding valid.
+        let needle = b"\"byteStride\":8";
+        let replacement = b"\"byteStride\":4";
+        let mut i = 0;
+        let mut replaced = 0;
+        while i + needle.len() <= json.len() {
+            if &json[i..i + needle.len()] == needle {
+                json[i..i + needle.len()].copy_from_slice(replacement);
+                replaced += 1;
+                i += needle.len();
+            } else {
+                i += 1;
+            }
+        }
+        assert!(
+            replaced > 0,
+            "fixture no longer contains a byteStride:8 field"
+        );
+        match decode_glb(&bytes) {
+            Err(GlbError::Malformed(_)) => {}
+            Err(other) => panic!("expected Malformed, got {other:?}"),
+            Ok(_) => panic!("expected an error, decode succeeded"),
+        }
     }
 }

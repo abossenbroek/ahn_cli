@@ -24,8 +24,10 @@ default = []
 # version conflict and doesn't compile at all).
 points = ["dep:copc-rs", "dep:las"]
 # Gaussian-splat rendering: our own `content_kind = 2` packs AND external
-# `.ply`/`.spz` clouds. The camera MUST carry `GaussianCamera` or the splat
-# pass silently draws nothing (see `render/mod.rs`).
+# `.ply`/`.gcloud` clouds (bevy_gaussian_splatting's io_ply/io_bincode2
+# AssetLoader — NOT `.spz`, a different format it doesn't load; see
+# splat/mod.rs's doc comment). The camera MUST carry `GaussianCamera` or the
+# splat pass silently draws nothing (see `render/mod.rs`).
 splat = [
     "dep:bevy_gaussian_splatting",
     "dep:bevy_interleave",

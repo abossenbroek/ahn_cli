@@ -244,6 +244,21 @@ fn game_texture_hash_not_zero_is_rejected_by_verify() {
     assert!(matches!(err, HfError::TextureHashNotZero { index: 0 }));
 }
 
+#[test]
+fn splat_texture_hash_not_zero_is_rejected_by_verify() {
+    // The committed `game` pack (content_kind 1) already has the no-texture
+    // layout content_kind 2 (splat) also requires; relabeling it is the
+    // crate's only way to construct a kind-2 pack (packs are Python-produced).
+    let mut bytes = common::read_pack("game");
+    bytes[104..108].copy_from_slice(&2u32.to_le_bytes());
+    common::resign_pack(&mut bytes);
+    bytes[672] = 1; // hash_offset(640) + 32 = first texture_sha256 byte
+    common::resign_pack_dataset_id(&mut bytes);
+    let archive = Archive::open(&bytes[..]).expect("open");
+    let err = archive.verify_blobs().unwrap_err();
+    assert!(matches!(err, HfError::TextureHashNotZero { index: 0 }));
+}
+
 // ---- decode_tile cross-check and error cap --------------------------------
 
 #[test]

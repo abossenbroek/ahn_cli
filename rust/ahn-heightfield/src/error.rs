@@ -189,7 +189,7 @@ pub enum HfError {
     },
 
     // ---- pack-only -------------------------------------------------------
-    /// `content_kind` is not `0` (heightfield) or `1` (game).
+    /// `content_kind` is not `0` (heightfield), `1` (game) or `2` (splat).
     #[error("pack content_kind is invalid: {found}")]
     BadContentKind {
         /// The out-of-range value.
@@ -391,8 +391,8 @@ pub enum HfError {
         /// The pack's `file_size`.
         file_size: u64,
     },
-    /// A texture slot inconsistent with `content_kind` (kind 1 with a texture,
-    /// or kind 0 with an empty texture).
+    /// A texture slot inconsistent with `content_kind` (kind 1 or 2 with a
+    /// texture, or kind 0 with an empty texture).
     #[error("pack entry {index} texture slot inconsistent with content_kind {content_kind}")]
     TextureConsistency {
         /// Index of the offending entry.
@@ -416,7 +416,8 @@ pub enum HfError {
         /// Which blob slot.
         slot: BlobSlot,
     },
-    /// A `content_kind == 1` tile's `texture_sha256` was not 32 zero bytes.
+    /// A `content_kind == 1` or `content_kind == 2` tile's `texture_sha256`
+    /// was not 32 zero bytes.
     #[error("pack entry {index} texture SHA-256 is not the zero sentinel")]
     TextureHashNotZero {
         /// Index of the offending entry.

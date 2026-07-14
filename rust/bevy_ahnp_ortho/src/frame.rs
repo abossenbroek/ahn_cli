@@ -33,6 +33,14 @@ impl Framing {
     /// (the camera-to-sphere-edge tangent), plus a one-metre floor so a
     /// degenerate (zero-extent) AABB still yields a positive, usable
     /// distance rather than a camera sitting on the geometry.
+    ///
+    /// Simplification: this only solves the *vertical* tangent, not the
+    /// horizontal one — on a portrait/narrow-aspect viewport (where the
+    /// horizontal FOV, not the vertical one, is the tighter constraint) the
+    /// bounding sphere can still clip left/right at this distance. A fully
+    /// aspect-aware fit would also take the viewport's width/height ratio
+    /// and solve both tangents. Fine for a roughly-square/landscape viewer
+    /// window; harden with an aspect term if a host needs a narrow one.
     pub fn fit(aabb: (Vec3, Vec3), fov_y_radians: f32) -> Self {
         let (lo, hi) = aabb;
         let center = (lo + hi) * 0.5;
@@ -57,6 +65,16 @@ impl Framing {
     /// establishing shot. `elevation` is measured up from the horizontal
     /// plane; the camera stays on the fit sphere, so the extent stays framed
     /// at every angle.
+    ///
+    /// Degenerates at `elevation` = &plusmn;&pi;/2 (looking straight down/up):
+    /// the eye-to-`center` direction becomes parallel to the fixed `Vec3::Y`
+    /// up vector `looking_at` uses, an undefined camera roll (in practice,
+    /// `glam` returns *some* valid but arbitrarily-rolled orientation rather
+    /// than panicking or NaN-ing, so this is a visual glitch at the poles,
+    /// not a crash). Fine for an orbit that stays off the poles (this
+    /// crate's own viewers do); clamp `elevation` short of &plusmn;&pi;/2, or
+    /// pick a secondary up vector near the poles, if a host needs to reach
+    /// them cleanly.
     pub fn orbit_transform(&self, azimuth: f32, elevation: f32) -> Transform {
         let (sa, ca) = azimuth.sin_cos();
         let (se, ce) = elevation.sin_cos();

@@ -13,20 +13,24 @@ texture.
   height grid + JPEG via `ahn-heightfield`, builds a grid mesh, drapes it
   unlit (`Tonemapping::None`, `Rgba8UnormSrgb`, no filmic curve — ortho
   colours render 1:1).
+- **`content_kind = 1` (game — quantized glTF + `EXT_meshopt_compression`):**
+  implemented (`ahnp::glb`). A targeted binary-glTF reader for the profile's
+  fixed shape (not a generic glTF crate), reusing the ported `meshopt`
+  decoder and dequantizing via the glTF node's `translation`/`scale`.
 - **`content_kind = 2` (splat, `splat` feature):** implemented. Decodes the
   zstd-wrapped binary 3DGS `.ply` (proven to load through
   `bevy_gaussian_splatting 0.7`'s `io_ply` reader — see the Track C report's
   C-0 result) and renders it as a gaussian-splat cloud.
-- **`content_kind = 1` (game — quantized glTF + `EXT_meshopt_compression`):**
-  **not yet implemented.** `decode_tile` returns a typed error
-  (`AhnpError::GameProfileNotYetSupported`); the ported `meshopt` decoder is
-  ready, but the glTF container parse + `KHR_mesh_quantization` dequant
-  pipeline is a separate follow-up.
-- **`points` (COPC `.copc.laz`):** reserved feature flag, **not implemented**
-  (needs a LAS/COPC header + hierarchy-VLR reader before the point-record
-  compressor can even be reached).
-- **`gpu_textures` (KTX2/BCn transcode at load):** reserved feature flag,
-  **not implemented**.
+- **`points` (COPC `.copc.laz`, `points` feature):** implemented via
+  `copc-rs`, pinned to `0.3.0` — the latest published version (`0.5.0`)
+  doesn't compile at all (an upstream `las`/`laz` version conflict in its own
+  Cargo.toml); `0.3.0` predates that regression and its own `las`/`laz` pair
+  resolves cleanly. A one-shot load (not per-frame LOD-streamed like the
+  AHNP tile path — see `points::load_points`'s doc comment), rendered as a
+  `PrimitiveTopology::PointList` mesh.
+- **`gpu_textures` (BC1/DXT1 transcode at load, `gpu_textures` feature):**
+  implemented (`render::gpu_texture`). Decoded tile JPEGs transcode to BC1 via
+  `intel_tex_2` instead of uploading plain `Rgba8UnormSrgb`.
 
 ## Usage
 

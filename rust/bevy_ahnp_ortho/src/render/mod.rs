@@ -11,6 +11,8 @@ pub mod gpu_texture;
 pub mod material;
 pub mod mesh_glb;
 pub mod mesh_hf;
+#[cfg(feature = "points")]
+pub mod mesh_points;
 
 use std::collections::HashSet;
 use std::path::Path;

@@ -727,7 +727,7 @@ def copc_command(cloud: Path, out: Path, workdir: Path | None) -> None:
     type=click.Path(file_okay=False, path_type=Path),
     help=(
         "Directory receiving the tileset: 'strict' writes tileset.json "
-        "and the tiles/ glbs; 'game'/'heightfield' write a packed "
+        "and the tiles/ glbs; 'game'/'heightfield'/'splat' write a packed "
         "tiles.hfp plus tileset.json, provenance.json and manifest.json "
         "sidecars."
     ),
@@ -739,9 +739,10 @@ def copc_command(cloud: Path, out: Path, workdir: Path | None) -> None:
     show_default=True,
     help=(
         "Export profile: 'strict' (lossless float32 glTF + PNG), 'game' "
-        "(quantized, meshopt-compressed glTF + JPEG), or 'heightfield' "
-        "(vendor .hf height chunk + sibling JPEG). The lossy 'game' and "
-        "'heightfield' profiles pack the tiles into a tiles.hfp plus "
+        "(quantized, meshopt-compressed glTF + JPEG), 'heightfield' "
+        "(vendor .hf height chunk + sibling JPEG), or 'splat' (3D Gaussian "
+        "Splatting .ply cloud, no texture). The lossy 'game', 'heightfield' "
+        "and 'splat' profiles pack the tiles into a tiles.hfp plus "
         "tileset.json, provenance.json and manifest.json sidecars."
     ),
 )
@@ -756,10 +757,11 @@ def tiles3d_command(
     colours — and any missing height is a hard error. Every written
     artifact is re-verified from disk against an independent rebuild
     before the tileset is accepted. ``--profile game`` emits the compact
-    runtime glTF representation and ``--profile heightfield`` emits the
-    vendor ``.hf`` height chunks with sibling JPEGs; both lossy profiles
-    pack the tiles into a tiles.hfp plus tileset.json, provenance.json and
-    manifest.json sidecars.
+    runtime glTF representation, ``--profile heightfield`` emits the
+    vendor ``.hf`` height chunks with sibling JPEGs, and ``--profile splat``
+    emits a 3D Gaussian Splatting ``.ply`` cloud (one gaussian per vertex,
+    no texture); all three lossy profiles pack the tiles into a tiles.hfp
+    plus tileset.json, provenance.json and manifest.json sidecars.
     ``--profile strict`` (the default) is the byte-frozen lossless profile.
     """
     try:

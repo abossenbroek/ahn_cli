@@ -233,3 +233,23 @@ def test_tiles3d_heightfield_profile_builds_and_writes_provenance(
     assert document["profile"] == "heightfield"
     assert document["quantization"]["height_bits"] == 12
     assert document["pack"]["dataset_id"] == pack.header.dataset_id.hex()
+
+
+def test_tiles3d_splat_profile_builds_and_writes_provenance(
+    tmp_path: Path,
+) -> None:
+    """`--profile splat` builds .ply gaussian clouds and provenance.json."""
+    ortho, heights = _inputs(tmp_path)
+    out = tmp_path / "splat"
+    result = _run(out, ortho, heights, "--profile", "splat")
+    assert result.exit_code == 0, result.output
+    assert "verified. profile=splat." in result.output
+    assert (out / "tileset.json").is_file()
+    assert (out / "tiles.hfp").is_file()
+    assert not (out / "tiles").exists()
+    pack = read_pack(out / "tiles.hfp")
+    assert pack.header.content_kind == 2
+    assert all(entry.texture_size == 0 for entry in pack.entries)
+    document = json.loads((out / "provenance.json").read_text())
+    assert document["profile"] == "splat"
+    assert document["pack"]["dataset_id"] == pack.header.dataset_id.hex()

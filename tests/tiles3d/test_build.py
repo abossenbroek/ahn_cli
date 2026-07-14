@@ -683,6 +683,36 @@ def test_heightfield_build_packs_chunks_textures_and_provenance(
     assert '"profile": "heightfield"' in (out / "provenance.json").read_text()
 
 
+def test_splat_build_packs_gaussian_clouds_and_provenance(
+    tmp_path: Path,
+) -> None:
+    """A splat build packs one untextured .ply per tile, plus provenance."""
+    ortho, heights = _make_inputs(tmp_path, 20, 14)
+    out = tmp_path / "out"
+    result = build_tiles3d(
+        ortho, heights, out, tile_pixels=8, profile=Profile.SPLAT
+    )
+    document = _tileset(out)
+    referenced: list[str] = []
+
+    def walk(entry: dict[str, Any]) -> None:
+        referenced.append(entry["content"]["uri"])
+        for child in entry.get("children", []):
+            walk(child)
+
+    walk(document["root"])
+    assert len(referenced) == result.tile_count
+    assert all(uri.endswith(".ply") for uri in referenced)
+    # No loose tiles/: every gaussian cloud lives in the pack.
+    assert not (out / "tiles").exists()
+    pack = read_pack(out / "tiles.hfp")
+    assert pack.header.tile_count == result.tile_count
+    assert pack.header.content_kind == 2
+    assert all(entry.texture_size == 0 for entry in pack.entries)
+    assert sorted(p.name for p in out.iterdir()) == _PACKED_FILES
+    assert '"profile": "splat"' in (out / "provenance.json").read_text()
+
+
 # ---------------------------------------------------------------------------
 # Packed lossy deliverable: LF sidecars, cross-profile swaps, crash recovery.
 # ---------------------------------------------------------------------------
@@ -697,7 +727,9 @@ def test_packed_build_writes_lf_only_text_sidecars(tmp_path: Path) -> None:
         assert b"\r" not in (out / name).read_bytes(), name
 
 
-@pytest.mark.parametrize("profile", [Profile.GAME, Profile.HEIGHTFIELD])
+@pytest.mark.parametrize(
+    "profile", [Profile.GAME, Profile.HEIGHTFIELD, Profile.SPLAT]
+)
 def test_packed_rebuild_over_packed_replaces_cleanly(
     tmp_path: Path, profile: Profile
 ) -> None:

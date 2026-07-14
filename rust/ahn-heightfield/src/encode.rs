@@ -1,4 +1,4 @@
-//! The optional `encode` feature: a v2 `.hf` chunk **encoder**.
+//! The optional `encode` feature: a v3 `.hf` chunk **encoder**.
 //!
 //! Available only with the `encode` feature enabled. This is the inverse of
 //! [`crate::Heightfield::decode`] for the chunk layer: it quantizes a plane of
@@ -19,19 +19,21 @@
 //! quantization (via [`f64::round_ties_even`], the spec's normative rounding),
 //! the `1e-9` epsilon scale for a flat tile, the 25 mm absolute-error-cap
 //! refusal, a single one-shot zstandard frame at level 3 with the RFC 8878
-//! content checksum and embedded content size, and a `header_crc32` signed over
-//! bytes `[0, 112)`.
+//! content checksum and embedded content size, `vertical_datum` always
+//! [`crate::NAP_VERTICAL_DATUM`] (the only datum this crate ever produces or
+//! decodes), and a `header_crc32` signed over bytes `[0, 116)`.
 
 use crate::chunk::{
     ABSOLUTE_ERROR_CAP_M, CHUNK_HEADER_LEN, CHUNK_MAGIC, CHUNK_VERSION, MAX_QUANTIZED_LEVEL,
+    NAP_VERTICAL_DATUM,
 };
 use crate::error::HfError;
 
 /// The pinned zstandard compression level (chunk spec: level 3, one-shot).
 const ZSTD_LEVEL: i32 = 3;
-/// `header_crc32` is signed over header bytes `[0, 112)` (all fields through
-/// `payload_len`, excluding `header_crc32` and `pad`).
-const CRC_SPAN: usize = CHUNK_HEADER_LEN - 8;
+/// `header_crc32` is signed over header bytes `[0, 116)` (all fields through
+/// `vertical_datum`, excluding `header_crc32` itself).
+const CRC_SPAN: usize = CHUNK_HEADER_LEN - 4;
 
 /// The header fields and source heights for one `.hf` chunk to encode.
 ///
@@ -131,9 +133,10 @@ pub fn quantize_levels(heights: &[f64]) -> (f64, f64, Vec<u16>) {
     (min, z_scale, levels)
 }
 
-/// Encodes a complete v2 `.hf` chunk: quantizes `fields.heights`, compresses the
+/// Encodes a complete v3 `.hf` chunk: quantizes `fields.heights`, compresses the
 /// `uint16` plane into one zstandard frame (level 3, content checksum + embedded
-/// size), and writes the 120-byte header with a signed `header_crc32`.
+/// size), and writes the 120-byte header (`vertical_datum` = `NAP_VERTICAL_DATUM`)
+/// with a signed `header_crc32`.
 ///
 /// Available only with the `encode` feature enabled.
 ///
@@ -249,9 +252,10 @@ pub fn encode_chunk(fields: ChunkFields<'_>) -> Result<Vec<u8>, HfError> {
         out[off..off + 8].copy_from_slice(&v.to_le_bytes());
     }
     out[104..112].copy_from_slice(&(frame.len() as u64).to_le_bytes());
-    // `pad` at [116, 120) stays zero. Sign header_crc32 over [0, 112) last.
+    out[112..116].copy_from_slice(&NAP_VERTICAL_DATUM.to_le_bytes());
+    // Sign header_crc32 over [0, 116) last (now that vertical_datum is written).
     let crc = crc32fast::hash(&out[..CRC_SPAN]);
-    out[112..116].copy_from_slice(&crc.to_le_bytes());
+    out[116..120].copy_from_slice(&crc.to_le_bytes());
 
     out.extend_from_slice(&frame);
     Ok(out)

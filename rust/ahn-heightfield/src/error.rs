@@ -120,6 +120,15 @@ pub enum HfError {
         /// The `height` field.
         height: u32,
     },
+    /// `vertical_datum` was not `5709` (EPSG:5709, NAP height) — the only
+    /// datum a v3 `.hf` chunk carries (chunk spec, v2 → v3 delta).
+    #[error("chunk vertical_datum {found} is not the required NAP datum ({expected})")]
+    BadVerticalDatum {
+        /// The datum this crate requires (`5709`, EPSG:5709 / NAP height).
+        expected: u32,
+        /// The datum actually found in the header.
+        found: u32,
+    },
     /// A `float64` header field was `NaN` or infinite.
     #[error("chunk header field {field} is not finite: {value}")]
     NonFiniteHeaderField {

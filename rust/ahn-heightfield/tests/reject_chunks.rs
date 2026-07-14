@@ -44,14 +44,14 @@ fn bad_magic() {
 #[test]
 fn bad_version() {
     let mut b = leaf();
-    b[4..8].copy_from_slice(&3u32.to_le_bytes());
+    b[4..8].copy_from_slice(&4u32.to_le_bytes());
     let err = Heightfield::decode(&b).unwrap_err();
     assert!(matches!(
         err,
         HfError::BadVersion {
             format: Format::Chunk,
-            expected: 2,
-            found: 3,
+            expected: 3,
+            found: 4,
         }
     ));
 }
@@ -59,7 +59,7 @@ fn bad_version() {
 #[test]
 fn header_crc_mismatch() {
     let mut b = leaf();
-    // Flip a byte inside the CRC span [0, 112) without re-signing.
+    // Flip a byte inside the CRC span [0, 116) without re-signing.
     b[56] ^= 0xFF;
     let err = ChunkHeader::parse(&b).unwrap_err();
     assert!(matches!(
@@ -72,16 +72,18 @@ fn header_crc_mismatch() {
 }
 
 #[test]
-fn reserved_pad_non_zero() {
+fn bad_vertical_datum() {
     let mut b = leaf();
-    // `pad` at offset 116 is outside the CRC span, so the CRC stays valid.
-    b[116] = 1;
+    // vertical_datum at offset 112, inside the CRC span: re-sign after
+    // corrupting it so only BadVerticalDatum fires.
+    b[112..116].copy_from_slice(&0u32.to_le_bytes());
+    common::resign_chunk_crc(&mut b);
     let err = ChunkHeader::parse(&b).unwrap_err();
     assert!(matches!(
         err,
-        HfError::ReservedNonZero {
-            format: Format::Chunk,
-            byte_offset: 116,
+        HfError::BadVerticalDatum {
+            expected: 5709,
+            found: 0,
         }
     ));
 }

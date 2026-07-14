@@ -59,7 +59,7 @@ pub use archive::{
 };
 pub use chunk::{
     ChunkHeader, Heightfield, ABSOLUTE_ERROR_CAP_M, CHUNK_HEADER_LEN, CHUNK_MAGIC, CHUNK_VERSION,
-    MAX_QUANTIZED_LEVEL,
+    MAX_QUANTIZED_LEVEL, NAP_VERTICAL_DATUM,
 };
 #[cfg(feature = "encode")]
 pub use encode::{encode_chunk, quantize_levels, ChunkFields};

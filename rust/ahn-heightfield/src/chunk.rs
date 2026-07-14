@@ -1,10 +1,14 @@
-//! The `.hf` heightfield chunk decoder (format version 2).
+//! The `.hf` heightfield chunk decoder (format version 3).
 //!
 //! A chunk is a fixed 120-byte little-endian header immediately followed by
 //! exactly one zstandard frame that decompresses to the tile's row-major
 //! `uint16` quantized height plane. [`ChunkHeader::parse`] validates the
 //! header without decompressing; [`Heightfield::decode`] additionally
 //! decompresses and validates the plane.
+//!
+//! Every height in a chunk — the stored plane, `z_offset`, and
+//! `region[4]/[5]` — is a **NAP** height (EPSG:5709), never ellipsoidal; see
+//! [`NAP_VERTICAL_DATUM`] and the spec's *Coordinate contract*.
 //!
 //! The normative byte layout is
 //! `docs/specs/2026-07-12-heightfield-chunk-format.md`.
@@ -14,16 +18,22 @@ use crate::error::{Format, HfError};
 /// The chunk magic, ASCII `AHNH`.
 pub const CHUNK_MAGIC: &[u8; 4] = b"AHNH";
 /// The chunk format version this crate decodes.
-pub const CHUNK_VERSION: u32 = 2;
+pub const CHUNK_VERSION: u32 = 3;
 /// The fixed chunk-header length, in bytes.
 pub const CHUNK_HEADER_LEN: usize = 120;
 /// The maximum stored quantization level (12-bit range).
 pub const MAX_QUANTIZED_LEVEL: u16 = 4095;
 /// The absolute round-trip-error cap on the height axis, in metres.
 pub const ABSOLUTE_ERROR_CAP_M: f64 = 0.025;
+/// The only `vertical_datum` value a v3 chunk carries: EPSG:5709, NAP height
+/// (*Normaal Amsterdams Peil*, the Dutch national vertical datum). Every
+/// height in the chunk — the stored plane, `z_offset`, `region[4]/[5]` — is
+/// in this datum; see the spec's *Coordinate contract*.
+pub const NAP_VERTICAL_DATUM: u32 = 5709;
 
-/// `header_crc32` covers header bytes `[0, 112)`.
-const CHUNK_CRC_SPAN: usize = 112;
+/// `header_crc32` covers header bytes `[0, 116)` (v3: grown from v2's
+/// `[0, 112)` to also cover `vertical_datum`).
+const CHUNK_CRC_SPAN: usize = 116;
 
 // ---- little-endian primitive reads (private; explicit, no casts) ----------
 //
@@ -74,24 +84,30 @@ pub struct ChunkHeader {
     /// ECEF y-up RTC centre of the A-profile tile (convenience anchor only).
     pub rtc_centre: [f64; 3],
     /// The tile's own mesh region, `(west, south, east, north, minH, maxH)`;
-    /// longitudes/latitudes in radians (EPSG:4979), heights in metres.
+    /// longitudes/latitudes in radians (EPSG:4979), heights in **NAP** metres
+    /// (EPSG:5709 — see [`NAP_VERTICAL_DATUM`]), the same datum as the
+    /// stored plane.
     pub region: [f64; 6],
     /// Byte length of the zstandard frame that follows the header.
     pub payload_len: u64,
+    /// EPSG CRS code of the height datum; always [`NAP_VERTICAL_DATUM`] for a
+    /// valid header (any other value is a decode error).
+    pub vertical_datum: u32,
 }
 
 impl ChunkHeader {
-    /// Parses and validates a v2 `.hf` header without decompressing the
+    /// Parses and validates a v3 `.hf` header without decompressing the
     /// payload.
     ///
-    /// `header_crc32` is verified **before** `width`/`height`/`payload_len` are
-    /// trusted, so a corrupt header can never drive a giant allocation.
+    /// `header_crc32` is verified **before** `width`/`height`/`payload_len`
+    /// (or `vertical_datum`) are trusted, so a corrupt header can never drive
+    /// a giant allocation or silently mislabel the plane's datum.
     ///
     /// # Errors
     ///
     /// Returns [`HfError::TooShort`], [`HfError::BadMagic`],
     /// [`HfError::BadVersion`], [`HfError::HeaderCrc`],
-    /// [`HfError::ReservedNonZero`], [`HfError::ZeroDimension`],
+    /// [`HfError::BadVerticalDatum`], [`HfError::ZeroDimension`],
     /// [`HfError::NonFiniteHeaderField`], or [`HfError::NonPositiveZScale`].
     ///
     /// # Examples
@@ -129,9 +145,9 @@ impl ChunkHeader {
                 found: version,
             });
         }
-        // CRC over [0, 112) is verified before width/height/payload_len are
-        // trusted or used to size any allocation.
-        let stored_crc = le_u32(bytes, 112);
+        // CRC over [0, 116) is verified before width/height/payload_len (or
+        // vertical_datum) are trusted or used to size any allocation.
+        let stored_crc = le_u32(bytes, 116);
         let computed_crc = crc32fast::hash(&bytes[..CHUNK_CRC_SPAN]);
         if computed_crc != stored_crc {
             return Err(HfError::HeaderCrc {
@@ -140,10 +156,11 @@ impl ChunkHeader {
                 computed: computed_crc,
             });
         }
-        if le_u32(bytes, 116) != 0 {
-            return Err(HfError::ReservedNonZero {
-                format: Format::Chunk,
-                byte_offset: 116,
+        let vertical_datum = le_u32(bytes, 112);
+        if vertical_datum != NAP_VERTICAL_DATUM {
+            return Err(HfError::BadVerticalDatum {
+                expected: NAP_VERTICAL_DATUM,
+                found: vertical_datum,
             });
         }
         let width = le_u32(bytes, 8);
@@ -193,6 +210,7 @@ impl ChunkHeader {
             rtc_centre,
             region,
             payload_len: le_u64(bytes, 104),
+            vertical_datum,
         })
     }
 
@@ -259,7 +277,7 @@ pub struct Heightfield {
 }
 
 impl Heightfield {
-    /// Fully decodes a v2 `.hf` chunk: header, then the zstd frame (with native
+    /// Fully decodes a v3 `.hf` chunk: header, then the zstd frame (with native
     /// content-checksum verification), then the exact `width * height` `uint16`
     /// plane.
     ///

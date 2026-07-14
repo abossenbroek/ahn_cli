@@ -90,22 +90,45 @@ pub struct AhnpOrthoPlugin;
 impl Plugin for AhnpOrthoPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Update, (tag_ortho_camera, poll_tasks, stream_tiles).chain());
+        #[cfg(feature = "splat")]
+        app.add_systems(Update, tag_gaussian_camera);
     }
 }
 
 /// Every `Camera3d` gets `Tonemapping::None` (ortho colours shown 1:1, no
-/// filmic curve) — and, with the `splat` feature, `GaussianCamera` (the
-/// splat render pass only draws to cameras carrying that marker; without it
-/// the pass silently renders nothing). Runs every frame but is a no-op once a
-/// camera already carries the marker(s), so a camera spawned at any time
-/// picks this up.
+/// filmic curve). Runs every frame but is a no-op once a camera already
+/// carries `Tonemapping`, so a camera spawned at any time picks this up.
 pub fn tag_ortho_camera(
     mut commands: Commands,
     q: Query<Entity, (With<Camera3d>, Without<Tonemapping>)>,
 ) {
     for e in &q {
         commands.entity(e).insert(Tonemapping::None);
-        #[cfg(feature = "splat")]
+    }
+}
+
+/// Every `Camera3d` gets `GaussianCamera` (`splat` feature) — the splat
+/// render pass only draws to cameras carrying that marker; without it the
+/// pass silently renders nothing.
+///
+/// Deliberately a **separate** system, guarded on `Without<GaussianCamera>`
+/// rather than folded into [`tag_ortho_camera`]'s `Without<Tonemapping>`
+/// guard: a host (or our own example viewers) that spawns its camera already
+/// carrying `Tonemapping` would never match that guard, so it would never be
+/// tagged and would render an empty splat scene. The two markers are
+/// independent and each needs its own guard.
+#[cfg(feature = "splat")]
+pub fn tag_gaussian_camera(
+    mut commands: Commands,
+    q: Query<
+        Entity,
+        (
+            With<Camera3d>,
+            Without<bevy_gaussian_splatting::GaussianCamera>,
+        ),
+    >,
+) {
+    for e in &q {
         commands
             .entity(e)
             .insert(bevy_gaussian_splatting::GaussianCamera::default());
@@ -294,5 +317,31 @@ fn textured_material(
             materials.add(material::untextured_material())
         }
         None => materials.add(material::untextured_material()),
+    }
+}
+
+#[cfg(all(test, feature = "splat"))]
+mod splat_camera_tests {
+    use super::*;
+    use bevy_gaussian_splatting::GaussianCamera;
+
+    /// Regression: a camera spawned *already carrying* `Tonemapping` (as our
+    /// example viewers, and any host that sets it, do) must still receive
+    /// `GaussianCamera`. Folding the marker into `tag_ortho_camera`'s
+    /// `Without<Tonemapping>` guard silently skipped such cameras, and the
+    /// splat pass then drew nothing.
+    #[test]
+    fn camera_with_preexisting_tonemapping_still_gets_gaussian_camera() {
+        let mut app = App::new();
+        app.add_systems(Update, (tag_ortho_camera, tag_gaussian_camera));
+        let cam = app
+            .world_mut()
+            .spawn((Camera3d::default(), Tonemapping::None))
+            .id();
+        app.update();
+        assert!(
+            app.world().get::<GaussianCamera>(cam).is_some(),
+            "camera pre-carrying Tonemapping must still receive GaussianCamera"
+        );
     }
 }

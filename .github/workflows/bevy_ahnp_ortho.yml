@@ -5,6 +5,22 @@
 # Explicitly NON-BLOCKING (`continue-on-error: true`): Bevy's own build times
 # and this crate's early-stage API make it unsuitable as a merge gate yet.
 # Linux-only, stable-only (no MSRV pin, no multi-OS matrix).
+#
+# Split into independent jobs (rather than one long sequential job) so they
+# run concurrently — the repo is public, so Actions minutes are free and the
+# only cost is wall-clock. Each job gets its own Swatinem/rust-cache entry
+# (the action keys caches by job name automatically), which also avoids the
+# cache thrashing that came from alternating `cargo test`/`clippy`/`build`
+# modes against one shared target dir. Every step that links a Bevy binary
+# passes `--features bevy/dynamic_linking` (Bevy's own documented CI/dev
+# speedup: the engine becomes a shared lib, so linking a test/example binary
+# against it is fast instead of relinking the whole static archive each
+# time) — harmless on steps that only `check`/`clippy` (no link happens).
+# The former "build --examples" step is now a `check` (no codegen/link;
+# `clippy --all-features --examples` already exercises the same code paths
+# for type errors, so `check` only needs to additionally validate the
+# splat,points-specific feature combo that clippy's all-features run
+# doesn't isolate).
 
 name: bevy_ahnp_ortho
 
@@ -26,8 +42,8 @@ defaults:
     shell: bash
 
 jobs:
-  build-and-test:
-    name: build + test (ubuntu, stable, non-blocking)
+  lint:
+    name: fmt + clippy (default features, non-blocking)
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
@@ -45,21 +61,90 @@ jobs:
       - name: cargo fmt --check
         working-directory: rust/bevy_ahnp_ortho
         run: cargo fmt --check
-      - name: cargo test (default features)
-        working-directory: rust/bevy_ahnp_ortho
-        run: cargo test
-      - name: cargo test (--all-features)
-        working-directory: rust/bevy_ahnp_ortho
-        run: cargo test --all-features
-      - name: cargo clippy (default features)
+      - name: cargo clippy --all-targets (default features)
         working-directory: rust/bevy_ahnp_ortho
         run: cargo clippy --all-targets -- -D warnings
-      - name: cargo clippy (--all-features --examples)
+
+  clippy-all-features:
+    name: clippy (--all-features --examples, non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust/bevy_ahnp_ortho
+      - name: install Bevy's Linux runtime deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      - name: cargo clippy --all-features --examples
         working-directory: rust/bevy_ahnp_ortho
         run: cargo clippy --all-features --examples -- -D warnings
-      - name: cargo build --examples --features splat,points
+
+  test-default:
+    name: cargo test (default features, non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust/bevy_ahnp_ortho
+      - name: install Bevy's Linux runtime deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      - name: cargo test --features bevy/dynamic_linking
         working-directory: rust/bevy_ahnp_ortho
-        run: cargo build --examples --features splat,points
+        run: cargo test --features bevy/dynamic_linking
+
+  test-all-features:
+    name: cargo test (--all-features, non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust/bevy_ahnp_ortho
+      - name: install Bevy's Linux runtime deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      - name: cargo test --all-features --features bevy/dynamic_linking
+        working-directory: rust/bevy_ahnp_ortho
+        run: cargo test --all-features --features bevy/dynamic_linking
+
+  examples-check:
+    name: cargo check --examples (splat,points, non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust/bevy_ahnp_ortho
+      - name: install Bevy's Linux runtime deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      - name: cargo check --examples --features splat,points
+        working-directory: rust/bevy_ahnp_ortho
+        run: cargo check --examples --features splat,points
+
+  cargo-deny:
+    name: cargo deny check (advisories, bans, licenses, sources, non-blocking)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
       - name: cargo deny check (advisories, bans, licenses, sources)
         uses: EmbarkStudios/cargo-deny-action@v2
         with:

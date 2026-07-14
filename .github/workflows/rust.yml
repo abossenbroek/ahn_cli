@@ -10,7 +10,7 @@ name: rust
 
 on:
   push:
-    branches: [main, hf-v2]
+    branches: [main]
     paths:
       - 'rust/**'
       - 'ahn_cli/tiles3d/**'

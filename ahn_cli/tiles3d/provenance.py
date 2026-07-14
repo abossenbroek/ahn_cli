@@ -34,6 +34,7 @@ from ahn_cli.tiles3d.heightfield import (
     MAX_AXIS_ERROR_M,
     MAX_LEVEL,
     VERSION,
+    VERTICAL_DATUM,
     ZSTD_LEVEL,
     zstandard_version,
 )
@@ -203,8 +204,9 @@ def heightfield_provenance_document(dataset_id: str) -> dict[str, object]:
           :data:`~ahn_cli.tiles3d.heightfield.MAX_AXIS_ERROR_M`) plus the
           one-line height quantization note; ``jpeg`` records the pinned JPEG
           constants plus the Pillow version; ``chunk`` records the ``.hf``
-          magic, version, the pinned zstd level and the ``zstandard``
-          version that fix the payload bytes; ``pack`` records the ``AHNP``
+          magic, version, the ``vertical_datum`` EPSG code (5709 = NAP), the
+          pinned zstd level and the ``zstandard`` version that fix the payload
+          bytes; ``pack`` records the ``AHNP``
           container pins and ``dataset_id``; ``producer`` records the host.
         - Pure and deterministic given the pinned library versions and host.
     """
@@ -220,6 +222,7 @@ def heightfield_provenance_document(dataset_id: str) -> dict[str, object]:
         "chunk": {
             "magic": MAGIC.decode("ascii"),
             "version": VERSION,
+            "vertical_datum": VERTICAL_DATUM,
             "zstd_level": ZSTD_LEVEL,
             "zstandard": zstandard_version(),
         },

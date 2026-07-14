@@ -191,10 +191,9 @@ class _Emitter:
         self._done += 1
         if self._progress is not None:
             self._progress(self._done, self._tree.tile_count)
+        own_region = self._encoder.region_of(payload)
         region = (
-            mesh.region
-            if region is None
-            else union_region(region, mesh.region)
+            own_region if region is None else union_region(region, own_region)
         )
         entry = tile_entry(
             region,
@@ -322,6 +321,7 @@ class _PackedEmitter:
         self._terrain = terrain
         self._tree = tree
         self._profile = profile
+        self._encoder = profile.encoder()
         self._progress = progress
         self.geodesy = Geodesy()
         self._done = 0
@@ -343,16 +343,30 @@ class _PackedEmitter:
                 else union_region(region, child_region)
             )
         mesh = build_tile_mesh(self._terrain, tile, self.geodesy)
+        grid = np.ix_(mesh.rows, mesh.cols)
         error = geometric_error(tile.stride, pixel_size(self._terrain))
+        # A transient payload (cheap array views, no blobs) so the encoder can
+        # report the tile's own region in the profile's height datum — NAP for
+        # heightfield, ellipsoidal for the rest. The encoded bytes are still
+        # produced lazily by `blob_source`; this holds nothing heavy.
+        payload = TilePayload(
+            level=tile.level,
+            tx=tile.tx,
+            ty=tile.ty,
+            stride=tile.stride,
+            geometric_error=error,
+            mesh=mesh,
+            z=self._terrain.z[grid],
+            rgb=self._terrain.rgb[grid],
+        )
         self.vertices += int(mesh.positions.shape[0])
         self.triangles += int(mesh.indices.shape[0]) // 3
         self._done += 1
         if self._progress is not None:
             self._progress(self._done, self._tree.tile_count)
+        own_region = self._encoder.region_of(payload)
         region = (
-            mesh.region
-            if region is None
-            else union_region(region, mesh.region)
+            own_region if region is None else union_region(region, own_region)
         )
         key = TileKey(tile.level, tile.tx, tile.ty)
         self.entries.append(

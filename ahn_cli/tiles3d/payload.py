@@ -25,7 +25,7 @@ if TYPE_CHECKING:
     import numpy as np
     import numpy.typing as npt
 
-    from ahn_cli.tiles3d.mesh import TileMesh
+    from ahn_cli.tiles3d.mesh import Region, TileMesh
 
 __all__ = ["EncodedTile", "TileEncoder", "TilePayload"]
 
@@ -97,6 +97,9 @@ class TileEncoder(Protocol):
     Contract:
         - :meth:`encode` is a pure, deterministic function of its
           payload: identical bytes for identical input, and no I/O.
+        - :meth:`region_of` is a pure function returning the tile's own
+          bounding region in the profile's height datum; the emitter unions
+          it into the enclosing tileset/pack regions.
 
     Invariants:
         - The tiles3d context's single extension point — a profile
@@ -106,4 +109,14 @@ class TileEncoder(Protocol):
 
     def encode(self, payload: TilePayload) -> EncodedTile:
         """Encode one payload into its content (and optional texture)."""
+        ...
+
+    def region_of(self, payload: TilePayload) -> Region:
+        """Return the tile's own region in this profile's height datum.
+
+        All profiles but ``heightfield`` return the mesh's ellipsoidal
+        region unchanged; the NAP-native heightfield profile returns the
+        region with NAP height bounds so the emitted tileset/pack regions
+        match its NAP ``.hf`` plane (see the ``.hf`` format spec).
+        """
         ...

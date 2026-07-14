@@ -1,10 +1,10 @@
 # Fast pre-commit gates. Ruff and pyright come from their official upstream
-# mirrors (pinned); typos stays a repo-local `make` hook. The pyright mirror
-# runs pyright in its own isolated environment, so [tool.pyright] sets
-# venvPath/venv to the uv-managed .venv -- that lets BOTH this hook and CI's
-# `uv run pyright` resolve third-party imports (laspy, geopandas, ...)
-# identically. The full test suite + 100% coverage gate is left to CI
-# (`make test`). Install once with: uv run pre-commit install
+# mirrors (pinned). The pyright mirror runs pyright in its own isolated
+# environment, so [tool.pyright] sets venvPath/venv to the uv-managed .venv --
+# that lets BOTH this hook and CI's `uv run pyright` resolve third-party imports
+# (laspy, geopandas, ...) identically. The full test suite + 100% coverage gate,
+# and the typos check, are left to CI (`make check`). Install once with:
+# uv run pre-commit install
 repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.21
@@ -16,14 +16,5 @@ repos:
     rev: v1.1.411
     hooks:
       - id: pyright
-        pass_filenames: false
-        always_run: true
-
-  - repo: local
-    hooks:
-      - id: typos
-        name: typos
-        entry: make typos
-        language: system
         pass_filenames: false
         always_run: true

@@ -1,7 +1,8 @@
 {
   "chunk": {
     "magic": "AHNH",
-    "version": 2,
+    "version": 3,
+    "vertical_datum": 5709,
     "zstandard": "0.23.0",
     "zstd_level": 3
   },
@@ -14,7 +15,7 @@
   },
   "pack": {
     "alignment": 16,
-    "dataset_id": "08ed3cdde8cdce1125b05a02e8f2aef21df1f00a467b9e8d370068f731c8d2e8",
+    "dataset_id": "60a19a477fedb72e3b1e11a727bd3d730944819f47283d00ced50720445c36a5",
     "format_version": 1,
     "hash_algorithm": "sha256",
     "magic": "AHNP"

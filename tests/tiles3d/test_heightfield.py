@@ -1,4 +1,4 @@
-"""Tests for the ``.hf`` heightfield chunk codec (format version 2).
+"""Tests for the ``.hf`` heightfield chunk codec (format version 3).
 
 The codec is exercised directly (encode/decode round-trip, determinism,
 the absolute-error cap, every documented decode reject) plus the normative
@@ -24,6 +24,7 @@ from ahn_cli.tiles3d.heightfield import (
     HEADER_SIZE,
     MAX_LEVEL,
     VERSION,
+    VERTICAL_DATUM,
     ZSTD_LEVEL,
     decode_heightfield,
     encode_heightfield,
@@ -49,15 +50,16 @@ if TYPE_CHECKING:
     import numpy.typing as npt
 
 # The header layout, restated from the normative doc so the codec is
-# checked against the spec, not against its own source: the CRC-covered
+# checked against the spec, not against its own source (v3): the CRC-covered
 # prefix (magic, version, width, height, z_offset, z_scale, 3x rtc_centre,
-# 6x region, payload_len) plus header_crc32 and pad.
+# 6x region, payload_len) plus the vertical_datum field (offset 112, inside
+# the CRC span) and header_crc32 (offset 116). The v2 trailing pad is gone.
 _PREFIX_FMT = "<4sIII" + "d" * 11 + "Q"
 _HEADER_FMT = _PREFIX_FMT + "II"
-_CRC_SPAN = struct.calcsize(_PREFIX_FMT)
+_CRC_SPAN = struct.calcsize(_PREFIX_FMT) + 4  # prefix + vertical_datum = 116
 _F_MAGIC, _F_VERSION, _F_WIDTH, _F_HEIGHT = 0, 1, 2, 3
 _F_Z_SCALE, _F_REGION_N = 5, 12
-_F_PAYLOAD_LEN, _F_CRC, _F_PAD = 15, 16, 17
+_F_PAYLOAD_LEN, _F_VERTICAL_DATUM, _F_CRC = 15, 16, 17
 
 # The normative algorithm-conformance golden string (permanent, codec-agnostic).
 _GOLDEN_STRING = b"AHN heightfield spike golden vector 0123456789"
@@ -102,9 +104,9 @@ def test_header_size_is_120_bytes() -> None:
     assert struct.calcsize(_HEADER_FMT) == HEADER_SIZE
 
 
-def test_version_is_two() -> None:
-    """The codec reads and writes format version 2."""
-    assert VERSION == 2
+def test_version_is_three() -> None:
+    """The codec reads and writes format version 3 (NAP-native)."""
+    assert VERSION == 3
 
 
 def test_round_trip_reproduces_the_quantized_levels() -> None:
@@ -133,13 +135,13 @@ def test_header_carries_the_mesh_anchor_and_region() -> None:
     assert decoded.region == payload.mesh.region
 
 
-def test_header_crc32_covers_the_first_112_bytes() -> None:
-    """The stored header_crc32 is the CRC-32 of bytes [0, 112) with pad 0."""
+def test_header_crc32_covers_the_first_116_bytes() -> None:
+    """header_crc32 is the CRC-32 of bytes [0, 116), covering vertical_datum."""
     data = encode_heightfield(_payload())
     fields = struct.unpack(_HEADER_FMT, data[:HEADER_SIZE])
-    assert _CRC_SPAN == 112
+    assert _CRC_SPAN == 116
+    assert fields[_F_VERTICAL_DATUM] == VERTICAL_DATUM
     assert fields[_F_CRC] == zlib.crc32(data[:_CRC_SPAN]) & 0xFFFFFFFF
-    assert fields[_F_PAD] == 0
 
 
 def test_payload_is_row_major_top_row_first() -> None:
@@ -197,20 +199,20 @@ def test_sha256_conformance_vector() -> None:
 def _corrupt(
     data: bytes, index: int, value: object, *, fix_crc: bool = True
 ) -> bytes:
-    """Repack one header struct field with ``value``.
+    """Repack one header struct field with ``value`` (v3 layout).
 
     With ``fix_crc`` (the default) the header_crc32 is recomputed over the
-    patched prefix so it stays valid — isolating a downstream check. With
-    ``fix_crc=False`` the stored crc is left as-is (to exercise the crc
-    check itself).
+    patched ``[0, 116)`` span (prefix + ``vertical_datum``) so it stays
+    valid — isolating a downstream check. With ``fix_crc=False`` the stored
+    crc is left as-is (to exercise the crc check itself).
     """
     fields = list(struct.unpack(_HEADER_FMT, data[:HEADER_SIZE]))
     fields[index] = value
-    prefix = struct.pack(_PREFIX_FMT, *fields[:16])
-    crc = zlib.crc32(prefix) & 0xFFFFFFFF if fix_crc else fields[_F_CRC]
-    return (
-        prefix + struct.pack("<II", crc, fields[_F_PAD]) + data[HEADER_SIZE:]
+    body = struct.pack(_PREFIX_FMT, *fields[:16]) + struct.pack(
+        "<I", fields[_F_VERTICAL_DATUM]
     )
+    crc = zlib.crc32(body) & 0xFFFFFFFF if fix_crc else fields[_F_CRC]
+    return body + struct.pack("<I", crc) + data[HEADER_SIZE:]
 
 
 def _repack_levels(data: bytes, top: int) -> bytes:
@@ -226,9 +228,11 @@ def _repack_levels(data: bytes, top: int) -> bytes:
     ).compress(ints.astype("<u2").tobytes())
     fields = list(struct.unpack(_HEADER_FMT, data[:HEADER_SIZE]))
     fields[_F_PAYLOAD_LEN] = len(frame)
-    prefix = struct.pack(_PREFIX_FMT, *fields[:16])
-    crc = zlib.crc32(prefix) & 0xFFFFFFFF
-    return prefix + struct.pack("<II", crc, fields[_F_PAD]) + frame
+    body = struct.pack(_PREFIX_FMT, *fields[:16]) + struct.pack(
+        "<I", fields[_F_VERTICAL_DATUM]
+    )
+    crc = zlib.crc32(body) & 0xFFFFFFFF
+    return body + struct.pack("<I", crc) + frame
 
 
 def test_decode_rejects_a_short_buffer() -> None:
@@ -260,10 +264,15 @@ def test_decode_rejects_a_header_crc_mismatch() -> None:
         decode_heightfield(data)
 
 
-def test_decode_rejects_a_nonzero_pad() -> None:
-    """A non-zero pad byte is refused (crc stays valid; pad is outside it)."""
-    data = _corrupt(encode_heightfield(_payload()), _F_PAD, 1)
-    with pytest.raises(Tiles3dError, match="pad field is 1"):
+def test_decode_rejects_a_wrong_vertical_datum() -> None:
+    """A vertical_datum other than EPSG:5709 is refused (crc re-signed).
+
+    The datum tag is inside the CRC span, so ``_corrupt`` recomputes a valid
+    crc over ``[0, 116)``; the failure therefore attributes to the datum
+    reject, not the crc guard (which runs first and now passes).
+    """
+    data = _corrupt(encode_heightfield(_payload()), _F_VERTICAL_DATUM, 4979)
+    with pytest.raises(Tiles3dError, match="vertical_datum 4979 is not"):
         decode_heightfield(data)
 
 

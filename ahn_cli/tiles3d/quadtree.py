@@ -30,7 +30,17 @@ __all__ = [
 _DEFAULT_TILE_PIXELS = 256
 _MIN_AXIS_SAMPLES = 2
 _ERROR_PER_STRIDE_PIXEL = 4.0
-"""Geometric error per metre of sampling stride (a display heuristic)."""
+"""Geometric error per metre of sampling stride (a display heuristic).
+
+This is a *display-driven* constant, not a measured geometric bound: a
+coarser tile drops ``stride - 1`` of every ``stride`` samples, and 4 m of
+reported error per metre of stride-ground-size was tuned so a viewer's
+screen-space-error test swaps to the finer level at a comfortable
+on-screen density (roughly a tile refining when its cells exceed a few
+pixels). It is deliberately conservative (over-reports) rather than tied to
+a physical vertical/horizontal error metric; a consumer with a true error
+budget should treat it as an ordering signal, not an absolute tolerance.
+"""
 
 
 @dataclass(frozen=True)

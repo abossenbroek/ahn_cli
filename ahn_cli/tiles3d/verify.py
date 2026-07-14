@@ -243,8 +243,15 @@ def _verify_tile_content(
             verify_heightfield_tile(
                 content_root, uri, texture, terrain, tile, geodesy
             )
+            # NAP-native profile: regions are NAP, so containment must compare
+            # NAP vertex heights (not geodesy-converted ellipsoidal ones).
             _verify_containment(
-                terrain, tile, enclosing_regions, geodesy, uri
+                terrain,
+                tile,
+                enclosing_regions,
+                geodesy,
+                uri,
+                nap_heights=True,
             )
         elif profile is Profile.SPLAT:
             verify_splat_tile(content_root, uri, terrain, tile, geodesy)
@@ -881,21 +888,39 @@ def _verify_containment(
     enclosing_regions: list[tuple[float, ...]],
     geodesy: Geodesy,
     uri: str,
+    *,
+    nap_heights: bool = False,
 ) -> None:
     """Verify the tile's vertices lie inside every enclosing region.
 
     ``enclosing_regions`` holds the stored regions of every ancestor
     plus the tile's own; the vertex geodetics are recomputed from the
     sources, so a shrunken or drifted stored region is caught here.
+
+    ``nap_heights`` selects the vertical datum of the height comparison to
+    match the profile's region datum. The default (``False``) compares the
+    geodesy NAP→ellipsoidal vertex height against the ellipsoidal regions the
+    ``strict``/``game``/``splat`` profiles emit. The **NAP-native heightfield**
+    profile emits NAP regions (see
+    :func:`~ahn_cli.tiles3d.heightfield.nap_region`), so it passes
+    ``nap_heights=True`` and the vertex height axis is the raw source NAP
+    ``terrain.z`` — never the geodesy-converted ellipsoidal height. Mixing the
+    two would offset the comparison by the geoid undulation (~43 m in NL where
+    the NLGEO2018 grid is installed) and falsely fail containment; keeping both
+    sides NAP makes the check self-consistent regardless of geoid-grid
+    availability. Horizontal lon/lat are datum-independent and always come from
+    geodesy.
     """
     cols = sample_indices(tile.col0, tile.col1, tile.stride)
     rows = sample_indices(tile.row0, tile.row1, tile.stride)
     grid = np.ix_(rows, cols)
-    lon, lat, height = geodesy.to_geodetic_radians(
+    nap_z = terrain.z[grid].astype(np.float64).ravel()
+    lon, lat, ellipsoidal_height = geodesy.to_geodetic_radians(
         terrain.x[grid].astype(np.float64).ravel(),
         terrain.y[grid].astype(np.float64).ravel(),
-        terrain.z[grid].astype(np.float64).ravel(),
+        nap_z,
     )
+    height = nap_z if nap_heights else ellipsoidal_height
     for region in enclosing_regions:
         _require(
             _points_within(lon, lat, height, region),

@@ -14,7 +14,7 @@ and a regression test asserts no flag is reused across the group.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import NoReturn
+from typing import TYPE_CHECKING, NoReturn
 
 import click
 from tqdm import tqdm
@@ -62,7 +62,6 @@ from ahn_cli.reconcile.method import (
     VariogramModel,
 )
 from ahn_cli.reconcile.reconcile import (
-    ProgressCallback,
     ReconcileError,
     ReconcileRequest,
     reconcile,
@@ -71,6 +70,9 @@ from ahn_cli.reconcile.writers import OutputFormat
 from ahn_cli.tiles3d.build import build_tiles3d
 from ahn_cli.tiles3d.errors import Tiles3dError
 from ahn_cli.tiles3d.profile import Profile
+
+if TYPE_CHECKING:
+    from ahn_cli.domain import ProgressCallback
 
 _GENERATION_REGISTRY = default_registry()
 """The default AHN generation registry backing the ``--ahn`` choice.

@@ -18,13 +18,13 @@ continental run the cloud is tiled spatially, outside this function's scope.
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
 import numpy.typing as npt
 
+from ahn_cli.domain.progress import ProgressCallback
 from ahn_cli.reconcile.clean import select_and_dedupe
 from ahn_cli.reconcile.interpolate import build_interpolator
 from ahn_cli.reconcile.raster import (
@@ -51,11 +51,6 @@ __all__ = [
     "ReconcileStats",
     "reconcile",
 ]
-
-ProgressCallback = Callable[[int, int], None]
-"""An injected progress reporter: called ``(rows_done, total_rows)`` once per
-row-block, so a caller (e.g. the CLI) can drive a progress bar without this
-module owning any rendering concern."""
 
 
 def _no_op_progress(_done: int, _total: int) -> None:

@@ -29,6 +29,7 @@ def test_domain_public_api_exports_the_value_objects() -> None:
         "Generation",
         "PixelGrid",
         "Product",
+        "ProgressCallback",
         "Provenance",
         "Tile",
         "Vintage",

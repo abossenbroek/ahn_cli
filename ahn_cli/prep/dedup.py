@@ -51,7 +51,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from pathlib import Path
 
-    from ahn_cli.domain import BBox
+    from ahn_cli.domain import BBox, ProgressCallback
 
 
 @dataclass(frozen=True)
@@ -157,8 +157,15 @@ def _sweep_indices(
     return np.sort(first_occurrence)
 
 
+def _no_op_progress(_done: int, _total: int) -> None:
+    """Report nothing; the default when the caller supplies no callback."""
+
+
 def deduplicate_tiles(
-    tiles: Sequence[CanonicalTile], output_path: Path
+    tiles: Sequence[CanonicalTile],
+    output_path: Path,
+    *,
+    progress: ProgressCallback | None = None,
 ) -> DedupStats:
     """Crop, merge, and exact-duplicate-sweep ``tiles`` into ``output_path``.
 
@@ -170,6 +177,9 @@ def deduplicate_tiles(
         - Every input tile must carry a ``gps_time`` dimension (AHN point
           format 6+), which forms part of the duplicate key.
         - Returns a :class:`DedupStats` ledger of the point counts.
+        - Calls ``progress(tiles_done, total_tiles)`` once per cropped tile;
+          defaults to a no-op so callers that don't care about progress are
+          unaffected.
 
     Invariants:
         - Deterministic: identical input yields byte-identical output, with the
@@ -181,16 +191,18 @@ def deduplicate_tiles(
     if not tiles:
         msg = "deduplicate_tiles requires at least one tile."
         raise ValueError(msg)
+    report = progress if progress is not None else _no_op_progress
 
     files = [str(tile.path) for tile in tiles]
     header = harmonize_headers(files)
 
     input_points = 0
     cropped_arrays: list[npt.NDArray[np.void]] = []
-    for tile in tiles:
+    for i, tile in enumerate(tiles, start=1):
         cropped, original_count = _crop_and_reproject(tile, header)
         input_points += original_count
         cropped_arrays.append(cropped.array)
+        report(i, len(tiles))
 
     cropped_count = sum(len(array) for array in cropped_arrays)
     merged = laspy.ScaleAwarePointRecord.zeros(cropped_count, header=header)

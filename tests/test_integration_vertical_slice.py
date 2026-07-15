@@ -21,7 +21,9 @@ the real production code paths of each bounded context.
 
 from __future__ import annotations
 
+import hashlib
 import io
+import json
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
@@ -66,8 +68,8 @@ _T1 = datetime(2026, 7, 10, 9, 0, 5, tzinfo=timezone.utc)
 
 _AHN_HREF = "https://pdok.example/ahn/C_37EN1.LAZ"
 _DSM_HREF = "https://pdok.example/dsm/R_37EN1.tif"
-_ORTHO_FEED_5CM = "https://beeldmateriaal.example/2023/5cm/atom.xml"
-_ORTHO_TILE_HREF = "https://beeldmateriaal.example/2023/5cm/kb_00.tif"
+_ORTHO_FEED_HRL = "https://basisdata.nl.example/links/nationaal/Nederland/BM_HRL2025O_RGB_TIF.json"
+_ORTHO_TILE_HREF = "https://fsn1.your-objectstorage.example/hwh-ortho/2025/2025_kb_00_hrl.tif"
 
 
 def _clock() -> Callable[[], datetime]:
@@ -101,6 +103,33 @@ def _atom_feed(
         f'bbox="{minlon} {minlat} {maxlon} {maxlat}"/></entry>'
         "</feed>"
     ).encode()
+
+
+def _ortho_index(href: str, rd_bbox: BBox, content: bytes) -> bytes:
+    """Build a minimal basisdata.nl HRL GeoJSON tile index with one feature."""
+    minx, miny, maxx, maxy = rd_bbox
+    ring = [
+        [minx, miny],
+        [minx, maxy],
+        [maxx, maxy],
+        [maxx, miny],
+        [minx, miny],
+    ]
+    document = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "properties": {
+                    "file": href,
+                    "size": len(content),
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                },
+                "geometry": {"type": "Polygon", "coordinates": [ring]},
+            }
+        ],
+    }
+    return json.dumps(document).encode()
 
 
 def _ahn_laz_bytes(tmp_path: Path) -> bytes:
@@ -205,16 +234,15 @@ def _request(site: Path) -> AcquisitionRequest:
 
 
 def _ortho_registry() -> OrthoDatasetRegistry:
-    """Return a single-zone ortho registry at 1 m/px (tiny test mosaic)."""
+    """Return a single-zone ortho registry (tiny test mosaic, 1 m/px sheet)."""
     registry = OrthoDatasetRegistry()
     registry.register(
         OrthoDataset(
-            vintage=Vintage(2023),
-            zone="beeldmateriaal-2023-5cm",
-            resolution_tier="5cm",
-            resolution_m=1.0,
-            feed_url=_ORTHO_FEED_5CM,
-            semantics="Beeldmateriaal RGB 5cm test zone.",
+            vintage=Vintage(2025),
+            zone="basisdata-2025-hrl",
+            resolution_tier="hrl",
+            feed_url=_ORTHO_FEED_HRL,
+            semantics="Beeldmateriaal RGB HRL test zone.",
         )
     )
     return registry
@@ -265,15 +293,10 @@ def test_vertical_slice_assembles_every_deliverable(tmp_path: Path) -> None:
         tool_version="wp14",
     )
 
-    ortho_feed = _atom_feed(
-        _ORTHO_TILE_HREF,
-        _SHEET_RD,
-        licence="https://creativecommons.org/licenses/by/4.0/",
-        author="Beeldmateriaal Nederland (CC BY 4.0)",
-    )
+    ortho_index = _ortho_index(_ORTHO_TILE_HREF, _SHEET_RD, ortho_bytes)
 
     def ortho_http(url: str) -> bytes:
-        return ortho_bytes if url.endswith(".tif") else ortho_feed
+        return ortho_bytes if url.endswith(".tif") else ortho_index
 
     acquire_ortho(
         _request(site),

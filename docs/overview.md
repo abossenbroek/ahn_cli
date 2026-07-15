@@ -66,12 +66,14 @@ distortion from camera tilt and terrain relief has been removed, so every pixel 
 its true map position and the image can be laid directly onto a map or a 3D surface like
 a texture. (A raw aerial photo cannot — buildings lean, scale varies across the frame.)
 
-`ahn_cli` pulls orthophotos from **Beeldmateriaal**, the Dutch national open aerial-
-imagery program (RGB, ~8 cm/pixel nationally, ~5 cm on selected parcels, **CC-BY 4.0** —
-attribution required, recorded automatically in `provenance.json`). The orthophoto is
-what gives the terrain its *look*: `reconcile` and the 3D-tiles export drape these pixels
-as colour/texture over the AHN elevation, so a rooftop is not just a height but the
-actual photographed roof.
+`ahn_cli` pulls orthophotos from **Beeldmateriaal Nederland**, the Dutch national open
+aerial-imagery program, pinned to the 2025 HRL (high resolution, winter/leaf-off) RGB
+vintage (~8 cm/pixel, **CC BY 4.0** — attribution required, recorded automatically in
+`provenance.json`). Tiles are resolved from a GeoJSON tile index published by
+`basisdata.nl` (the "Dataportaal AHN en Beeldmateriaal"), each entry verified against its
+published SHA-256 digest before use. The orthophoto is what gives the terrain its *look*:
+`reconcile` and the 3D-tiles export drape these pixels as colour/texture over the AHN
+elevation, so a rooftop is not just a height but the actual photographed roof.
 
 ### Other layers
 

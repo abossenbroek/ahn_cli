@@ -287,6 +287,21 @@ def test_export_is_byte_identical_on_repeat(tmp_path: Path) -> None:
     assert digest_first == digest_second
 
 
+def test_export_reports_a_single_atomic_tick(tmp_path: Path) -> None:
+    """The single-raster export reports (0, 1) then (1, 1) to progress."""
+    elevation = np.array([[1.5, _NODATA], [3.5, 4.5]], dtype=np.float32)
+    src = tmp_path / "dsm.tif"
+    _write_dsm(src, elevation)
+    out = tmp_path / "out.exr"
+    calls: list[tuple[int, int]] = []
+
+    export_positions(
+        src, out, progress=lambda done, total: calls.append((done, total))
+    )
+
+    assert calls == [(0, 1), (1, 1)]
+
+
 # --------------------------------------------------------------------------
 # Edges: 1x1, non-square
 # --------------------------------------------------------------------------

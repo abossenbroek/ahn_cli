@@ -526,6 +526,50 @@ def test_import_viirs_requires_an_existing_file(tmp_path: Path) -> None:
     assert result.exit_code == 2
 
 
+def test_import_viirs_progress_builds_a_bar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``import-viirs`` drives a tqdm bar over its single-file import."""
+    spy = _CountingBar()
+    monkeypatch.setattr(app, "tqdm", spy)
+    source = tmp_path / "lights.tif"
+    _write_geotiff(source)
+
+    result = CliRunner().invoke(
+        cli, ["import-viirs", "--out", str(tmp_path / "delft"), str(source)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert spy.built == ["import-viirs"]
+
+
+def test_import_viirs_no_progress_skips_the_bar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--no-progress never constructs a tqdm bar for import-viirs."""
+
+    def _boom(**_kwargs: object) -> None:
+        msg = "tqdm must not be constructed when --no-progress is passed"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(app, "tqdm", _boom)
+    source = tmp_path / "lights.tif"
+    _write_geotiff(source)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "import-viirs",
+            "--out",
+            str(tmp_path / "delft"),
+            str(source),
+            "--no-progress",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+
+
 def test_export_positions_writes_exr(tmp_path: Path) -> None:
     """``export-positions`` turns <data>/dsm.tif into a <data>/positions.exr."""
     site = tmp_path / "delft"
@@ -555,6 +599,45 @@ def test_export_positions_missing_dsm_is_a_click_error(
 
     assert result.exit_code == 1
     assert "not readable" in result.output
+
+
+def test_export_positions_progress_builds_a_bar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``export-positions`` drives a tqdm bar over its single-raster export."""
+    spy = _CountingBar()
+    monkeypatch.setattr(app, "tqdm", spy)
+    site = tmp_path / "delft"
+    site.mkdir()
+    _write_geotiff(site / "dsm.tif")
+
+    result = CliRunner().invoke(
+        cli, ["export-positions", "--data", str(site)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert spy.built == ["export-positions"]
+
+
+def test_export_positions_no_progress_skips_the_bar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--no-progress never constructs a tqdm bar for export-positions."""
+
+    def _boom(**_kwargs: object) -> None:
+        msg = "tqdm must not be constructed when --no-progress is passed"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(app, "tqdm", _boom)
+    site = tmp_path / "delft"
+    site.mkdir()
+    _write_geotiff(site / "dsm.tif")
+
+    result = CliRunner().invoke(
+        cli, ["export-positions", "--data", str(site), "--no-progress"]
+    )
+
+    assert result.exit_code == 0, result.output
 
 
 def test_export_positions_requires_an_existing_directory(

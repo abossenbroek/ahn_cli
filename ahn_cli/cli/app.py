@@ -483,17 +483,28 @@ def prep(
     "geotiff",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
 )
-def import_viirs_command(out: Path, geotiff: Path) -> None:
+@click.option(
+    "--progress/--no-progress",
+    "progress",
+    default=True,
+    show_default=True,
+    help="Show a progress bar during the run.",
+)
+def import_viirs_command(out: Path, geotiff: Path, *, progress: bool) -> None:
     """Import an externally-produced VIIRS GeoTIFF into ``<out>/viirs/``.
 
     Verify-opens the raster, records its CRS/extent/bands and a content
     checksum, copies it byte-for-byte into ``<out>/viirs/``, and writes a
     provenance sidecar beside it. No reprojection or resampling is performed.
     """
-    try:
-        result = import_viirs(geotiff, out)
-    except ViirsImportError as exc:
-        raise click.ClickException(str(exc)) from exc
+    with _progress_bar(
+        enabled=progress, unit="file", desc="import-viirs"
+    ) as bar:
+        cb = _tqdm_progress(bar) if bar is not None else None
+        try:
+            result = import_viirs(geotiff, out, progress=cb)
+        except ViirsImportError as exc:
+            raise click.ClickException(str(exc)) from exc
     click.echo(f"Imported VIIRS raster to {result.dest_path}")
 
 
@@ -505,7 +516,14 @@ def import_viirs_command(out: Path, geotiff: Path) -> None:
     type=click.Path(exists=True, file_okay=False, path_type=Path),
     help="Site directory produced by a prior fetch (must contain dsm.tif).",
 )
-def export_positions_command(data: Path) -> None:
+@click.option(
+    "--progress/--no-progress",
+    "progress",
+    default=True,
+    show_default=True,
+    help="Show a progress bar during the run.",
+)
+def export_positions_command(data: Path, *, progress: bool) -> None:
     """Export ``<data>/dsm.tif`` to a deterministic ``<data>/positions.exr``.
 
     Reads the fetched DSM raster and writes a 3-channel float32 OpenEXR position
@@ -513,10 +531,16 @@ def export_positions_command(data: Path) -> None:
     pixels keep their easting/northing and take a Z=0.0 sentinel. The output is
     byte-identical across runs.
     """
-    try:
-        stats = export_positions(data / "dsm.tif", data / "positions.exr")
-    except PositionsExportError as exc:
-        raise click.ClickException(str(exc)) from exc
+    with _progress_bar(
+        enabled=progress, unit="file", desc="export-positions"
+    ) as bar:
+        cb = _tqdm_progress(bar) if bar is not None else None
+        try:
+            stats = export_positions(
+                data / "dsm.tif", data / "positions.exr", progress=cb
+            )
+        except PositionsExportError as exc:
+            raise click.ClickException(str(exc)) from exc
     click.echo(
         f"Wrote {data / 'positions.exr'} "
         f"({stats.width}x{stats.height}, {stats.nodata_pixels} void px)"

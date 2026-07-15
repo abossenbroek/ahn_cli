@@ -42,6 +42,8 @@ from ahn_cli.domain.grid import GeoTransform, PixelGrid
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from ahn_cli.domain import ProgressCallback
+
 # OpenEXR container constants (see the OpenEXR file-layout specification).
 _EXR_MAGIC = 0x01312F76
 _EXR_VERSION = 2  # single-part scanline, short names, no flags set
@@ -168,8 +170,15 @@ def _encode_exr(
     return header + offset_table + bytes(blocks)
 
 
+def _no_op_progress(_done: int, _total: int) -> None:
+    """Report nothing; the default when the caller supplies no callback."""
+
+
 def export_positions(
-    dsm_path: Path, output_path: Path
+    dsm_path: Path,
+    output_path: Path,
+    *,
+    progress: ProgressCallback | None = None,
 ) -> PositionsExportStats:
     """Export ``dsm_path`` to a byte-deterministic ``positions.exr`` at ``output_path``.
 
@@ -181,6 +190,9 @@ def export_positions(
           ``B = elevation``. Void (nodata) pixels keep X/Y and take ``Z = 0.0``.
         - Returns a :class:`PositionsExportStats` with the image dimensions and
           the count of nodata pixels collapsed to the sentinel.
+        - Calls ``progress(0, 1)`` before the export and ``progress(1, 1)``
+          after it completes (a single-raster export); defaults to a no-op
+          so callers that don't care about progress are unaffected.
 
     Invariants:
         - Deterministic: identical input yields byte-identical output, with no
@@ -193,6 +205,8 @@ def export_positions(
           all, or one constant elevation across every valid pixel — a
           placeholder surface, not measured AHN DSM data).
     """
+    report = progress if progress is not None else _no_op_progress
+    report(0, 1)
     try:
         with rasterio.open(str(dsm_path)) as dataset:
             elevation = np.asarray(dataset.read(1), dtype=np.float32)
@@ -230,6 +244,7 @@ def export_positions(
         z[void_mask] = _NODATA_Z
 
     output_path.write_bytes(_encode_exr(easting, northing, z))
+    report(1, 1)
     return PositionsExportStats(
         width=width, height=height, nodata_pixels=nodata_pixels
     )

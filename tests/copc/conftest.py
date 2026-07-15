@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 class WriteLaz(Protocol):
     """Factory fixture protocol: write a LAZ, return its path."""
 
-    def __call__(  # noqa: PLR0913 -- one keyword per optional LAZ dim
+    def __call__(
         self,
         coords: list[tuple[float, float, float]],
         *,
@@ -43,7 +43,7 @@ class WriteLaz(Protocol):
 def write_laz(tmp_path: Path) -> WriteLaz:
     """Return a factory writing a small deterministic LAZ from arrays."""
 
-    def _write(  # noqa: PLR0913 -- one keyword per optional LAZ dim
+    def _write(
         coords: list[tuple[float, float, float]],
         *,
         point_format: int = 7,

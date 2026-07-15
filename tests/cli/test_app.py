@@ -9,8 +9,10 @@ import pytest
 import rasterio
 from click.testing import CliRunner
 from rasterio.transform import from_bounds
+from typing_extensions import Self
 
 from ahn_cli.cli import app, cli
+from ahn_cli.domain import ProgressCallback
 from ahn_cli.fetch.acquisition import SITE_SUBDIRS, AcquisitionRequest
 from ahn_cli.fetch.generation import default_registry
 from ahn_cli.fetch.source import SourceKind
@@ -115,9 +117,16 @@ class _AcquireSpy:
 
     def __init__(self) -> None:
         self.request: AcquisitionRequest | None = None
+        self.progress: ProgressCallback | None = None
 
-    def __call__(self, request: AcquisitionRequest) -> tuple[Path, ...]:
+    def __call__(
+        self,
+        request: AcquisitionRequest,
+        *,
+        progress: ProgressCallback | None = None,
+    ) -> tuple[Path, ...]:
         self.request = request
+        self.progress = progress
         return ()
 
 
@@ -126,9 +135,16 @@ class _OrthoSpy:
 
     def __init__(self) -> None:
         self.requests: list[AcquisitionRequest] = []
+        self.progress: ProgressCallback | None = None
 
-    def __call__(self, request: AcquisitionRequest) -> None:
+    def __call__(
+        self,
+        request: AcquisitionRequest,
+        *,
+        progress: ProgressCallback | None = None,
+    ) -> None:
         self.requests.append(request)
+        self.progress = progress
 
 
 def test_fetch_bbox_dispatches_to_acquire(
@@ -156,9 +172,16 @@ class _DsmSpy:
 
     def __init__(self) -> None:
         self.request: AcquisitionRequest | None = None
+        self.progress: ProgressCallback | None = None
 
-    def __call__(self, request: AcquisitionRequest) -> Path:
+    def __call__(
+        self,
+        request: AcquisitionRequest,
+        *,
+        progress: ProgressCallback | None = None,
+    ) -> Path:
         self.request = request
+        self.progress = progress
         return request.site_dir / "dsm.tif"
 
 
@@ -202,8 +225,12 @@ def test_fetch_dsm_error_is_a_click_error(
     """A DSM acquisition failure becomes a tidy Click error, not a traceback."""
     monkeypatch.setattr(app, "acquire", _AcquireSpy())
 
-    def boom(request: AcquisitionRequest) -> Path:
-        del request
+    def boom(
+        request: AcquisitionRequest,
+        *,
+        progress: ProgressCallback | None = None,
+    ) -> Path:
+        del request, progress
         msg = "no DSM sheet covers the AOI"
         raise app.AcquisitionError(msg)
 
@@ -279,6 +306,108 @@ def test_fetch_source_flag_selects_geotiles(
     assert result.exit_code == 0
     assert spy.request is not None
     assert spy.request.source is SourceKind.GEOTILES
+
+
+class _CountingBar:
+    """A tqdm stand-in recording the ``desc`` of every bar constructed."""
+
+    def __init__(self) -> None:
+        self.n = 0
+        self.total: int | None = None
+        self.built: list[object] = []
+
+    def __call__(self, **kwargs: object) -> Self:
+        self.built.append(kwargs.get("desc"))
+        return self
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_exc_info: object) -> None:
+        return None
+
+    def refresh(self) -> None:
+        return None
+
+
+def test_fetch_progress_builds_one_bar_per_requested_step(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One tqdm bar is constructed per business step actually requested."""
+    spy = _CountingBar()
+    monkeypatch.setattr(app, "tqdm", spy)
+    monkeypatch.setattr(app, "acquire", _AcquireSpy())
+    monkeypatch.setattr(app, "fetch_dsm", _DsmSpy())
+    monkeypatch.setattr(app, "acquire_ortho", _OrthoSpy())
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "fetch",
+            "--out",
+            str(tmp_path / "s"),
+            "--bbox",
+            "0,0,1,1",
+            "--dsm",
+            "--ortho",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert spy.built == ["fetch (ahn)", "fetch (dsm)", "fetch (ortho)"]
+
+
+def test_fetch_progress_builds_only_the_ahn_bar_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without --dsm/--ortho, only the AHN tile bar is constructed."""
+    spy = _CountingBar()
+    monkeypatch.setattr(app, "tqdm", spy)
+    monkeypatch.setattr(app, "acquire", _AcquireSpy())
+
+    result = CliRunner().invoke(
+        cli, ["fetch", "--out", str(tmp_path / "s"), "--bbox", "0,0,1,1"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert spy.built == ["fetch (ahn)"]
+
+
+def test_fetch_no_progress_skips_all_bars(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--no-progress builds zero bars and passes progress=None through."""
+
+    def _boom(**_kwargs: object) -> None:
+        msg = "tqdm must not be constructed when --no-progress is passed"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(app, "tqdm", _boom)
+    acquire_spy = _AcquireSpy()
+    dsm_spy = _DsmSpy()
+    ortho_spy = _OrthoSpy()
+    monkeypatch.setattr(app, "acquire", acquire_spy)
+    monkeypatch.setattr(app, "fetch_dsm", dsm_spy)
+    monkeypatch.setattr(app, "acquire_ortho", ortho_spy)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "fetch",
+            "--out",
+            str(tmp_path / "s"),
+            "--bbox",
+            "0,0,1,1",
+            "--dsm",
+            "--ortho",
+            "--no-progress",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert acquire_spy.progress is None
+    assert dsm_spy.progress is None
+    assert ortho_spy.progress is None
 
 
 def test_fetch_rejects_unknown_source(tmp_path: Path) -> None:

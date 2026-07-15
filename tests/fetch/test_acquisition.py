@@ -609,6 +609,24 @@ def test_acquire_downloads_covering_tiles_from_a_geojson(
     assert [p.name for p in written] == ["C_37EN1.LAZ", "C_37EN2.LAZ"]
 
 
+def test_acquire_reports_progress_per_tile(tmp_path: Path) -> None:
+    """Each written tile reports (tiles_done, total_tiles) to progress."""
+    site = tmp_path / "delft"
+    path = _write_geojson(tmp_path, _polygon(*_COVERED_WGS84))
+    http_get = _Recorder()
+    calls: list[tuple[int, int]] = []
+
+    acquire(
+        _geojson_request(site, path),
+        http_get=http_get,
+        now=_fixed_now,
+        tool_version="v",
+        progress=lambda done, total: calls.append((done, total)),
+    )
+
+    assert calls == [(1, 2), (2, 2)]
+
+
 def test_acquire_reports_when_no_generation_covers_the_aoi(
     tmp_path: Path,
 ) -> None:

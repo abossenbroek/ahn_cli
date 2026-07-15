@@ -34,7 +34,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from ahn_cli.domain import BBox
+    from ahn_cli.domain import BBox, ProgressCallback
 
 _CHUNK_SIZE = 1 << 20  # 1 MiB: bound peak memory when hashing large rasters.
 _UNIFORMITY_SAMPLE = 512  # decimated read size for the placeholder guard
@@ -179,11 +179,16 @@ def inspect_viirs(source: Path) -> ViirsRaster:
     )
 
 
+def _no_op_progress(_done: int, _total: int) -> None:
+    """Report nothing; the default when the caller supplies no callback."""
+
+
 def import_viirs(
     source: Path,
     site_dir: Path,
     *,
     clock: Callable[[], datetime] | None = None,
+    progress: ProgressCallback | None = None,
 ) -> ViirsImport:
     """Import ``source`` into ``site_dir/viirs/`` and write its provenance.
 
@@ -195,10 +200,16 @@ def import_viirs(
           identical.
         - ``clock`` supplies the download-window timestamps; it defaults to a
           UTC wall-clock and is injectable for deterministic tests.
+        - Calls ``progress(0, 1)`` before the copy and ``progress(1, 1)``
+          after it completes (there is exactly one file to import); defaults
+          to a no-op so callers that don't care about progress are
+          unaffected.
 
     Failure modes:
         - :class:`ViirsImportError` if ``source`` is not a readable raster.
     """
+    report = progress if progress is not None else _no_op_progress
+    report(0, 1)
     tick = _utcnow if clock is None else clock
     raster = inspect_viirs(source)
 
@@ -230,6 +241,7 @@ def import_viirs(
         ),
     )
     write_provenance(provenance, provenance_path)
+    report(1, 1)
     return ViirsImport(
         dest_path=dest_path,
         provenance_path=provenance_path,

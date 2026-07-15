@@ -236,6 +236,23 @@ def test_import_copies_bytes_identically(tmp_path: Path) -> None:
     assert result.dest_path.read_bytes() == source.read_bytes()
 
 
+def test_import_reports_a_single_atomic_tick(tmp_path: Path) -> None:
+    """The single-file import reports (0, 1) then (1, 1) to progress."""
+    source = tmp_path / "lights.tif"
+    _write_geotiff(source)
+    site = tmp_path / "delft"
+    calls: list[tuple[int, int]] = []
+
+    import_viirs(
+        source,
+        site,
+        clock=_fixed_clock((_START, _FINISH)),
+        progress=lambda done, total: calls.append((done, total)),
+    )
+
+    assert calls == [(0, 1), (1, 1)]
+
+
 def test_import_writes_a_complete_provenance_sidecar(tmp_path: Path) -> None:
     """The sidecar records product, checksums, extent and band/source keys."""
     source = tmp_path / "lights.tif"

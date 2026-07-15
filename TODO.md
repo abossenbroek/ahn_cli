@@ -190,6 +190,14 @@ Don't build repair logic; flag it if later asked for.
 
 ## Orthophoto Fetcher (Beeldmateriaal, D20 Vintage Logic)
 
+**Update (2026-07):** implemented and since revised — see `ahn_cli/fetch/ortho.py`.
+The Beeldmateriaal open-data ATOM feed this section originally specified
+(`opendata.beeldmateriaal.nl`) was retired; tiles are now resolved from a
+GeoJSON tile index published by `basisdata.nl`, pinned to the 2025 HRL
+vintage, with each download verified against the index's SHA-256 digest.
+Mosaicking uses `rasterio.merge` (never `gdalbuildvrt`, contrary to the
+Requirement below). The rest of this section is kept for historical context.
+
 Zero orthophoto code exists anywhere in the repo today. This is a full new
 module, built into the same `fetch`/`prep` CLI as AHN — not a separate repo.
 

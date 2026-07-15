@@ -21,7 +21,7 @@ make update
 # Run all tests (network-free; 100% branch coverage required on non-legacy code)
 make test
 
-# Run the nightly suite (hits real PDOK/Beeldmateriaal endpoints; not run by default)
+# Run the nightly suite (hits real PDOK endpoints; not run by default)
 make test-nightly
 
 # Run a specific test file
@@ -127,7 +127,7 @@ AHN CLI acquires and transforms Dutch elevation data (AHN — Actueel Hoogtebest
    - `geotiles_source.py` — fallback distribution source (GeoTiles.nl).
    - `generation.py` — the AHN generation registry backing `--ahn` (including `auto` probing).
    - `dsm.py` — windowed COG fetch + clip to `dsm.tif`.
-   - `ortho.py` — Beeldmateriaal orthophoto fetch (mosaic + clip + CC-BY provenance).
+   - `ortho.py` — Beeldmateriaal Nederland orthophoto fetch: resolves tiles from a GeoJSON tile index published by `basisdata.nl` (pinned to the 2025 HRL vintage; the Beeldmateriaal open-data ATOM feed this module used before is retired), verifies each download's SHA-256 against the index, then mosaics + clips (CC BY 4.0 provenance).
    - `viirs.py` — imports an externally-produced VIIRS GeoTIFF into `<site>/viirs/`.
    - `source.py` — shared `FetchSource` value objects and EPSG:28992 ↔ 4326 helpers.
 
@@ -209,6 +209,7 @@ AHN CLI acquires and transforms Dutch elevation data (AHN — Actueel Hoogtebest
   - `fetch/pdok.py` — PDOK INSPIRE ATOM base (`https://service.pdok.nl/rws/ahn/atom/`) with per-generation feed URLs.
   - `fetch/geotiles_source.py` — GeoTiles.nl AHN4/AHN5 bases (`https://geotiles.citg.tudelft.nl/AHN{4,5}_T/`), the fallback source.
   - `fetch/generation.py` — a GeoTiles.nl AHN4 endpoint used by generation auto-probing.
+  - `fetch/ortho.py` — a pinned `basisdata.nl` HRL GeoJSON tile index URL (2025 vintage; `opendata.beeldmateriaal.nl`'s ATOM feed this module used before is retired).
 
 ### Coordinate Systems
 
@@ -218,7 +219,7 @@ The tool works primarily in the Dutch national grid, EPSG:28992 (RD New / Amersf
 
 Tests are organized to mirror the source layout:
 - `tests/domain/`, `tests/fetch/`, `tests/prep/`, `tests/reconcile/`, `tests/copc/`, `tests/tiles3d/`, `tests/provenance/`, `tests/cache/`, `tests/cli/` — one directory per bounded context / adapter, matching `ahn_cli/`.
-- `tests/nightly/` — live checks against the real PDOK/Beeldmateriaal endpoints; marked `nightly`, excluded from `make test` by default (`addopts = "-m 'not nightly'"`), run explicitly via `make test-nightly`.
+- `tests/nightly/` — live checks against the real PDOK endpoints (`tests/nightly/test_portal_contract.py`; it does not exercise the Beeldmateriaal/basisdata.nl orthophoto feed); marked `nightly`, excluded from `make test` by default (`addopts = "-m 'not nightly'"`), run explicitly via `make test-nightly`.
 - `tests/test_bounded_contexts.py` — contract test asserting the `fetch`/`prep` docstrings and `domain.__all__` match the bounded-context framing described above.
 - `tests/test_integration_vertical_slice.py` — end-to-end acceptance test for the full fetch → prep pipeline.
 - `tests/fetcher/`, `tests/manipulator/`, and a handful of loose `tests/test_*.py` files (`test_pipeline.py`, `test_rasterize.py`, `test_validator.py`, `test_geojson_integration.py`, `test_extra_bytes_harmonization.py`) — grandfathered tests for the legacy modules listed above.

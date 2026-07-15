@@ -1,14 +1,16 @@
-"""Tests for the Beeldmateriaal orthophoto fetcher (WP8).
+"""Tests for the Beeldmateriaal orthophoto fetcher.
 
 These build synthetic overlapping RGB GeoTIFF tiles in ``tmp_path`` with rasterio
-and a synthetic INSPIRE-ATOM feed in-memory (no network), then assert:
+and a synthetic basisdata.nl HRL GeoJSON tile index in-memory (no network), then
+assert:
 
-- vintage/zone selection: 5cm preferred, 8cm fallback, none-covered failure;
+- dataset selection: the pinned HRL zone, coverage-probed, none-covered failure;
 - the mosaic+clip is overlap-free (no source column contributes twice) and its
   seam is bit-identical to a single-image reference;
 - downloads are cache-through (a second fetch performs zero network calls);
-- provenance completeness (CC-BY attribution, vintage, zone, resolution tier,
-  extent, checksums);
+- each download's SHA-256 is verified against the index's published digest;
+- provenance completeness (CC BY 4.0 attribution, vintage, zone, resolution
+  tier, extent, checksums);
 - expected failures funnel to :class:`AcquisitionError`;
 - the mosaic pixel array is byte-deterministic across two runs.
 """
@@ -16,6 +18,7 @@ and a synthetic INSPIRE-ATOM feed in-memory (no network), then assert:
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import datetime, timezone
 from importlib.metadata import version
 from typing import TYPE_CHECKING
@@ -39,6 +42,7 @@ from ahn_cli.fetch.ortho import (
     OrthoDataset,
     OrthoDatasetRegistry,
     OrthoFeedError,
+    OrthoTile,
     OrthoUnavailableError,
     acquire_ortho,
     default_ortho_registry,
@@ -46,7 +50,6 @@ from ahn_cli.fetch.ortho import (
     resolve_ortho_tiles,
     select_ortho_dataset,
 )
-from ahn_cli.fetch.source import to_wgs84
 from ahn_cli.provenance import read_provenance
 
 if TYPE_CHECKING:
@@ -61,9 +64,9 @@ _HEIGHT = 3
 _START = datetime(2024, 5, 1, 9, 0, tzinfo=timezone.utc)
 _FINISH = datetime(2024, 5, 1, 9, 0, 30, tzinfo=timezone.utc)
 
-_FEED_5CM = "https://opendata.beeldmateriaal.example/2023/5cm/atom.xml"
-_FEED_8CM = "https://opendata.beeldmateriaal.example/2023/8cm/atom.xml"
-_TILE_BASE = "https://opendata.beeldmateriaal.example/2023/8cm/"
+_FEED_HRL = "https://basisdata.nl.example/links/nationaal/Nederland/BM_HRL2025O_RGB_TIF.json"
+_FEED_OTHER = "https://basisdata.nl.example/links/nationaal/Nederland/BM_LRL2025O_RGB.json"
+_TILE_BASE = "https://fsn1.your-objectstorage.example/hwh-ortho/2025/"
 
 
 def _write_rgb_tile(path: Path, rd_bbox: BBox, base_col: int) -> None:
@@ -95,29 +98,51 @@ def _write_rgb_tile(path: Path, rd_bbox: BBox, base_col: int) -> None:
         dst.write(pixels)
 
 
-def _atom_feed(tiles: tuple[tuple[str, BBox], ...]) -> bytes:
-    """Build a minimal INSPIRE-ATOM feed (CC-BY) with one section link per tile.
+def _feature(
+    tile_id: str, rd_bbox: BBox, content: bytes, *, suffix: str = ".tif"
+) -> dict[str, object]:
+    """Build one GeoJSON feature for ``tile_id`` with a real sha256 digest."""
+    minx, miny, maxx, maxy = rd_bbox
+    ring = [
+        [minx, miny],
+        [minx, maxy],
+        [maxx, maxy],
+        [maxx, miny],
+        [minx, miny],
+    ]
+    return {
+        "type": "Feature",
+        "properties": {
+            "file": f"{_TILE_BASE}{tile_id}{suffix}",
+            "size": len(content),
+            "sha256": hashlib.sha256(content).hexdigest(),
+        },
+        "geometry": {"type": "Polygon", "coordinates": [ring]},
+    }
 
-    Each tile's WGS84 ``bbox`` attribute is derived from its EPSG:28992 extent so
-    the covering test intersects a real Dutch-grid AOI.
+
+def _hrl_index(tiles: tuple[tuple[str, BBox, bytes], ...]) -> bytes:
+    """Build a minimal basisdata.nl HRL GeoJSON tile index for ``tiles``.
+
+    Also emits a ``.tif.aux.xml`` sidecar feature per tile, matching the real
+    index's shape, to exercise the non-``.tif`` filtering branch.
     """
-    links: list[str] = []
-    for tile_id, rd_bbox in tiles:
-        minlon, minlat, maxlon, maxlat = to_wgs84(rd_bbox)
-        href = f"{_TILE_BASE}{tile_id}.tif"
-        links.append(
-            f'<link rel="section" href="{href}" '
-            f'bbox="{minlon} {minlat} {maxlon} {maxlat}"/>'
+    features: list[dict[str, object]] = []
+    for tile_id, rd_bbox, content in tiles:
+        features.append(_feature(tile_id, rd_bbox, content))
+        features.append(
+            _feature(tile_id, rd_bbox, b"sidecar", suffix=".tif.aux.xml")
         )
-    body = "".join(links)
-    return (
-        '<?xml version="1.0" encoding="UTF-8"?>'
-        '<feed xmlns="http://www.w3.org/2005/Atom">'
-        "<rights>https://creativecommons.org/licenses/by/4.0/</rights>"
-        "<author><name>Beeldmateriaal Nederland (CC BY 4.0)</name></author>"
-        f"{body}"
-        "</feed>"
-    ).encode()
+    document = {
+        "type": "FeatureCollection",
+        "name": "BM_HRL2025O_RGB_TIF",
+        "crs": {
+            "type": "name",
+            "properties": {"name": "urn:ogc:def:crs:EPSG::28992"},
+        },
+        "features": features,
+    }
+    return json.dumps(document).encode()
 
 
 class _RecordingHttp:
@@ -159,7 +184,7 @@ def _two_overlapping_tiles() -> tuple[tuple[str, BBox], ...]:
     """Two edge-overlapping tiles covering the AOI, sharing one global column."""
     tile_a: BBox = (194000.0, 443000.0, 194004.0, 443003.0)
     tile_b: BBox = (194003.0, 443000.0, 194007.0, 443003.0)
-    return (("kb_00", tile_a), ("kb_01", tile_b))
+    return (("2025_kb_00_hrl", tile_a), ("2025_kb_01_hrl", tile_b))
 
 
 def _write_tiles(tiles_dir: Path) -> dict[str, bytes]:
@@ -211,14 +236,13 @@ def _dataset(
     feed_url: str,
     tier: str,
     *,
-    vintage: int = 2023,
+    vintage: int = 2025,
 ) -> OrthoDataset:
-    """Build a test OrthoDataset pinned to ``feed_url`` at 1m/px (test scale)."""
+    """Build a test OrthoDataset pinned to ``feed_url``."""
     return OrthoDataset(
         vintage=Vintage(vintage),
-        zone=f"beeldmateriaal-{tier}",
+        zone=f"basisdata-{vintage}-{tier}",
         resolution_tier=tier,
-        resolution_m=_RES,
         feed_url=feed_url,
         semantics=f"Beeldmateriaal RGB {tier} orthophoto, {vintage}.",
     )
@@ -256,43 +280,57 @@ def test_ortho_dataset_rejects_blank_feed_url() -> None:
     """A dataset with a blank feed URL cannot be constructed."""
     with pytest.raises(ValueError, match="feed_url"):
         OrthoDataset(
-            vintage=Vintage(2023),
+            vintage=Vintage(2025),
             zone="z",
-            resolution_tier="5cm",
-            resolution_m=0.05,
+            resolution_tier="hrl",
             feed_url="   ",
             semantics="s",
         )
 
 
-def test_ortho_dataset_rejects_non_positive_resolution() -> None:
-    """A dataset with a non-positive pixel size cannot be constructed."""
-    with pytest.raises(ValueError, match="resolution_m"):
-        OrthoDataset(
-            vintage=Vintage(2023),
-            zone="z",
-            resolution_tier="5cm",
-            resolution_m=0.0,
-            feed_url=_FEED_5CM,
-            semantics="s",
+def test_ortho_tile_rejects_blank_tile_id() -> None:
+    """An OrthoTile with a blank tile_id cannot be constructed."""
+    with pytest.raises(ValueError, match="tile_id"):
+        OrthoTile(
+            tile_id="   ",
+            bbox=_AOI,
+            download_url=f"{_TILE_BASE}a.tif",
+            sha256="a" * 64,
+        )
+
+
+def test_ortho_tile_rejects_blank_download_url() -> None:
+    """An OrthoTile with a blank download_url cannot be constructed."""
+    with pytest.raises(ValueError, match="download_url"):
+        OrthoTile(tile_id="t", bbox=_AOI, download_url="   ", sha256="a" * 64)
+
+
+def test_ortho_tile_rejects_blank_sha256() -> None:
+    """An OrthoTile with a blank sha256 cannot be constructed."""
+    with pytest.raises(ValueError, match="sha256"):
+        OrthoTile(
+            tile_id="t",
+            bbox=_AOI,
+            download_url=f"{_TILE_BASE}a.tif",
+            sha256="   ",
         )
 
 
 def test_registry_rejects_duplicate_resolution_tier() -> None:
     """Registering two datasets at the same tier is a wiring error."""
-    registry = _registry(_dataset(_FEED_5CM, "5cm"))
-    with pytest.raises(ValueError, match="5cm"):
-        registry.register(_dataset(_FEED_8CM, "5cm"))
+    registry = _registry(_dataset(_FEED_HRL, "hrl"))
+    with pytest.raises(ValueError, match="hrl"):
+        registry.register(_dataset(_FEED_OTHER, "hrl"))
 
 
-def test_default_registry_prefers_5cm_then_8cm() -> None:
-    """The default registry is pinned, preference-ordered 5cm before 8cm."""
+def test_default_registry_is_pinned_to_hrl_2025() -> None:
+    """The default registry is pinned to the single 2025 HRL zone."""
     tiers = [dataset.resolution_tier for dataset in default_ortho_registry()]
-    assert tiers == ["5cm", "8cm"]
+    assert tiers == ["hrl"]
     for dataset in default_ortho_registry():
         assert dataset.feed_url.strip()
-        assert dataset.resolution_m > 0
         assert dataset.zone.strip()
+        assert dataset.vintage == Vintage(2025)
 
 
 # --------------------------------------------------------------------------- #
@@ -300,46 +338,52 @@ def test_default_registry_prefers_5cm_then_8cm() -> None:
 # --------------------------------------------------------------------------- #
 
 
-def test_select_prefers_the_5cm_zone_when_it_covers(tmp_path: Path) -> None:
-    """When the 5cm feed covers the AOI it is chosen over the 8cm fallback."""
+def test_select_prefers_the_hrl_zone_when_it_covers(tmp_path: Path) -> None:
+    """When the pinned HRL feed covers the AOI it is chosen."""
     responses = _write_tiles(tmp_path / "tiles")
-    covering = _atom_feed(_two_overlapping_tiles())
+    covering = _hrl_index(
+        tuple(
+            (tid, bbox, responses[f"{_TILE_BASE}{tid}.tif"])
+            for tid, bbox in _two_overlapping_tiles()
+        )
+    )
+    http = _RecordingHttp({**responses, _FEED_HRL: covering})
+    registry = _registry(_dataset(_FEED_HRL, "hrl"))
+
+    dataset = select_ortho_dataset(_AOI, registry, http)
+
+    assert dataset.resolution_tier == "hrl"
+
+
+def test_select_falls_back_to_second_zone_when_first_uncovered(
+    tmp_path: Path,
+) -> None:
+    """An empty first feed makes selection fall back to the next zone."""
+    responses = _write_tiles(tmp_path / "tiles")
+    empty = _hrl_index(())
+    covering = _hrl_index(
+        tuple(
+            (tid, bbox, responses[f"{_TILE_BASE}{tid}.tif"])
+            for tid, bbox in _two_overlapping_tiles()
+        )
+    )
     http = _RecordingHttp(
-        {**responses, _FEED_5CM: covering, _FEED_8CM: covering}
+        {**responses, _FEED_HRL: empty, _FEED_OTHER: covering}
     )
     registry = _registry(
-        _dataset(_FEED_5CM, "5cm"), _dataset(_FEED_8CM, "8cm")
+        _dataset(_FEED_HRL, "hrl"), _dataset(_FEED_OTHER, "lrl")
     )
 
     dataset = select_ortho_dataset(_AOI, registry, http)
 
-    assert dataset.resolution_tier == "5cm"
-
-
-def test_select_falls_back_to_8cm_when_5cm_uncovered(tmp_path: Path) -> None:
-    """An empty 5cm feed makes selection fall back to the 8cm zone."""
-    responses = _write_tiles(tmp_path / "tiles")
-    empty = _atom_feed(())
-    covering = _atom_feed(_two_overlapping_tiles())
-    http = _RecordingHttp(
-        {**responses, _FEED_5CM: empty, _FEED_8CM: covering}
-    )
-    registry = _registry(
-        _dataset(_FEED_5CM, "5cm"), _dataset(_FEED_8CM, "8cm")
-    )
-
-    dataset = select_ortho_dataset(_AOI, registry, http)
-
-    assert dataset.resolution_tier == "8cm"
+    assert dataset.resolution_tier == "lrl"
 
 
 def test_select_raises_when_no_zone_covers() -> None:
     """When no zone covers the AOI, selection raises OrthoUnavailableError."""
-    empty = _atom_feed(())
-    http = _RecordingHttp({_FEED_5CM: empty, _FEED_8CM: empty})
-    registry = _registry(
-        _dataset(_FEED_5CM, "5cm"), _dataset(_FEED_8CM, "8cm")
-    )
+    empty = _hrl_index(())
+    http = _RecordingHttp({_FEED_HRL: empty})
+    registry = _registry(_dataset(_FEED_HRL, "hrl"))
 
     with pytest.raises(OrthoUnavailableError):
         select_ortho_dataset(_AOI, registry, http)
@@ -348,7 +392,7 @@ def test_select_raises_when_no_zone_covers() -> None:
 def test_select_rejects_a_degenerate_aoi() -> None:
     """A degenerate AOI is rejected before any probing."""
     http = _RecordingHttp({})
-    registry = _registry(_dataset(_FEED_5CM, "5cm"))
+    registry = _registry(_dataset(_FEED_HRL, "hrl"))
     with pytest.raises(ValueError, match=r"bbox|min"):
         select_ortho_dataset((1.0, 1.0, 1.0, 2.0), registry, http)
 
@@ -356,27 +400,244 @@ def test_select_rejects_a_degenerate_aoi() -> None:
 def test_resolve_wraps_a_malformed_feed(tmp_path: Path) -> None:
     """A malformed feed surfaces as the module's OrthoFeedError."""
     _write_tiles(tmp_path / "tiles")
-    http = _RecordingHttp({_FEED_5CM: b"not xml at all"})
-    dataset = _dataset(_FEED_5CM, "5cm")
+    http = _RecordingHttp({_FEED_HRL: b"not json at all"})
+    dataset = _dataset(_FEED_HRL, "hrl")
 
     with pytest.raises(OrthoFeedError):
         resolve_ortho_tiles(dataset, _AOI, http)
 
 
+def test_resolve_rejects_a_feed_that_is_not_a_feature_collection(
+    tmp_path: Path,
+) -> None:
+    """A well-formed JSON document that isn't a FeatureCollection is rejected."""
+    _write_tiles(tmp_path / "tiles")
+    http = _RecordingHttp({_FEED_HRL: json.dumps({"type": "Nope"}).encode()})
+    dataset = _dataset(_FEED_HRL, "hrl")
+
+    with pytest.raises(OrthoFeedError, match="FeatureCollection"):
+        resolve_ortho_tiles(dataset, _AOI, http)
+
+
+def test_resolve_rejects_a_covering_entry_missing_sha256(
+    tmp_path: Path,
+) -> None:
+    """A .tif entry covering the AOI with no published sha256 is a feed error."""
+    _write_tiles(tmp_path / "tiles")
+    document = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "properties": {
+                    "file": f"{_TILE_BASE}bad.tif",
+                    "size": 1,
+                    "sha256": None,
+                },
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [
+                        [
+                            [194000.0, 443000.0],
+                            [194000.0, 443001.0],
+                            [194001.0, 443001.0],
+                            [194001.0, 443000.0],
+                            [194000.0, 443000.0],
+                        ]
+                    ],
+                },
+            }
+        ],
+    }
+    http = _RecordingHttp({_FEED_HRL: json.dumps(document).encode()})
+    dataset = _dataset(_FEED_HRL, "hrl")
+
+    with pytest.raises(OrthoFeedError, match="sha256"):
+        resolve_ortho_tiles(dataset, _AOI, http)
+
+
+def test_resolve_ignores_a_non_covering_entry_missing_sha256(
+    tmp_path: Path,
+) -> None:
+    """A .tif entry outside the AOI with no sha256 does not block the fetch.
+
+    The real nationwide index has a handful of rows with a null sha256, none
+    of which are anywhere near a given site's AOI -- those rows must not
+    block fetches for unrelated sites.
+    """
+    responses = _write_tiles(tmp_path / "tiles")
+    covering = tuple(
+        (tid, bbox, responses[f"{_TILE_BASE}{tid}.tif"])
+        for tid, bbox in _two_overlapping_tiles()
+    )
+    far_away_no_sha256 = {
+        "type": "Feature",
+        "properties": {
+            "file": f"{_TILE_BASE}far_away.tif",
+            "size": 1,
+            "sha256": None,
+        },
+        "geometry": {
+            "type": "Polygon",
+            "coordinates": [
+                [
+                    [500000.0, 500000.0],
+                    [500000.0, 501000.0],
+                    [501000.0, 501000.0],
+                    [501000.0, 500000.0],
+                    [500000.0, 500000.0],
+                ]
+            ],
+        },
+    }
+    document = json.loads(_hrl_index(covering))
+    document["features"].append(far_away_no_sha256)
+    http = _RecordingHttp(
+        {**responses, _FEED_HRL: json.dumps(document).encode()}
+    )
+    dataset = _dataset(_FEED_HRL, "hrl")
+
+    resolved = resolve_ortho_tiles(dataset, _AOI, http)
+
+    assert [tile.tile_id for tile in resolved.tiles] == [
+        "2025_kb_00_hrl",
+        "2025_kb_01_hrl",
+    ]
+
+
+def test_resolve_rejects_a_feed_that_is_not_a_json_object() -> None:
+    """Well-formed JSON that isn't an object (e.g. an array) is rejected."""
+    http = _RecordingHttp({_FEED_HRL: json.dumps([1, 2, 3]).encode()})
+    dataset = _dataset(_FEED_HRL, "hrl")
+
+    with pytest.raises(OrthoFeedError, match="FeatureCollection"):
+        resolve_ortho_tiles(dataset, _AOI, http)
+
+
+def test_resolve_rejects_a_feature_collection_missing_features() -> None:
+    """A FeatureCollection with no 'features' array is a feed error."""
+    document = {"type": "FeatureCollection"}
+    http = _RecordingHttp({_FEED_HRL: json.dumps(document).encode()})
+    dataset = _dataset(_FEED_HRL, "hrl")
+
+    with pytest.raises(OrthoFeedError, match="features"):
+        resolve_ortho_tiles(dataset, _AOI, http)
+
+
+def test_resolve_skips_a_feature_that_is_not_an_object() -> None:
+    """A features entry that is not a JSON object is silently excluded.
+
+    The nationwide index occasionally has anomalous rows; an unusable row is
+    tolerated (not raised) unless it turns out to cover the requested AOI.
+    """
+    document = {"type": "FeatureCollection", "features": ["not-an-object"]}
+    http = _RecordingHttp({_FEED_HRL: json.dumps(document).encode()})
+    dataset = _dataset(_FEED_HRL, "hrl")
+
+    resolved = resolve_ortho_tiles(dataset, _AOI, http)
+
+    assert resolved.tiles == ()
+
+
+def test_resolve_skips_a_feature_missing_properties() -> None:
+    """A feature with no properties object is silently excluded."""
+    document = {
+        "type": "FeatureCollection",
+        "features": [{"type": "Feature", "geometry": None}],
+    }
+    http = _RecordingHttp({_FEED_HRL: json.dumps(document).encode()})
+    dataset = _dataset(_FEED_HRL, "hrl")
+
+    resolved = resolve_ortho_tiles(dataset, _AOI, http)
+
+    assert resolved.tiles == ()
+
+
+def test_resolve_skips_a_feature_missing_file() -> None:
+    """A feature whose properties has no 'file' entry is silently excluded."""
+    document = {
+        "type": "FeatureCollection",
+        "features": [{"type": "Feature", "properties": {"size": 1}}],
+    }
+    http = _RecordingHttp({_FEED_HRL: json.dumps(document).encode()})
+    dataset = _dataset(_FEED_HRL, "hrl")
+
+    resolved = resolve_ortho_tiles(dataset, _AOI, http)
+
+    assert resolved.tiles == ()
+
+
+def test_resolve_skips_a_feature_missing_geometry() -> None:
+    """A .tif feature with no geometry object is silently excluded.
+
+    Without a geometry, coverage can't be determined, so the entry is
+    dropped rather than assumed relevant.
+    """
+    document = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "properties": {
+                    "file": f"{_TILE_BASE}bad.tif",
+                    "sha256": "a" * 64,
+                },
+            }
+        ],
+    }
+    http = _RecordingHttp({_FEED_HRL: json.dumps(document).encode()})
+    dataset = _dataset(_FEED_HRL, "hrl")
+
+    resolved = resolve_ortho_tiles(dataset, _AOI, http)
+
+    assert resolved.tiles == ()
+
+
+def test_resolve_skips_a_geometry_with_no_ring_coordinates() -> None:
+    """A .tif feature whose geometry has no coordinates is silently excluded."""
+    document = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "properties": {
+                    "file": f"{_TILE_BASE}bad.tif",
+                    "sha256": "a" * 64,
+                },
+                "geometry": {"type": "Polygon"},
+            }
+        ],
+    }
+    http = _RecordingHttp({_FEED_HRL: json.dumps(document).encode()})
+    dataset = _dataset(_FEED_HRL, "hrl")
+
+    resolved = resolve_ortho_tiles(dataset, _AOI, http)
+
+    assert resolved.tiles == ()
+
+
 def test_resolve_returns_cc_by_terms_and_ordered_tiles(
     tmp_path: Path,
 ) -> None:
-    """Resolution reports the feed's CC-BY terms and id-ordered RD tiles."""
+    """Resolution reports the pinned CC BY 4.0 terms and id-ordered RD tiles."""
     responses = _write_tiles(tmp_path / "tiles")
-    covering = _atom_feed(_two_overlapping_tiles())
-    http = _RecordingHttp({**responses, _FEED_5CM: covering})
-    dataset = _dataset(_FEED_5CM, "5cm")
+    covering = _hrl_index(
+        tuple(
+            (tid, bbox, responses[f"{_TILE_BASE}{tid}.tif"])
+            for tid, bbox in _two_overlapping_tiles()
+        )
+    )
+    http = _RecordingHttp({**responses, _FEED_HRL: covering})
+    dataset = _dataset(_FEED_HRL, "hrl")
 
     resolved = resolve_ortho_tiles(dataset, _AOI, http)
 
     assert "by/4.0" in resolved.licence
     assert resolved.attribution.strip()
-    assert [tile.tile_id for tile in resolved.tiles] == ["kb_00", "kb_01"]
+    assert [tile.tile_id for tile in resolved.tiles] == [
+        "2025_kb_00_hrl",
+        "2025_kb_01_hrl",
+    ]
 
 
 # --------------------------------------------------------------------------- #
@@ -393,7 +654,7 @@ def test_mosaic_is_overlap_free_and_seam_matches_reference(
     tile_paths = tuple(sorted(tiles_dir.glob("*.tif")))
     out = tmp_path / "ortho.tif"
 
-    mosaic = mosaic_and_clip(tile_paths, _AOI, _RES, out)
+    mosaic = mosaic_and_clip(tile_paths, _AOI, out)
 
     reference = tmp_path / "reference.tif"
     _write_rgb_tile(reference, _AOI, base_col=0)
@@ -404,6 +665,7 @@ def test_mosaic_is_overlap_free_and_seam_matches_reference(
     # (a) exact-cover dimensions: bbox area / px^2.
     assert mosaic.width == width
     assert mosaic.height == _HEIGHT
+    assert mosaic.resolution_m == _RES
     # (b) no column contributes twice: total < sum of per-tile columns (4 + 4).
     per_tile_columns = 4 + 4
     assert width < per_tile_columns
@@ -434,7 +696,7 @@ def test_mosaic_rejects_a_uniform_single_colour(tmp_path: Path) -> None:
         dst.write(pixels)
 
     with pytest.raises(AcquisitionError, match="uniform colour"):
-        mosaic_and_clip((path,), _AOI, _RES, tmp_path / "ortho.tif")
+        mosaic_and_clip((path,), _AOI, tmp_path / "ortho.tif")
 
 
 def test_mosaic_pixel_checksum_is_deterministic(tmp_path: Path) -> None:
@@ -443,8 +705,8 @@ def test_mosaic_pixel_checksum_is_deterministic(tmp_path: Path) -> None:
     _write_tiles(tiles_dir)
     tile_paths = tuple(sorted(tiles_dir.glob("*.tif")))
 
-    first = mosaic_and_clip(tile_paths, _AOI, _RES, tmp_path / "a.tif")
-    second = mosaic_and_clip(tile_paths, _AOI, _RES, tmp_path / "b.tif")
+    first = mosaic_and_clip(tile_paths, _AOI, tmp_path / "a.tif")
+    second = mosaic_and_clip(tile_paths, _AOI, tmp_path / "b.tif")
 
     assert first.pixel_checksum == second.pixel_checksum
     assert first == second
@@ -456,8 +718,14 @@ def test_mosaic_pixel_checksum_is_deterministic(tmp_path: Path) -> None:
 
 
 def _covering_http(responses: dict[str, bytes]) -> _RecordingHttp:
-    """Return a recording http_get serving the tiles plus a 5cm feed."""
-    merged = {**responses, _FEED_5CM: _atom_feed(_two_overlapping_tiles())}
+    """Return a recording http_get serving the tiles plus a covering HRL feed."""
+    index = _hrl_index(
+        tuple(
+            (tid, bbox, responses[f"{_TILE_BASE}{tid}.tif"])
+            for tid, bbox in _two_overlapping_tiles()
+        )
+    )
+    merged = {**responses, _FEED_HRL: index}
     return _RecordingHttp(merged)
 
 
@@ -467,14 +735,14 @@ def _acquire(
     *,
     clock: Callable[[], datetime] | None = None,
 ) -> OrthoAcquisition:
-    """Run acquire_ortho with the 5cm-covering registry and injected I/O."""
-    registry = _registry(_dataset(_FEED_5CM, "5cm"))
+    """Run acquire_ortho with the HRL-covering registry and injected I/O."""
+    registry = _registry(_dataset(_FEED_HRL, "hrl"))
     return acquire_ortho(
         _request(site),
         http_get=http,
         now=clock or _fixed_clock(_START, _FINISH),
         cache_root=site / ".cache",
-        tool_version="wp8-test",
+        tool_version="ortho-test",
         registry=registry,
     )
 
@@ -491,19 +759,21 @@ def test_acquire_writes_mosaic_and_provenance(tmp_path: Path) -> None:
     provenance = read_provenance(result.provenance_path)
     assert provenance == result.provenance
     assert provenance.product is Product.ORTHO
-    assert provenance.source_portal == "beeldmateriaal"
+    assert provenance.source_portal == "basisdata"
     assert "by/4.0" in provenance.licence
     assert provenance.attribution.strip()
-    assert provenance.vintage == Vintage(2023)
-    assert provenance.zone == "beeldmateriaal-5cm"
-    assert provenance.resolution_tier == "5cm"
+    assert provenance.vintage == Vintage(2025)
+    assert provenance.zone == "basisdata-2025-hrl"
+    assert provenance.resolution_tier == "hrl"
     assert provenance.bbox == _AOI
     assert provenance.output_checksum == result.mosaic.pixel_checksum
-    assert provenance.tool_version == "wp8-test"
+    assert provenance.tool_version == "ortho-test"
     keys = dict(provenance.request_keys)
-    assert keys["vintage"] == "2023"
-    assert keys["resolution_tier"] == "5cm"
-    assert keys[f"{_TILE_BASE}kb_00.tif"]  # per-tile input checksum recorded
+    assert keys["vintage"] == "2025"
+    assert keys["resolution_tier"] == "hrl"
+    assert keys[
+        f"{_TILE_BASE}2025_kb_00_hrl.tif"
+    ]  # per-tile checksum recorded
 
 
 def test_acquire_reports_progress_per_tile(tmp_path: Path) -> None:
@@ -517,8 +787,8 @@ def test_acquire_reports_progress_per_tile(tmp_path: Path) -> None:
         http_get=_covering_http(responses),
         now=_fixed_clock(_START, _FINISH),
         cache_root=site / ".cache",
-        tool_version="wp8-test",
-        registry=_registry(_dataset(_FEED_5CM, "5cm")),
+        tool_version="ortho-test",
+        registry=_registry(_dataset(_FEED_HRL, "hrl")),
         progress=lambda done, total: calls.append((done, total)),
     )
 
@@ -591,20 +861,53 @@ def test_acquire_recovers_after_uniform_sheets_poisoned_the_cache(
     assert result.mosaic_path.exists()
 
 
+def test_acquire_rejects_a_tile_whose_bytes_do_not_match_its_sha256(
+    tmp_path: Path,
+) -> None:
+    """A downloaded tile whose bytes mismatch the feed's sha256 is refused."""
+    site = tmp_path / "delft"
+    responses = _write_tiles(tmp_path / "tiles")
+    tile_id, tile_bbox = _two_overlapping_tiles()[0]
+    other_id, other_bbox = _two_overlapping_tiles()[1]
+    index = _hrl_index(
+        (
+            (tile_id, tile_bbox, b"not the real bytes"),
+            (other_id, other_bbox, responses[f"{_TILE_BASE}{other_id}.tif"]),
+        )
+    )
+    http = _RecordingHttp({**responses, _FEED_HRL: index})
+    registry = _registry(_dataset(_FEED_HRL, "hrl"))
+
+    with pytest.raises(AcquisitionError, match="sha256"):
+        acquire_ortho(
+            _request(site),
+            http_get=http,
+            now=_fixed_clock(_START, _FINISH),
+            cache_root=site / ".cache",
+            tool_version="ortho-test",
+            registry=registry,
+        )
+
+
 def test_acquire_funnels_a_download_failure(tmp_path: Path) -> None:
     """A tile download failure is funnelled to AcquisitionError."""
     site = tmp_path / "delft"
-    _write_tiles(tmp_path / "tiles")
-    covering = _atom_feed(_two_overlapping_tiles())
-    registry = _registry(_dataset(_FEED_5CM, "5cm"))
+    responses = _write_tiles(tmp_path / "tiles")
+    index = _hrl_index(
+        tuple(
+            (tid, bbox, responses[f"{_TILE_BASE}{tid}.tif"])
+            for tid, bbox in _two_overlapping_tiles()
+        )
+    )
+    registry = _registry(_dataset(_FEED_HRL, "hrl"))
 
     with pytest.raises(AcquisitionError):
         acquire_ortho(
             _request(site),
-            http_get=_FailingHttp(_FEED_5CM, covering),
+            http_get=_FailingHttp(_FEED_HRL, index),
             now=_fixed_clock(_START, _FINISH),
             cache_root=site / ".cache",
-            tool_version="wp8-test",
+            tool_version="ortho-test",
             registry=registry,
         )
 
@@ -612,9 +915,9 @@ def test_acquire_funnels_a_download_failure(tmp_path: Path) -> None:
 def test_acquire_funnels_no_coverage(tmp_path: Path) -> None:
     """No covering zone funnels to AcquisitionError (not a raw error)."""
     site = tmp_path / "delft"
-    empty = _atom_feed(())
-    http = _RecordingHttp({_FEED_5CM: empty})
-    registry = _registry(_dataset(_FEED_5CM, "5cm"))
+    empty = _hrl_index(())
+    http = _RecordingHttp({_FEED_HRL: empty})
+    registry = _registry(_dataset(_FEED_HRL, "hrl"))
 
     with pytest.raises(AcquisitionError):
         acquire_ortho(
@@ -622,7 +925,7 @@ def test_acquire_funnels_no_coverage(tmp_path: Path) -> None:
             http_get=http,
             now=_fixed_clock(_START, _FINISH),
             cache_root=site / ".cache",
-            tool_version="wp8-test",
+            tool_version="ortho-test",
             registry=registry,
         )
 
@@ -630,9 +933,9 @@ def test_acquire_funnels_no_coverage(tmp_path: Path) -> None:
 def test_acquire_default_registry_funnels_network_failure(
     tmp_path: Path,
 ) -> None:
-    """Omitting the registry uses the pinned default feeds.
+    """Omitting the registry uses the pinned default feed.
 
-    A probe over them that cannot reach the network funnels to AcquisitionError.
+    A probe over it that cannot reach the network funnels to AcquisitionError.
     """
     site = tmp_path / "delft"
 
@@ -659,7 +962,7 @@ def test_acquire_uses_default_clock_version_and_cache_root(
     """
     site = tmp_path / "delft"
     responses = _write_tiles(tmp_path / "tiles")
-    registry = _registry(_dataset(_FEED_5CM, "5cm"))
+    registry = _registry(_dataset(_FEED_HRL, "hrl"))
 
     result = acquire_ortho(
         _request(site),

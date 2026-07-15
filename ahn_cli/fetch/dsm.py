@@ -68,6 +68,8 @@ from ahn_cli.provenance import write_provenance
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from ahn_cli.domain import ProgressCallback
+
 _CACHE_DIRNAME = ".cache"
 _DSM_FILENAME = "dsm.tif"
 _DSM_CRS = "EPSG:28992"
@@ -224,6 +226,10 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _no_op_progress(_done: int, _total: int) -> None:
+    """Report nothing; the default when the caller supplies no callback."""
+
+
 def read_dsm_window(url: str, aoi: BBox) -> bytes:
     """Windowed-read the DSM COG at ``url``, clipped to ``aoi``.
 
@@ -376,6 +382,7 @@ def fetch_dsm(
     now: Clock = _utcnow,
     cache_root: Path | None = None,
     tool_version: str | None = None,
+    progress: ProgressCallback | None = None,
 ) -> Path:
     """Fetch and clip the DSM for ``request``'s AOI to ``<site>/dsm.tif``.
 
@@ -389,6 +396,9 @@ def fetch_dsm(
         - Returns the written ``dsm.tif`` path.
         - Deterministic: extent, checksums, and (with injected ``now`` /
           ``tool_version``) provenance are stable for the same feed and sheet.
+        - Calls ``progress(0, 1)`` before the fetch and ``progress(1, 1)`` after
+          it completes (there is exactly one DSM sheet to resolve); defaults to
+          a no-op so callers that don't care about progress are unaffected.
 
     Failure modes:
         - :class:`~ahn_cli.fetch.acquisition.AcquisitionError` if the bbox is
@@ -400,6 +410,8 @@ def fetch_dsm(
           error is raised, so a retry re-reads the window instead of
           replaying the poisoned bytes.
     """
+    report = progress if progress is not None else _no_op_progress
+    report(0, 1)
     create_site_layout(request.site_dir)
     aoi = aoi_bbox(request)
     source = dsm_source_for(request.source)
@@ -463,6 +475,7 @@ def fetch_dsm(
     write_provenance(
         provenance, request.site_dir / f"{_DSM_FILENAME}.provenance.json"
     )
+    report(1, 1)
     return dsm_path
 
 

@@ -43,6 +43,7 @@ from ahn_cli.domain import (
     BBox,
     Generation,
     Product,
+    ProgressCallback,
     Provenance,
     ensure_valid_bbox,
 )
@@ -222,6 +223,10 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _no_op_progress(_done: int, _total: int) -> None:
+    """Report nothing; the default when the caller supplies no callback."""
+
+
 def acquire(
     request: AcquisitionRequest,
     *,
@@ -229,6 +234,7 @@ def acquire(
     now: Clock = _utcnow,
     cache_root: Path | None = None,
     tool_version: str | None = None,
+    progress: ProgressCallback | None = None,
 ) -> tuple[Path, ...]:
     """Acquire the covering sheets for ``request`` into its site layout.
 
@@ -242,6 +248,9 @@ def acquire(
           ``tool_version``) provenance are stable for the same feed and tiles.
         - Idempotent downloads: a sheet already in the cache is not re-fetched
           (``http_get`` is not called for it).
+        - Calls ``progress(tiles_done, total_tiles)`` once per tile (after it
+          is written); defaults to a no-op so callers that don't care about
+          progress are unaffected.
 
     Failure modes:
         - :class:`AcquisitionError` if the bbox is malformed, the selector is
@@ -254,6 +263,7 @@ def acquire(
           error is raised, so a retry re-downloads it instead of replaying
           the poisoned bytes.
     """
+    report = progress if progress is not None else _no_op_progress
     create_site_layout(request.site_dir)
     aoi = aoi_bbox(request)
     source = source_for(request.source)
@@ -274,6 +284,7 @@ def acquire(
         else request.site_dir / _CACHE_DIRNAME
     )
     written: list[Path] = []
+    total_tiles = len(resolved.tiles)
     for tile in resolved.tiles:
         key = CacheKey(
             product=Product.AHN_POINT_CLOUD,
@@ -322,6 +333,7 @@ def acquire(
             provenance, ahn_dir / f"{tile.tile_id}.provenance.json"
         )
         written.append(laz_path)
+        report(len(written), total_tiles)
     return tuple(written)
 
 

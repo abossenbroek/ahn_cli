@@ -506,6 +506,25 @@ def test_acquire_writes_mosaic_and_provenance(tmp_path: Path) -> None:
     assert keys[f"{_TILE_BASE}kb_00.tif"]  # per-tile input checksum recorded
 
 
+def test_acquire_reports_progress_per_tile(tmp_path: Path) -> None:
+    """Each downloaded sheet reports (tiles_done, total_tiles) to progress."""
+    site = tmp_path / "delft"
+    responses = _write_tiles(tmp_path / "tiles")
+    calls: list[tuple[int, int]] = []
+
+    acquire_ortho(
+        _request(site),
+        http_get=_covering_http(responses),
+        now=_fixed_clock(_START, _FINISH),
+        cache_root=site / ".cache",
+        tool_version="wp8-test",
+        registry=_registry(_dataset(_FEED_5CM, "5cm")),
+        progress=lambda done, total: calls.append((done, total)),
+    )
+
+    assert calls == [(1, 2), (2, 2)]
+
+
 def test_acquire_records_the_input_checksum_over_tiles(
     tmp_path: Path,
 ) -> None:

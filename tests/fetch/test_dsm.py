@@ -425,6 +425,25 @@ def test_fetch_dsm_writes_clip_and_provenance(tmp_path: Path) -> None:
     assert provenance.output_checksum == checksum
 
 
+def test_fetch_dsm_reports_a_single_atomic_tick(tmp_path: Path) -> None:
+    """The single covering sheet reports (0, 1) then (1, 1) to progress."""
+    site = tmp_path / "delft"
+    cog = tmp_path / "R_37EN1.TIF"
+    _write_cog(cog)
+    feed = _dsm_feed((str(cog), _SHEET_RD))
+    calls: list[tuple[int, int]] = []
+
+    fetch_dsm(
+        _sheet_request(site),
+        http_get=_feed_get(feed),
+        now=_fixed_clock(),
+        tool_version="wp7-test",
+        progress=lambda done, total: calls.append((done, total)),
+    )
+
+    assert calls == [(0, 1), (1, 1)]
+
+
 def test_fetch_dsm_is_idempotent_through_the_cache(tmp_path: Path) -> None:
     """A second fetch serves the cached clip with zero windowed reads."""
     site = tmp_path / "delft"

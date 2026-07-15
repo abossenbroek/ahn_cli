@@ -264,6 +264,13 @@ def cli() -> None:
     is_flag=True,
     help="Also fetch the Beeldmateriaal orthophoto (CC-BY) for the AOI.",
 )
+@click.option(
+    "--progress/--no-progress",
+    "progress",
+    default=True,
+    show_default=True,
+    help="Show a progress bar during the run.",
+)
 def fetch(
     out: Path,
     city: str | None,
@@ -274,6 +281,7 @@ def fetch(
     *,
     dsm: bool,
     ortho: bool,
+    progress: bool,
 ) -> None:
     """Acquire raw source tiles for one site (acquisition stage only).
 
@@ -297,11 +305,29 @@ def fetch(
         generation=generation,
     )
     try:
-        acquire(request)
+        with _progress_bar(
+            enabled=progress, unit="tile", desc="fetch (ahn)"
+        ) as bar:
+            acquire(
+                request,
+                progress=_tqdm_progress(bar) if bar is not None else None,
+            )
         if dsm:
-            fetch_dsm(request)
+            with _progress_bar(
+                enabled=progress, unit="tile", desc="fetch (dsm)"
+            ) as bar:
+                fetch_dsm(
+                    request,
+                    progress=_tqdm_progress(bar) if bar is not None else None,
+                )
         if ortho:
-            acquire_ortho(request)
+            with _progress_bar(
+                enabled=progress, unit="tile", desc="fetch (ortho)"
+            ) as bar:
+                acquire_ortho(
+                    request,
+                    progress=_tqdm_progress(bar) if bar is not None else None,
+                )
     except AcquisitionError as exc:
         raise click.ClickException(str(exc)) from exc
 

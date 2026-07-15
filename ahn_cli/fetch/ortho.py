@@ -75,6 +75,8 @@ if TYPE_CHECKING:
     import numpy as np
     import numpy.typing as npt
 
+    from ahn_cli.domain import ProgressCallback
+
 _PORTAL = "beeldmateriaal"
 _ORTHO_SUBDIR = "ortho"
 _TILES_SUBDIR = "tiles"
@@ -492,6 +494,10 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _no_op_progress(_done: int, _total: int) -> None:
+    """Report nothing; the default when the caller supplies no callback."""
+
+
 def _downloader(http_get: HttpGet, url: str) -> Callable[[], bytes]:
     """Return a zero-arg fetcher the cache calls only on a miss."""
 
@@ -534,6 +540,7 @@ def acquire_ortho(
     cache_root: Path | None = None,
     tool_version: str | None = None,
     registry: OrthoDatasetRegistry | None = None,
+    progress: ProgressCallback | None = None,
 ) -> OrthoAcquisition:
     """Acquire the orthophoto for ``request`` into ``<site>/ortho/ortho.tif``.
 
@@ -547,6 +554,9 @@ def acquire_ortho(
           / ``tool_version``) provenance bytes are stable for the same feed and
           sheets.
         - Idempotent downloads: a sheet already in the cache is not re-fetched.
+        - Calls ``progress(tiles_done, total_tiles)`` once per downloaded sheet
+          (before the mosaic step); defaults to a no-op so callers that don't
+          care about progress are unaffected.
 
     Failure modes:
         - :class:`AcquisitionError` if the bbox is malformed / selector unwired
@@ -557,6 +567,7 @@ def acquire_ortho(
           raised, so a retry re-downloads them instead of replaying the
           poisoned bytes.
     """
+    report = progress if progress is not None else _no_op_progress
     ortho_dir = request.site_dir / _ORTHO_SUBDIR
     ortho_dir.mkdir(parents=True, exist_ok=True)
     aoi = aoi_bbox(request)
@@ -588,6 +599,7 @@ def acquire_ortho(
     tile_paths: list[Path] = []
     tile_checksums: dict[str, str] = {}
     sheet_keys: list[CacheKey] = []
+    total_tiles = len(resolved.tiles)
     for tile in resolved.tiles:
         key = CacheKey(
             product=Product.ORTHO,
@@ -608,6 +620,7 @@ def acquire_ortho(
         tile_checksums[tile.download_url] = hashlib.sha256(
             content
         ).hexdigest()
+        report(len(tile_paths), total_tiles)
 
     mosaic_path = ortho_dir / _MOSAIC_NAME
     try:

@@ -75,6 +75,39 @@ def test_reconcile_drives_the_progress_bar_across_blocks(
     assert spy.updates == [(1, 6), (2, 6), (3, 6), (4, 6), (5, 6), (6, 6)]
 
 
+def test_reconcile_no_progress_skips_the_bar(
+    ortho_path: Path,
+    cloud_path: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """--no-progress never constructs a tqdm bar, and the run still succeeds."""
+
+    def _boom(**_kwargs: object) -> None:
+        msg = "tqdm must not be constructed when --no-progress is passed"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(app, "tqdm", _boom)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "reconcile",
+            "--ortho",
+            str(ortho_path),
+            "--cloud",
+            str(cloud_path),
+            "--out",
+            str(tmp_path / "out"),
+            "--format",
+            "pt",
+            "--no-progress",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+
+
 def test_reconcile_idw_default(
     ortho_path: Path, cloud_path: Path, tmp_path: Path
 ) -> None:

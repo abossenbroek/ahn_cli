@@ -7,12 +7,86 @@ from typing import TYPE_CHECKING
 import laspy
 from click.testing import CliRunner
 
+from ahn_cli.cli import app
 from ahn_cli.cli.app import cli
 
 if TYPE_CHECKING:
     from pathlib import Path
 
+    import pytest
+    from typing_extensions import Self
+
     from tests.copc.conftest import WriteLaz
+
+
+class _SpyBar:
+    """A tqdm stand-in recording every (n, total) update, standing in for tqdm."""
+
+    def __init__(self) -> None:
+        self.n = 0
+        self.total: int | None = None
+        self.updates: list[tuple[int, int | None]] = []
+
+    def __call__(self, **_kwargs: object) -> Self:
+        return self
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_exc_info: object) -> None:
+        return None
+
+    def refresh(self) -> None:
+        self.updates.append((self.n, self.total))
+
+
+def test_copc_drives_the_progress_bar(
+    write_laz: WriteLaz, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The tqdm bar is driven at least once over a real conversion.
+
+    Replaces ``tqdm`` itself with a spy so the assertion is on the bar's
+    actual state, not merely that the CLI exits 0 (which it would even if the
+    progress wiring silently no-opped).
+    """
+    spy = _SpyBar()
+    monkeypatch.setattr(app, "tqdm", spy)
+    cloud = write_laz(
+        [(x * 0.6, y * 0.6, 0.5) for x in range(4) for y in range(4)],
+        rgb=[(300, 400, 500)] * 16,
+    )
+    out = tmp_path / "site.copc.laz"
+
+    result = CliRunner().invoke(
+        cli, ["copc", "--cloud", str(cloud), "--out", str(out)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert spy.updates
+
+
+def test_copc_no_progress_skips_the_bar(
+    write_laz: WriteLaz, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--no-progress never constructs a tqdm bar, and the run still succeeds."""
+
+    def _boom(**_kwargs: object) -> None:
+        msg = "tqdm must not be constructed when --no-progress is passed"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(app, "tqdm", _boom)
+    cloud = write_laz(
+        [(x * 0.6, y * 0.6, 0.5) for x in range(4) for y in range(4)],
+        rgb=[(300, 400, 500)] * 16,
+    )
+    out = tmp_path / "site.copc.laz"
+
+    result = CliRunner().invoke(
+        cli,
+        ["copc", "--cloud", str(cloud), "--out", str(out), "--no-progress"],
+    )
+
+    assert result.exit_code == 0, result.output
 
 
 def test_copc_command_builds_a_readable_file(

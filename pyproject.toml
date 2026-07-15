@@ -91,14 +91,14 @@ known-first-party = ["ahn_cli"]
 [tool.ruff.lint.pylint]
 # Click subcommands bind one function parameter per CLI option, so a command
 # with many flags legitimately exceeds the default 5-argument limit. The
-# `fetch` verb carries out/city/bbox/geojson/ahn/source plus the WP7 --dsm and
-# WP8 --ortho flags, and the `prep` verb carries data + two class filters + four
-# thinning options (WP11) -- the larger of the two sets the bound. This raises
-# ONLY the argument-count threshold; every other lint rule stays at full
-# strictness (ruff select=ALL, pyright strict). It is NOT a per-file-ignore,
-# coverage-omit, or pyright-exclude, and no plain (non-Click-entrypoint)
-# function reaches it.
-max-args = 8
+# `fetch` verb carries out/city/bbox/geojson/ahn/source plus the WP7 --dsm,
+# WP8 --ortho, and the --progress/--no-progress toggle (every subcommand's
+# largest arg count now sets the bound: `fetch`, `prep`, and `reconcile` each
+# reach 9 once --progress is added). This raises ONLY the argument-count
+# threshold; every other lint rule stays at full strictness (ruff select=ALL,
+# pyright strict). It is NOT a per-file-ignore, coverage-omit, or pyright-
+# exclude, and no plain (non-Click-entrypoint) function reaches it.
+max-args = 9
 
 [tool.ruff.lint.per-file-ignores]
 # KEEP IN SYNC with [tool.coverage.run] omit and [tool.pyright] exclude.

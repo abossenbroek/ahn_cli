@@ -13,6 +13,7 @@ and a regression test asserts no flag is reused across the group.
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 from typing import TYPE_CHECKING, NoReturn
 
@@ -72,6 +73,8 @@ from ahn_cli.tiles3d.errors import Tiles3dError
 from ahn_cli.tiles3d.profile import Profile
 
 if TYPE_CHECKING:
+    from contextlib import AbstractContextManager
+
     from ahn_cli.domain import ProgressCallback
 
 _GENERATION_REGISTRY = default_registry()
@@ -610,6 +613,13 @@ def _parse_classes_spec(
     multiple=True,
     help="Output format(s); repeatable. Default: all of laz, ply, pt, exr.",
 )
+@click.option(
+    "--progress/--no-progress",
+    "progress",
+    default=True,
+    show_default=True,
+    help="Show a progress bar during the run.",
+)
 def reconcile_command(
     ortho: Path,
     cloud: Path,
@@ -619,6 +629,8 @@ def reconcile_command(
     kriging: str,
     classes: str | None,
     formats: tuple[str, ...],
+    *,
+    progress: bool,
 ) -> None:
     """Interpolate a point cloud onto an ortho grid, emit a coloured cloud.
 
@@ -639,10 +651,10 @@ def reconcile_command(
         include_classes=include,
         exclude_classes=exclude,
     )
-    bar: tqdm[NoReturn] = tqdm(unit="row", desc="reconcile")
-    with bar:
+    with _progress_bar(enabled=progress, unit="row", desc="reconcile") as bar:
+        cb = _tqdm_progress(bar) if bar is not None else None
         try:
-            stats = reconcile(request, progress=_tqdm_progress(bar))
+            stats = reconcile(request, progress=cb)
         except ReconcileError as exc:
             raise click.ClickException(str(exc)) from exc
     click.echo(
@@ -680,7 +692,16 @@ def reconcile_command(
         "(default: a private temp dir, cleaned up afterwards)."
     ),
 )
-def copc_command(cloud: Path, out: Path, workdir: Path | None) -> None:
+@click.option(
+    "--progress/--no-progress",
+    "progress",
+    default=True,
+    show_default=True,
+    help="Show a progress bar during the run.",
+)
+def copc_command(
+    cloud: Path, out: Path, workdir: Path | None, *, progress: bool
+) -> None:
     """Build a Cloud-Optimized Point Cloud (.copc.laz) from a LAZ cloud.
 
     Streams the cloud in bounded memory (arbitrarily large sites),
@@ -689,12 +710,10 @@ def copc_command(cloud: Path, out: Path, workdir: Path | None) -> None:
     header bounds consistent by construction, so flat, below-sea-level
     Dutch terrain validates fully green under copc-validator.
     """
-    bar: tqdm[NoReturn] = tqdm(unit="pt", desc="copc")
-    with bar:
+    with _progress_bar(enabled=progress, unit="pt", desc="copc") as bar:
+        cb = _tqdm_progress(bar) if bar is not None else None
         try:
-            result = build_copc(
-                cloud, out, workdir=workdir, progress=_tqdm_progress(bar)
-            )
+            result = build_copc(cloud, out, workdir=workdir, progress=cb)
         except CopcError as exc:
             raise click.ClickException(str(exc)) from exc
     click.echo(
@@ -748,8 +767,20 @@ def copc_command(cloud: Path, out: Path, workdir: Path | None) -> None:
         "tileset.json, provenance.json and manifest.json sidecars."
     ),
 )
+@click.option(
+    "--progress/--no-progress",
+    "progress",
+    default=True,
+    show_default=True,
+    help="Show a progress bar during the run.",
+)
 def tiles3d_command(
-    ortho: Path, heights: Path, out: Path, profile_name: str
+    ortho: Path,
+    heights: Path,
+    out: Path,
+    profile_name: str,
+    *,
+    progress: bool,
 ) -> None:
     """Convert the ortho map to an OGC 3D Tiles 1.1 tileset.
 
@@ -770,15 +801,15 @@ def tiles3d_command(
         profile = Profile.parse(profile_name)
     except Tiles3dError as exc:
         raise click.ClickException(str(exc)) from exc
-    bar: tqdm[NoReturn] = tqdm(unit="tile", desc="tiles3d")
-    with bar:
+    with _progress_bar(enabled=progress, unit="tile", desc="tiles3d") as bar:
+        cb = _tqdm_progress(bar) if bar is not None else None
         try:
             result = build_tiles3d(
                 ortho,
                 heights,
                 out,
                 profile=profile,
-                progress=_tqdm_progress(bar),
+                progress=cb,
             )
         except Tiles3dError as exc:
             raise click.ClickException(str(exc)) from exc
@@ -792,6 +823,22 @@ def tiles3d_command(
         f"across {result.levels + 1} level(s), {result.vertices} "
         f"vertices, {result.triangles} triangles; verified.{suffix}"
     )
+
+
+def _progress_bar(
+    *, enabled: bool, unit: str, desc: str
+) -> AbstractContextManager[tqdm[NoReturn] | None]:
+    """Return a ``tqdm`` bar context when ``enabled``, else a no-op context.
+
+    Contract:
+        - ``enabled`` -- construct and yield a live ``tqdm`` bar.
+        - not ``enabled`` -- yield ``None`` (via `contextlib.nullcontext`) so
+          callers uniformly do ``with _progress_bar(...) as bar:`` and treat
+          ``bar is None`` as "don't report progress".
+    """
+    if enabled:
+        return tqdm(unit=unit, desc=desc)
+    return contextlib.nullcontext()
 
 
 def _tqdm_progress(bar: tqdm[NoReturn]) -> ProgressCallback:

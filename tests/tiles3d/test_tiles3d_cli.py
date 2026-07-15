@@ -214,6 +214,35 @@ def test_tiles3d_drives_the_progress_bar(
     assert spy.updates == [(1, 1)]
 
 
+def test_tiles3d_no_progress_skips_the_bar(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--no-progress never constructs a tqdm bar, and the run still succeeds."""
+
+    def _boom(**_kwargs: object) -> None:
+        msg = "tqdm must not be constructed when --no-progress is passed"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(app_module, "tqdm", _boom)
+    ortho, heights = _inputs(tmp_path)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "tiles3d",
+            "--ortho",
+            str(ortho),
+            "--heights",
+            str(heights),
+            "--out",
+            str(tmp_path / "out"),
+            "--no-progress",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+
+
 def test_tiles3d_heightfield_profile_builds_and_writes_provenance(
     tmp_path: Path,
 ) -> None:

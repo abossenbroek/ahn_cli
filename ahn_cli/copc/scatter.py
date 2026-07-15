@@ -25,7 +25,6 @@ aborted earlier run in the same workdir can never contaminate a build.
 from __future__ import annotations
 
 import shutil
-from collections.abc import Callable
 from dataclasses import dataclass
 from itertools import pairwise
 from typing import TYPE_CHECKING
@@ -34,6 +33,9 @@ import laspy
 import numpy as np
 
 from ahn_cli.copc.octree import CopcError
+from ahn_cli.domain.progress import (
+    ProgressCallback,  # noqa: TC001 -- re-exported by build.py
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -41,9 +43,6 @@ if TYPE_CHECKING:
     import numpy.typing as npt
 
     from ahn_cli.copc.octree import BuildPlan
-
-ProgressCallback = Callable[[int, int], None]
-"""An injected progress reporter, called ``(points_done, total_points)``."""
 
 RECORD_DTYPE = np.dtype(
     [

@@ -12,6 +12,7 @@ from __future__ import annotations
 from ahn_cli.domain.generation import Generation
 from ahn_cli.domain.grid import GeoTransform, PixelGrid
 from ahn_cli.domain.product import Product
+from ahn_cli.domain.progress import ProgressCallback
 from ahn_cli.domain.provenance import Provenance
 from ahn_cli.domain.tile import BBox, Tile, ensure_valid_bbox
 from ahn_cli.domain.vintage import Vintage
@@ -22,6 +23,7 @@ __all__ = [
     "GeoTransform",
     "PixelGrid",
     "Product",
+    "ProgressCallback",
     "Provenance",
     "Tile",
     "Vintage",

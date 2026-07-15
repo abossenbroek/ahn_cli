@@ -17,6 +17,9 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from ahn_cli.domain.progress import (
+    ProgressCallback,  # noqa: TC001 -- re-exported by build.py
+)
 from ahn_cli.tiles3d.geodesy import Geodesy
 from ahn_cli.tiles3d.mesh import build_tile_mesh
 from ahn_cli.tiles3d.pack import (
@@ -52,8 +55,6 @@ __all__ = [
     "texture_uri",
     "tile_uri",
 ]
-
-ProgressCallback = Callable[[int, int], None]
 
 TILES_SUBDIR = "tiles"
 TILESET_NAME = "tileset.json"

@@ -50,12 +50,16 @@ if TYPE_CHECKING:
     from datetime import datetime
     from pathlib import Path
 
-    from ahn_cli.domain import BBox
+    from ahn_cli.domain import BBox, ProgressCallback
 
 _AHN_SUBDIR = "ahn"
 _POINTCLOUD_LAZ = "pointcloud.laz"
 _POINTCLOUD_PLY = "pointcloud.ply"
 _PROVENANCE = "provenance.json"
+
+
+def _no_op_progress(_done: int, _total: int) -> None:
+    """Report nothing; the default when the caller supplies no callback."""
 
 
 class PrepError(RuntimeError):
@@ -93,7 +97,13 @@ class PrepRequest:
     thinning: Thinning | None = None
 
 
-def prepare(request: PrepRequest) -> None:
+def prepare(
+    request: PrepRequest,
+    *,
+    dedup_progress: ProgressCallback | None = None,
+    thin_progress: ProgressCallback | None = None,
+    export_progress: ProgressCallback | None = None,
+) -> None:
     """Transform a fetched site into its finished point-cloud deliverables.
 
     Contract:
@@ -105,6 +115,11 @@ def prepare(request: PrepRequest) -> None:
           site-root ``provenance.json`` recording the run's lineage.
         - With ``export_points`` it additionally writes
           ``<data_dir>/pointcloud.ply``.
+        - ``dedup_progress``, ``thin_progress``, and ``export_progress`` are
+          independent, phase-scoped progress callbacks (dedup ticks once per
+          tile, thinning is a single atomic 0->1 tick, export ticks once per
+          streamed chunk); each defaults to a no-op so callers that don't
+          care about progress are unaffected.
 
     Invariants:
         - Deterministic: identical fetched inputs yield byte-identical
@@ -137,11 +152,15 @@ def prepare(request: PrepRequest) -> None:
 
     tiles, provenances = _load_tiles(ahn_dir, laz_paths)
     output = request.data_dir / _POINTCLOUD_LAZ
-    dedup_stats = deduplicate_tiles(tiles, output)
-    output_points = _apply_selection(output, request)
+    dedup_stats = deduplicate_tiles(tiles, output, progress=dedup_progress)
+    output_points = _apply_selection(output, request, progress=thin_progress)
     _verify_output_cloud(output)
     if request.export_points:
-        export_ply(output, request.data_dir / _POINTCLOUD_PLY)
+        export_ply(
+            output,
+            request.data_dir / _POINTCLOUD_PLY,
+            progress=export_progress,
+        )
     _write_prep_provenance(
         request, tiles, provenances, dedup_stats, output_points
     )
@@ -172,7 +191,12 @@ def _load_tiles(
     return tiles, provenances
 
 
-def _apply_selection(output: Path, request: PrepRequest) -> int:
+def _apply_selection(
+    output: Path,
+    request: PrepRequest,
+    *,
+    progress: ProgressCallback | None = None,
+) -> int:
     """Filter by class and thin ``output`` in place, returning the point count.
 
     When neither a class filter nor a thinning request applies, the deduplicated
@@ -180,6 +204,11 @@ def _apply_selection(output: Path, request: PrepRequest) -> int:
     returned). Otherwise the cloud is read once, the class mask and thinning are
     applied in the documented "filter then decimate" order, and the result is
     written back deterministically.
+
+    When a thinning request applies, calls ``progress(0, 1)`` before it runs
+    and ``progress(1, 1)`` after (a single atomic tick, since thinning has no
+    natural finer-grained unit of work); defaults to a no-op so callers that
+    don't care about progress are unaffected.
     """
     include = request.include_classes
     exclude = request.exclude_classes
@@ -192,8 +221,11 @@ def _apply_selection(output: Path, request: PrepRequest) -> int:
     keep = _class_mask(las, include, exclude)
     las.points = las.points[keep]
     if thinning is not None:
+        report = progress if progress is not None else _no_op_progress
+        report(0, 1)
         indices = thin(_coords(las), thinning, backend=NumpyBackend())
         las.points = las.points[indices]
+        report(1, 1)
     las.write(str(output))
     return len(las.points)
 

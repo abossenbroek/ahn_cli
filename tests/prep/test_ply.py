@@ -253,3 +253,23 @@ def test_export_streams_in_bounded_chunks(
     assert all(size <= 10 for size in log.chunk_sizes)
     assert sum(log.chunk_sizes) == 25
     assert stats.point_count == 25
+
+
+def test_export_reports_progress_per_chunk(tmp_path: Path) -> None:
+    """Each streamed chunk reports (chunks_done, total_chunks) to progress."""
+    src = tmp_path / "big.laz"
+    points: list[Point] = [
+        (194000.0 + i, 443000.0 + i, float(i)) for i in range(25)
+    ]
+    _write_tile(src, points)
+    out = tmp_path / "out.ply"
+    calls: list[tuple[int, int]] = []
+
+    export_ply(
+        src,
+        out,
+        chunk_size=10,
+        progress=lambda done, total: calls.append((done, total)),
+    )
+
+    assert calls == [(1, 3), (2, 3), (3, 3)]

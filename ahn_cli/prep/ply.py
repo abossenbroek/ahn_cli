@@ -32,6 +32,8 @@ import numpy.typing as npt
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from ahn_cli.domain import ProgressCallback
+
 DEFAULT_CHUNK_SIZE = 1_000_000
 """Points read/written per streaming window when none is supplied.
 
@@ -68,11 +70,16 @@ class PlyExportStats:
     point_count: int
 
 
+def _no_op_progress(_done: int, _total: int) -> None:
+    """Report nothing; the default when the caller supplies no callback."""
+
+
 def export_ply(
     source_path: Path,
     output_path: Path,
     *,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
+    progress: ProgressCallback | None = None,
 ) -> PlyExportStats:
     """Stream a LAZ point cloud to a binary little-endian ``.ply`` file.
 
@@ -86,6 +93,9 @@ def export_ply(
           must be a positive count.
         - Returns a :class:`PlyExportStats` whose ``point_count`` equals the
           source header's point count.
+        - Calls ``progress(chunks_done, total_chunks)`` once per streamed
+          chunk; defaults to a no-op so callers that don't care about
+          progress are unaffected.
 
     Invariants:
         - Memory-bounded: the full point record is never read; only windows of
@@ -99,13 +109,17 @@ def export_ply(
     if chunk_size <= 0:
         msg = f"chunk_size must be a positive point count; got {chunk_size}."
         raise ValueError(msg)
+    report = progress if progress is not None else _no_op_progress
 
     with laspy.open(str(source_path)) as reader:
         point_count = int(reader.header.point_count)
+        total_chunks = -(-point_count // chunk_size)  # ceil division
         header = _PLY_HEADER_TEMPLATE.format(count=point_count)
         with output_path.open("wb") as sink:
             sink.write(header.encode("ascii"))
-            for chunk in reader.chunk_iterator(chunk_size):
+            for chunks_done, chunk in enumerate(
+                reader.chunk_iterator(chunk_size), start=1
+            ):
                 block: npt.NDArray[np.float64] = np.empty(
                     (len(chunk), 3), dtype=np.float64
                 )
@@ -115,5 +129,6 @@ def export_ply(
                 # ``<f8`` fixes little-endian bytes regardless of host byte
                 # order, so the payload stays byte-identical across platforms.
                 sink.write(block.astype("<f8", copy=False).tobytes())
+                report(chunks_done, total_chunks)
 
     return PlyExportStats(point_count=point_count)

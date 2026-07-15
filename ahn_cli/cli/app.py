@@ -391,6 +391,13 @@ def fetch(
     show_default=True,
     help="Poisson-disk RNG seed (deterministic sampling).",
 )
+@click.option(
+    "--progress/--no-progress",
+    "progress",
+    default=True,
+    show_default=True,
+    help="Show a progress bar during the run.",
+)
 def prep(
     data: Path,
     include_class: str | None,
@@ -401,6 +408,7 @@ def prep(
     thin_seed: int,
     *,
     points: bool,
+    progress: bool,
 ) -> None:
     """Transform and export a fetched site (transform stage only).
 
@@ -423,7 +431,42 @@ def prep(
         thinning=thinning,
     )
     try:
-        prepare(request)
+        with contextlib.ExitStack() as stack:
+            dedup_bar = stack.enter_context(
+                _progress_bar(
+                    enabled=progress, unit="tile", desc="prep (dedup)"
+                )
+            )
+            thin_bar = (
+                stack.enter_context(
+                    _progress_bar(
+                        enabled=progress, unit="phase", desc="prep (thin)"
+                    )
+                )
+                if thinning is not None
+                else None
+            )
+            export_bar = (
+                stack.enter_context(
+                    _progress_bar(
+                        enabled=progress, unit="chunk", desc="prep (export)"
+                    )
+                )
+                if points
+                else None
+            )
+            prepare(
+                request,
+                dedup_progress=_tqdm_progress(dedup_bar)
+                if dedup_bar is not None
+                else None,
+                thin_progress=_tqdm_progress(thin_bar)
+                if thin_bar is not None
+                else None,
+                export_progress=_tqdm_progress(export_bar)
+                if export_bar is not None
+                else None,
+            )
     except PrepError as exc:
         raise click.ClickException(str(exc)) from exc
 

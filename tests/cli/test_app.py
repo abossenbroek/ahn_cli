@@ -596,6 +596,78 @@ def test_prep_with_no_filters_reports_missing_tiles(tmp_path: Path) -> None:
     assert "ahn" in result.output.lower()
 
 
+def test_prep_progress_builds_a_bar_per_requested_phase(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Dedup always bars; thin/export bars only when those phases run.
+
+    Bar construction happens before ``prepare()`` runs, so this holds even
+    though the run then fails tidily (no fetched tiles at ``--data``).
+    """
+    spy = _CountingBar()
+    monkeypatch.setattr(app, "tqdm", spy)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "prep",
+            "--data",
+            str(tmp_path),
+            "--points",
+            "--thin-method",
+            "voxel",
+            "--thin-grade",
+            "3",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert spy.built == ["prep (dedup)", "prep (thin)", "prep (export)"]
+
+
+def test_prep_progress_builds_only_the_dedup_bar_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without --points/--thin-method, only the dedup bar is constructed."""
+    spy = _CountingBar()
+    monkeypatch.setattr(app, "tqdm", spy)
+
+    result = CliRunner().invoke(cli, ["prep", "--data", str(tmp_path)])
+
+    assert result.exit_code == 1
+    assert spy.built == ["prep (dedup)"]
+
+
+def test_prep_no_progress_skips_all_bars(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--no-progress never constructs a tqdm bar for any prep phase."""
+
+    def _boom(**_kwargs: object) -> None:
+        msg = "tqdm must not be constructed when --no-progress is passed"
+        raise AssertionError(msg)
+
+    monkeypatch.setattr(app, "tqdm", _boom)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "prep",
+            "--data",
+            str(tmp_path),
+            "--points",
+            "--thin-method",
+            "voxel",
+            "--thin-grade",
+            "3",
+            "--no-progress",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "ahn" in result.output.lower()
+
+
 def test_prep_rejects_non_integer_class(tmp_path: Path) -> None:
     """A non-integer class list is a bad parameter."""
     result = CliRunner().invoke(

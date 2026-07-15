@@ -264,6 +264,26 @@ def test_disjoint_tiles_pass_through_untouched(tmp_path: Path) -> None:
     }
 
 
+def test_deduplicate_tiles_reports_progress_per_tile(tmp_path: Path) -> None:
+    """Each cropped tile reports (tiles_done, total_tiles) to progress."""
+    tile_a = tmp_path / "a.laz"
+    tile_b = tmp_path / "b.laz"
+    _write_tile(tile_a, [(1.0, 1.0, 0.0, 1.0)])
+    _write_tile(tile_b, [(12.0, 5.0, 0.0, 12.0)])
+    tiles = [
+        CanonicalTile(path=tile_a, extent=(0.0, 0.0, 10.0, 10.0)),
+        CanonicalTile(path=tile_b, extent=(10.0, 0.0, 20.0, 10.0)),
+    ]
+    out = tmp_path / "out.laz"
+    calls: list[tuple[int, int]] = []
+
+    deduplicate_tiles(
+        tiles, out, progress=lambda done, total: calls.append((done, total))
+    )
+
+    assert calls == [(1, 2), (2, 2)]
+
+
 # --------------------------------------------------------------------------
 # Offset-harmonizing merge
 # --------------------------------------------------------------------------

@@ -284,6 +284,46 @@ def test_prepare_poisson_thinning_is_recorded(tmp_path: Path) -> None:
     assert keys["thinning"] == "poisson:100.0:7"
 
 
+def test_prepare_reports_progress_per_phase(tmp_path: Path) -> None:
+    """dedup/thin/export progress callbacks each fire independently."""
+    site = _fetched_site(tmp_path / "delft")
+    dedup_calls: list[tuple[int, int]] = []
+    thin_calls: list[tuple[int, int]] = []
+    export_calls: list[tuple[int, int]] = []
+
+    prepare(
+        PrepRequest(
+            data_dir=site,
+            thinning=PoissonThinning(radius=100.0, seed=7),
+            export_points=True,
+        ),
+        dedup_progress=lambda done, total: dedup_calls.append((done, total)),
+        thin_progress=lambda done, total: thin_calls.append((done, total)),
+        export_progress=lambda done, total: export_calls.append(
+            (done, total)
+        ),
+    )
+
+    assert dedup_calls == [(1, 2), (2, 2)]
+    assert thin_calls == [(0, 1), (1, 1)]
+    assert export_calls == [(1, 1)]
+
+
+def test_prepare_skips_thin_progress_when_no_thinning_requested(
+    tmp_path: Path,
+) -> None:
+    """No thinning is requested, so thin_progress is never called."""
+    site = _fetched_site(tmp_path / "delft")
+    thin_calls: list[tuple[int, int]] = []
+
+    prepare(
+        PrepRequest(data_dir=site),
+        thin_progress=lambda done, total: thin_calls.append((done, total)),
+    )
+
+    assert thin_calls == []
+
+
 # --------------------------------------------------------------------------- #
 # Typed failure modes
 # --------------------------------------------------------------------------- #

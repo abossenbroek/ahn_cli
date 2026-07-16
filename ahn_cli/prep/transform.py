@@ -44,6 +44,7 @@ from ahn_cli.prep.decimate import (
 )
 from ahn_cli.prep.dedup import CanonicalTile, DedupStats, deduplicate_tiles
 from ahn_cli.prep.ply import export_ply
+from ahn_cli.prep.spill import DiskFloorError
 from ahn_cli.prep.voxel_stream import stream_voxel_thin
 from ahn_cli.provenance import read_provenance, write_provenance
 
@@ -87,7 +88,7 @@ class PrepRequest:
           Poisson-disk), or ``None`` for no additional thinning. It is additive
           to the legacy nth-point decimation, which is unaffected.
         - ``workdir`` is the scratch directory for out-of-core voxel thinning's
-          Parquet spill; ``None`` uses a private temp dir cleaned up afterwards.
+          binary spill files; ``None`` uses a private temp dir cleaned up afterwards.
           It is unused by the Poisson and class-filter-only paths.
 
     Invariants:
@@ -225,15 +226,18 @@ def _apply_selection(
         with laspy.open(str(output)) as reader:
             return int(reader.header.point_count)
     if isinstance(thinning, VoxelThinning):
-        return stream_voxel_thin(
-            output,
-            output,
-            thinning.grade,
-            include,
-            exclude,
-            workdir=request.workdir,
-            progress=progress,
-        )
+        try:
+            return stream_voxel_thin(
+                output,
+                output,
+                thinning.grade,
+                include,
+                exclude,
+                workdir=request.workdir,
+                progress=progress,
+            )
+        except DiskFloorError as exc:
+            raise PrepError(str(exc)) from exc
     with laspy.open(str(output)) as reader:
         las = reader.read()
     keep = _class_mask(las, include, exclude)

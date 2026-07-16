@@ -1,4 +1,4 @@
-"""Prep-context out-of-core voxel thinning (streaming + Polars group-by).
+"""Prep-context out-of-core voxel thinning (dependency-free external spill).
 
 The in-memory voxel path in :mod:`ahn_cli.prep.decimate` materialises the whole
 cloud at once -- ``reader.read()`` plus a full ``(n, 3)`` float64 coordinate copy
@@ -6,8 +6,8 @@ plus the ``np.unique(cells, axis=0)`` sort temporaries -- so a national-scale
 cloud (hundreds of millions of points) exhausts RAM and the process is killed
 (SIGKILL / exit 137). This module is the memory-bounded alternative used by the
 prep pipeline for :class:`~ahn_cli.prep.decimate.VoxelThinning` requests: it never
-holds more than one chunk of points at a time and offloads the group-by-voxel to
-Polars' streaming engine, so peak memory is independent of the point count.
+holds more than one chunk of points, plus a few bounded-size spill buffers, at a
+time, so peak memory is independent of the point count.
 
 Semantics are the voxel contract of :mod:`ahn_cli.prep.decimate`: within each
 occupied voxel exactly one point survives -- the one with the smallest index in
@@ -16,24 +16,47 @@ order. The voxel grid is anchored at the per-cloud coordinate minimum and its
 edge length comes from :func:`~ahn_cli.prep.decimate.voxel_size_for_grade`, so a
 given grade yields the identical grid the in-memory reference uses.
 
-The flow is three streaming passes (grade 0 is the identity and needs only one):
+Internals implement the grace-hash partitioned aggregation described in
+``docs/specs/voxel-spill-design.md``, using only :mod:`ahn_cli.prep.spill`'s
+numpy+stdlib primitives (no third-party out-of-core engine). For grade > 0 the
+flow is five streaming passes over a scratch spill directory:
 
 1. **Spill.** Stream the source in chunks, apply the classification filter, and
-   write each kept point's ``(x, y, z, idx)`` -- where ``idx`` is its dense index
-   in the class-filtered cloud -- to a per-chunk Parquet file in a scratch dir.
-2. **Group.** Have Polars scan the Parquet spill, quantise each point to its
-   voxel, and reduce ``group_by(voxel).min(idx)`` to the surviving indices. Both
-   the origin scan and the group-by run in Polars' streaming (out-of-core) engine.
-3. **Write.** Re-stream the source and append the surviving points to the output,
-   preserving every source attribute, via a temp file swapped into place.
+   append each kept point's *raw* LAS integer coordinates plus its dense
+   class-filtered index to segment files, rolled at ``_SEGMENT_BYTES``. Tracks
+   the running per-axis minimum of the *scaled* kept coordinates (the voxel
+   grid's origin) and the total kept count.
+2. **Partition.** Hash-partition every spilled point by its voxel cell (a grace
+   hash join) into ``partition_count`` files, sized so each partition fits
+   comfortably in memory. Processes one segment at a time, deleting it once its
+   records are routed.
+3. **Reduce.** Per partition (deleted once read): sort by voxel cell then index
+   and keep the smallest index in each occupied cell -- the partitioning
+   guarantees every point of a given cell lands in the same partition, so this
+   local reduction is exact. Writes the partition's surviving indices as a
+   sorted run.
+4. **Merge.** K-way merge the per-partition sorted runs into one sorted stream
+   of every surviving index, via :func:`~ahn_cli.prep.spill.merge_sorted_runs`.
+5. **Write.** Re-stream the source a second time and, per chunk, consume the
+   merged survivor stream over that chunk's class-filtered index window,
+   writing survivors through a temp file swapped into ``output`` at the end.
+
+Grade 0 is the identity (no spill): only the class filter is applied, in a
+single streaming pass. Every write site checks the target volume's free space
+first via :func:`~ahn_cli.prep.spill.ensure_free_disk` and raises
+:class:`~ahn_cli.prep.spill.DiskFloorError` rather than risk filling the disk;
+on that error the spill directory and any partial output are removed and
+``output`` is left untouched.
 
 Determinism: chunks are read in file order, the filtered index is assigned in
-that order, and the group-by min-reduction is order-independent, so identical
-input yields byte-identical output.
+that order, and the per-voxel minimum-index reduction is order-independent
+(partition count, segment boundaries, and merge fan-in do not affect the
+survivor set), so identical input yields byte-identical output.
 """
 
 from __future__ import annotations
 
+import math
 import shutil
 import tempfile
 from pathlib import Path
@@ -41,9 +64,18 @@ from typing import TYPE_CHECKING
 
 import laspy
 import numpy as np
-import polars as pl
 
 from ahn_cli.prep.decimate import voxel_size_for_grade
+from ahn_cli.prep.spill import (
+    MIN_FREE_DISK_BYTES,
+    DiskFloorError,
+    PartitionWriter,
+    advise_no_cache,
+    ensure_free_disk,
+    iter_sorted_values,
+    merge_sorted_runs,
+    write_sorted_run,
+)
 
 if TYPE_CHECKING:
     import numpy.typing as npt
@@ -54,10 +86,37 @@ DEFAULT_CHUNK_POINTS = 1_000_000
 """Points held in memory per streamed chunk (matches the PLY export window)."""
 
 _SPILL_SUBDIR = "voxel_spill"
-"""Scratch subdirectory (under the workdir) holding the per-chunk Parquet spill."""
+"""Scratch subdirectory (under the workdir) holding every intermediate spill."""
 
-_SPILL_GLOB = "chunk_*.parquet"
-"""Glob matching every per-chunk Parquet file Polars scans in the group pass."""
+_SEGMENT_BYTES = 256 * 1024**2
+"""Pass 1 spill-segment roll size."""
+
+_PARTITION_TARGET_BYTES = 128 * 1024**2
+"""Target in-memory size of a single pass-2 partition file."""
+
+_PARTITION_MIN = 1
+_PARTITION_MAX = 4096
+
+_PARTITION_READ_RECORDS = 500_000
+"""Records read per pass-2 segment-read block (bounds transient memory)."""
+
+_RAW_DTYPE = np.dtype(
+    [("X", "<i4"), ("Y", "<i4"), ("Z", "<i4"), ("idx", "<i8")]
+)
+"""Pass-1 spill record: raw (unscaled) LAS integer coords + filtered index."""
+
+_PARTITION_DTYPE = np.dtype(
+    [("cx", "<i4"), ("cy", "<i4"), ("cz", "<i4"), ("idx", "<i8")]
+)
+"""Pass-2 partition record: voxel cell coords + filtered index."""
+
+_INT32_MIN = np.iinfo(np.int32).min
+_INT32_MAX = np.iinfo(np.int32).max
+
+# Odd 64-bit constants (Knuth/xxhash-style) for the pass-2 partition hash.
+_HASH_K1 = np.uint64(0x9E3779B185EBCA87)
+_HASH_K2 = np.uint64(0xC2B2AE3D27D4EB4F)
+_HASH_K3 = np.uint64(0x165667B19E3779F9)
 
 
 def _no_op_progress(_done: int, _total: int) -> None:
@@ -74,6 +133,7 @@ def stream_voxel_thin(
     workdir: Path | None = None,
     chunk_points: int = DEFAULT_CHUNK_POINTS,
     progress: ProgressCallback | None = None,
+    min_free_bytes: int = MIN_FREE_DISK_BYTES,
 ) -> int:
     """Class-filter and voxel-thin ``source`` into ``output``, out of core.
 
@@ -89,23 +149,32 @@ def stream_voxel_thin(
           smallest index in the class-filtered cloud; survivors are written in
           ascending index order, every source attribute preserved. Returns the
           surviving point count.
-        - ``workdir`` is the scratch directory for the Parquet spill; when
+        - ``workdir`` is the scratch directory for the binary spill files; when
           ``None`` a private temp dir is created and removed afterwards. The
           spill lives in a dedicated subdirectory that is recreated empty each
           run and removed when the thin finishes.
         - ``chunk_points`` bounds how many points are read at once (must be
           positive). ``progress`` ticks ``(chunk, total_chunks)`` as the output
           is written; defaults to a no-op.
+        - ``min_free_bytes`` is the free-space floor checked before every spill
+          and output write (see :mod:`ahn_cli.prep.spill`); defaults to
+          :data:`~ahn_cli.prep.spill.MIN_FREE_DISK_BYTES`.
 
     Invariants:
-        - Memory-bounded: never more than one chunk of points plus Polars'
-          streaming working set is resident, regardless of cloud size.
+        - Memory-bounded: never more than one chunk of points plus a few
+          bounded-size spill buffers are resident, regardless of cloud size.
         - Deterministic: identical input and parameters yield byte-identical
           output.
 
     Failure modes:
         - :class:`ValueError` if ``chunk_points`` is not positive, or if ``grade``
-          is out of range (via :func:`voxel_size_for_grade`).
+          is out of range (via :func:`voxel_size_for_grade`), or if a voxel cell
+          coordinate does not fit in int32 (the cloud's extent is too large for
+          the requested voxel size).
+        - :class:`~ahn_cli.prep.spill.DiskFloorError` if a spill or output write
+          would leave the target volume below ``min_free_bytes`` free; the spill
+          directory and any partial output are removed and ``output`` is left
+          untouched.
     """
     if chunk_points <= 0:
         msg = f"chunk_points must be a positive point count; got {chunk_points}."
@@ -114,8 +183,9 @@ def stream_voxel_thin(
     size = voxel_size_for_grade(grade)
     if size == 0.0:
         # Grade 0 is the identity: apply only the class filter, keep everything
-        # else. No voxel grouping, so no Parquet spill is needed.
-        return _write_survivors(
+        # else. No voxel grouping, so no spill is needed.
+        ensure_free_disk(output.parent, min_free_bytes=min_free_bytes)
+        return _write_pass(
             source,
             output,
             include_classes,
@@ -123,6 +193,7 @@ def stream_voxel_thin(
             None,
             chunk_points,
             report,
+            min_free_bytes,
         )
     if workdir is None:
         with tempfile.TemporaryDirectory(prefix="ahn_cli_voxel_") as tmp:
@@ -135,6 +206,7 @@ def stream_voxel_thin(
                 Path(tmp),
                 chunk_points,
                 report,
+                min_free_bytes,
             )
     return _thin_with_spill(
         source,
@@ -145,6 +217,7 @@ def stream_voxel_thin(
         workdir,
         chunk_points,
         report,
+        min_free_bytes,
     )
 
 
@@ -157,29 +230,62 @@ def _thin_with_spill(
     workdir: Path,
     chunk_points: int,
     report: ProgressCallback,
+    min_free_bytes: int,
 ) -> int:
-    """Run the spill -> group -> write voxel thinning under a scratch ``workdir``."""
+    """Run the spill -> partition -> reduce -> merge -> write voxel thinning.
+
+    ``kept == 0`` (every point class-filtered out) short-circuits passes 2-4:
+    there is nothing to partition, reduce, or merge, so pass 5 writes an empty
+    output directly.
+    """
     spill = workdir / _SPILL_SUBDIR
     if spill.exists():
         shutil.rmtree(spill)
     spill.mkdir(parents=True)
     try:
-        kept = _spill_pass(
-            source, include_classes, exclude_classes, spill, chunk_points
+        ensure_free_disk(workdir, min_free_bytes=min_free_bytes)
+        ensure_free_disk(output.parent, min_free_bytes=min_free_bytes)
+        segments, kept, scale, offset, origin = _spill_pass(
+            source,
+            include_classes,
+            exclude_classes,
+            spill,
+            chunk_points,
+            min_free_bytes,
         )
-        keep_mask = (
-            _survivor_mask(spill, size, kept)
-            if kept > 0
-            else np.zeros(0, dtype=np.bool_)
-        )
-        return _write_survivors(
+        survivors_path: Path | None = None
+        if kept > 0:
+            partition_dir = spill / "partitions"
+            partition_dir.mkdir()
+            partition_paths = _partition_pass(
+                segments,
+                scale,
+                offset,
+                origin,
+                size,
+                _partition_count_for(kept),
+                partition_dir,
+                min_free_bytes,
+            )
+            runs_dir = spill / "runs"
+            runs_dir.mkdir()
+            run_paths = _reduce_pass(
+                partition_paths, runs_dir, min_free_bytes
+            )
+            merge_dir = spill / "merge"
+            merge_dir.mkdir()
+            survivors_path = merge_sorted_runs(
+                run_paths, merge_dir, min_free_bytes=min_free_bytes
+            )
+        return _write_pass(
             source,
             output,
             include_classes,
             exclude_classes,
-            keep_mask,
+            survivors_path,
             chunk_points,
             report,
+            min_free_bytes,
         )
     finally:
         shutil.rmtree(spill, ignore_errors=True)
@@ -210,121 +316,339 @@ def _spill_pass(
     exclude: tuple[int, ...],
     spill: Path,
     chunk_points: int,
-) -> int:
-    """Stream ``source``, spilling each class-kept point's ``(x, y, z, idx)``.
+    min_free_bytes: int,
+) -> tuple[
+    list[Path],
+    int,
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+    npt.NDArray[np.float64],
+]:
+    """Stream ``source``, spilling each class-kept point's raw coords + index.
 
     ``idx`` is the point's dense index in the class-filtered cloud, assigned in
-    streamed (file) order across chunks. Returns the total class-kept count.
-    Chunks with no kept point write no Parquet file.
+    streamed (file order) across chunks. Buffers accumulate in memory and are
+    flushed to a new segment file once ``_SEGMENT_BYTES`` is reached, so each
+    segment is written in one open+append+close.
+
+    Returns the segment paths in write order, the total kept count, the
+    header's per-axis scale/offset (needed to reconstruct scaled coordinates in
+    pass 2), and the running per-axis minimum of the *scaled* kept coordinates
+    (the voxel grid's origin) -- computed from ``chunk.x/y/z``, exactly the
+    values the in-memory reference sees.
     """
     kept = 0
+    origin = np.full(3, np.inf, dtype=np.float64)
+    segments: list[Path] = []
+    buffer: list[npt.NDArray[np.void]] = []
+    buffered_bytes = 0
+    seg_no = 0
+
+    def flush() -> None:
+        nonlocal buffer, buffered_bytes, seg_no
+        if not buffer:
+            return
+        combined = buffer[0] if len(buffer) == 1 else np.concatenate(buffer)
+        path = spill / f"seg_{seg_no:06d}.bin"
+        ensure_free_disk(
+            spill, combined.nbytes, min_free_bytes=min_free_bytes
+        )
+        with path.open("ab") as handle:
+            advise_no_cache(handle)
+            combined.tofile(handle)
+        segments.append(path)
+        buffer = []
+        buffered_bytes = 0
+        seg_no += 1
+
     with laspy.open(str(source)) as reader:
-        for chunk_no, chunk in enumerate(
-            reader.chunk_iterator(chunk_points), start=1
-        ):
+        scale = np.asarray(reader.header.scales, dtype=np.float64)
+        offset = np.asarray(reader.header.offsets, dtype=np.float64)
+        for chunk in reader.chunk_iterator(chunk_points):
             cls_keep = _class_keep(
                 np.asarray(chunk.classification), include, exclude
             )
             count = int(cls_keep.sum())
-            if count > 0:
-                frame = pl.DataFrame(
-                    {
-                        "x": np.asarray(chunk.x, dtype=np.float64)[cls_keep],
-                        "y": np.asarray(chunk.y, dtype=np.float64)[cls_keep],
-                        "z": np.asarray(chunk.z, dtype=np.float64)[cls_keep],
-                        "idx": np.arange(kept, kept + count, dtype=np.int64),
-                    }
-                )
-                frame.write_parquet(spill / f"chunk_{chunk_no:06d}.parquet")
+            if count == 0:
+                continue
+            record = np.zeros(count, dtype=_RAW_DTYPE)
+            record["X"] = np.asarray(chunk.X)[cls_keep]
+            record["Y"] = np.asarray(chunk.Y)[cls_keep]
+            record["Z"] = np.asarray(chunk.Z)[cls_keep]
+            record["idx"] = np.arange(kept, kept + count, dtype=np.int64)
+            xs = np.asarray(chunk.x, dtype=np.float64)[cls_keep]
+            ys = np.asarray(chunk.y, dtype=np.float64)[cls_keep]
+            zs = np.asarray(chunk.z, dtype=np.float64)[cls_keep]
+            origin[0] = min(origin[0], float(xs.min()))
+            origin[1] = min(origin[1], float(ys.min()))
+            origin[2] = min(origin[2], float(zs.min()))
+            buffer.append(record)
+            buffered_bytes += record.nbytes
             kept += count
-    return kept
+            if buffered_bytes >= _SEGMENT_BYTES:
+                flush()
+    flush()
+    return segments, kept, scale, offset, origin
 
 
-def _survivor_mask(
-    spill: Path, size: float, kept: int
-) -> npt.NDArray[np.bool_]:
-    """Reduce the Parquet spill to a survivor mask over the filtered indices.
+def _partition_count_for(kept: int) -> int:
+    """Return the pass-2 partition count for ``kept`` spilled points.
 
-    Anchors the voxel grid at the spilled coordinates' per-axis minimum, quantises
-    each point to its voxel, and keeps the minimum ``idx`` per voxel -- all in
-    Polars' streaming engine. Returns a length-``kept`` boolean mask, ``True`` at
-    each surviving filtered index.
+    ``ceil(kept * record_size / _PARTITION_TARGET_BYTES)``, clamped to
+    ``[_PARTITION_MIN, _PARTITION_MAX]`` -- enough partitions that each fits
+    comfortably in memory during pass 3's reduction.
     """
-    glob = str(spill / _SPILL_GLOB)
-    origin = (
-        pl.scan_parquet(glob)
-        .select(
-            pl.col("x").min().alias("x"),
-            pl.col("y").min().alias("y"),
-            pl.col("z").min().alias("z"),
-        )
-        .collect(engine="streaming")
+    raw = math.ceil(
+        kept * _PARTITION_DTYPE.itemsize / _PARTITION_TARGET_BYTES
     )
-    ox = float(origin.item(0, "x"))
-    oy = float(origin.item(0, "y"))
-    oz = float(origin.item(0, "z"))
-    survivors = (
-        pl.scan_parquet(glob)
-        .with_columns(
-            ((pl.col("x") - ox) / size).floor().cast(pl.Int64).alias("cx"),
-            ((pl.col("y") - oy) / size).floor().cast(pl.Int64).alias("cy"),
-            ((pl.col("z") - oz) / size).floor().cast(pl.Int64).alias("cz"),
-        )
-        .group_by("cx", "cy", "cz")
-        .agg(pl.col("idx").min().alias("idx"))
-        .select("idx")
-        .collect(engine="streaming")
-        .get_column("idx")
-        .to_numpy()
-    )
-    mask = np.zeros(kept, dtype=np.bool_)
-    mask[survivors] = True
-    return mask
+    return min(_PARTITION_MAX, max(_PARTITION_MIN, raw))
 
 
-def _write_survivors(
+def _partition_pass(
+    segments: list[Path],
+    scale: npt.NDArray[np.float64],
+    offset: npt.NDArray[np.float64],
+    origin: npt.NDArray[np.float64],
+    size: float,
+    partition_count: int,
+    partition_dir: Path,
+    min_free_bytes: int,
+) -> list[Path]:
+    """Hash-partition every spilled point onto its voxel cell (a grace hash join).
+
+    Processes one segment at a time -- read in bounded-size blocks,
+    reconstructed to scaled coordinates, quantized to a voxel cell, routed
+    through a :class:`~ahn_cli.prep.spill.PartitionWriter` keyed by a hash of
+    the cell -- deleting the segment once every block is routed. Returns the
+    partition file paths :meth:`~ahn_cli.prep.spill.PartitionWriter.close`
+    reports.
+
+    Failure modes:
+        - :class:`ValueError` if a voxel cell coordinate does not fit in
+          int32 (the cloud's extent is too large for ``size``).
+    """
+    writer = PartitionWriter(
+        partition_dir, partition_count, min_free_bytes=min_free_bytes
+    )
+    for segment in segments:
+        record_count = segment.stat().st_size // _RAW_DTYPE.itemsize
+        with segment.open("rb") as handle:
+            remaining = record_count
+            while remaining > 0:
+                block = min(_PARTITION_READ_RECORDS, remaining)
+                records = np.fromfile(handle, dtype=_RAW_DTYPE, count=block)
+                remaining -= block
+                partition_records, partition_ids = _partition_block(
+                    records,
+                    scale,
+                    offset,
+                    origin,
+                    size,
+                    partition_count,
+                    segment,
+                )
+                writer.append(partition_ids, partition_records)
+        segment.unlink()
+    return writer.close()
+
+
+def _partition_block(
+    records: npt.NDArray[np.void],
+    scale: npt.NDArray[np.float64],
+    offset: npt.NDArray[np.float64],
+    origin: npt.NDArray[np.float64],
+    size: float,
+    partition_count: int,
+    segment: Path,
+) -> tuple[npt.NDArray[np.void], npt.NDArray[np.int64]]:
+    """Quantize one block of raw records to voxel cells and their partition ids."""
+    x = records["X"].astype(np.float64) * scale[0] + offset[0]
+    y = records["Y"].astype(np.float64) * scale[1] + offset[1]
+    z = records["Z"].astype(np.float64) * scale[2] + offset[2]
+    cx = np.floor((x - origin[0]) / size).astype(np.int64)
+    cy = np.floor((y - origin[1]) / size).astype(np.int64)
+    cz = np.floor((z - origin[2]) / size).astype(np.int64)
+    _check_cell_range(cx, cy, cz, segment)
+
+    hashed = (
+        cx.astype(np.uint64) * _HASH_K1
+        ^ cy.astype(np.uint64) * _HASH_K2
+        ^ cz.astype(np.uint64) * _HASH_K3
+    )
+    partition_ids = (hashed % np.uint64(partition_count)).astype(np.int64)
+
+    out = np.zeros(records.shape[0], dtype=_PARTITION_DTYPE)
+    out["cx"] = cx
+    out["cy"] = cy
+    out["cz"] = cz
+    out["idx"] = records["idx"]
+    return out, partition_ids
+
+
+def _check_cell_range(
+    cx: npt.NDArray[np.int64],
+    cy: npt.NDArray[np.int64],
+    cz: npt.NDArray[np.int64],
+    segment: Path,
+) -> None:
+    """Reject voxel cell coordinates that do not fit in int32.
+
+    ``cx``/``cy``/``cz`` are never empty: every pass-2 read block holds at
+    least one record (the segment-reading loop only calls this on a
+    positive block size).
+
+    Failure modes:
+        - :class:`ValueError` if any axis's cell index falls outside
+          ``[INT32_MIN, INT32_MAX]``.
+    """
+    lo = min(int(cx.min()), int(cy.min()), int(cz.min()))
+    hi = max(int(cx.max()), int(cy.max()), int(cz.max()))
+    if lo < _INT32_MIN or hi > _INT32_MAX:
+        msg = (
+            f"voxel cell coordinate out of int32 range while partitioning "
+            f"{segment} (cell range [{lo}, {hi}]); the cloud's extent is too "
+            "large for its voxel size."
+        )
+        raise ValueError(msg)
+
+
+def _reduce_pass(
+    partition_paths: list[Path], runs_dir: Path, min_free_bytes: int
+) -> list[Path]:
+    """Reduce each partition to its surviving (smallest-idx-per-cell) indices.
+
+    Every point of a given voxel cell lands in the same partition (by
+    construction of the pass-2 hash), so this local reduction -- sort by
+    cell then index, keep the first (smallest-idx) record per cell -- is
+    exact. Deletes each partition file once it is read; writes the sorted
+    survivor indices of each partition as a run.
+    """
+    run_paths: list[Path] = []
+    for index, path in enumerate(partition_paths):
+        records = np.fromfile(path, dtype=_PARTITION_DTYPE)
+        path.unlink()
+        order = np.lexsort(
+            (records["idx"], records["cz"], records["cy"], records["cx"])
+        )
+        ordered = records[order]
+        is_start = np.ones(len(ordered), dtype=np.bool_)
+        if len(ordered) > 1:
+            is_start[1:] = (
+                (ordered["cx"][1:] != ordered["cx"][:-1])
+                | (ordered["cy"][1:] != ordered["cy"][:-1])
+                | (ordered["cz"][1:] != ordered["cz"][:-1])
+            )
+        survivors = np.sort(ordered["idx"][is_start])
+        run_path = runs_dir / f"run_{index:06d}.bin"
+        write_sorted_run(run_path, survivors, min_free_bytes=min_free_bytes)
+        run_paths.append(run_path)
+    return run_paths
+
+
+class _SurvivorCursor:
+    """Sequential consumer of the merged global survivor-index stream.
+
+    Wraps :func:`~ahn_cli.prep.spill.iter_sorted_values`, buffering blocks and
+    handing back the prefix below a caller-supplied bound. Pass 5 calls
+    :meth:`take_window` with a strictly increasing bound once per chunk, so
+    each call only ever needs to look forward from where the previous call
+    left off. ``path`` of ``None`` yields a cursor that always returns empty
+    (used for the identity/empty-survivor-set paths, which need no cursor).
+    """
+
+    def __init__(self, path: Path | None, buffer_items: int) -> None:
+        """Wrap ``path``'s sorted stream (or nothing, for ``path is None``)."""
+        self._source = (
+            iter_sorted_values(path, buffer_items=buffer_items)
+            if path is not None
+            else iter(())
+        )
+        self._pending: npt.NDArray[np.int64] = np.empty(0, dtype=np.int64)
+
+    def take_window(self, end: int) -> npt.NDArray[np.int64]:
+        """Pop and return every buffered survivor index strictly below ``end``."""
+        parts: list[npt.NDArray[np.int64]] = []
+        while True:
+            if self._pending.size == 0:
+                self._pending = next(
+                    self._source, np.empty(0, dtype=np.int64)
+                )
+                if self._pending.size == 0:
+                    break
+            cut = int(np.searchsorted(self._pending, end, side="left"))
+            if cut == 0:
+                break
+            parts.append(self._pending[:cut])
+            self._pending = self._pending[cut:]
+        return np.concatenate(parts) if parts else np.empty(0, dtype=np.int64)
+
+
+def _write_pass(
     source: Path,
     output: Path,
     include: tuple[int, ...],
     exclude: tuple[int, ...],
-    keep_mask: npt.NDArray[np.bool_] | None,
+    survivors_path: Path | None,
     chunk_points: int,
     report: ProgressCallback,
+    min_free_bytes: int,
 ) -> int:
-    """Stream ``source`` and write the surviving points to ``output``.
+    """Re-stream ``source`` and write the surviving points to ``output``.
 
-    ``keep_mask`` is ``None`` for the grade-0 identity (every class-kept point is
-    written) or a survivor mask indexed by the point's filtered index (from
-    :func:`_survivor_mask`). The write goes to a sibling temp file swapped into
-    ``output`` at the end, so a source-equals-output in-place thin is safe. Ticks
-    ``report(chunk, total_chunks)`` per streamed chunk. Returns the written count.
+    ``survivors_path`` is ``None`` for the grade-0 identity (every class-kept
+    point is written) or an empty survivor set (``kept == 0``); otherwise it
+    is the merged global survivor-index stream from :func:`merge_sorted_runs`,
+    consumed window-by-window against each chunk's class-filtered index range
+    via :class:`_SurvivorCursor`. The write goes to a sibling temp file
+    swapped into ``output`` at the end, so a source-equals-output in-place
+    thin is safe. Ticks ``report(chunk, total_chunks)`` per streamed chunk --
+    the only pass that reports progress. Returns the written count.
+
+    Failure modes:
+        - :class:`~ahn_cli.prep.spill.DiskFloorError` if an output chunk write
+          would breach the floor; the partial temp file is removed and the
+          error re-raised, leaving ``output`` untouched.
     """
     tmp_out = output.with_name(f"{output.stem}.tmp{output.suffix}")
+    cursor = _SurvivorCursor(survivors_path, chunk_points)
     written = 0
     filtered = 0
-    with (
-        laspy.open(str(source)) as reader,
-        laspy.open(str(tmp_out), mode="w", header=reader.header) as writer,
-    ):
-        total = int(reader.header.point_count)
-        total_chunks = max(1, -(-total // chunk_points))
-        for chunk_no, chunk in enumerate(
-            reader.chunk_iterator(chunk_points), start=1
+    try:
+        with (
+            laspy.open(str(source)) as reader,
+            laspy.open(
+                str(tmp_out), mode="w", header=reader.header
+            ) as writer,
         ):
-            cls_keep = _class_keep(
-                np.asarray(chunk.classification), include, exclude
-            )
-            if keep_mask is None:
-                point_keep = cls_keep
-            else:
+            total = int(reader.header.point_count)
+            total_chunks = max(1, -(-total // chunk_points))
+            point_size = reader.header.point_format.size
+            for chunk_no, chunk in enumerate(
+                reader.chunk_iterator(chunk_points), start=1
+            ):
+                cls_keep = _class_keep(
+                    np.asarray(chunk.classification), include, exclude
+                )
                 count = int(cls_keep.sum())
-                point_keep = np.zeros(len(chunk), dtype=np.bool_)
-                point_keep[cls_keep] = keep_mask[filtered : filtered + count]
+                if survivors_path is None:
+                    point_keep = cls_keep
+                else:
+                    local = cursor.take_window(filtered + count) - filtered
+                    point_keep = np.zeros(len(chunk), dtype=np.bool_)
+                    point_keep[np.flatnonzero(cls_keep)[local]] = True
                 filtered += count
-            selected = chunk[point_keep]
-            if len(selected) > 0:
-                writer.write_points(selected)
-                written += len(selected)
-            report(chunk_no, total_chunks)
+                selected = chunk[point_keep]
+                if len(selected) > 0:
+                    ensure_free_disk(
+                        tmp_out.parent,
+                        len(selected) * point_size,
+                        min_free_bytes=min_free_bytes,
+                    )
+                    writer.write_points(selected)
+                    written += len(selected)
+                report(chunk_no, total_chunks)
+    except DiskFloorError:
+        tmp_out.unlink(missing_ok=True)
+        raise
     tmp_out.replace(output)
     return written

@@ -18,7 +18,13 @@ import laspy
 import numpy as np
 import pytest
 
-from ahn_cli.prep.decimate import voxel_size_for_grade
+from ahn_cli.prep import voxel_stream as voxel_stream_module
+from ahn_cli.prep.decimate import (
+    NumpyBackend,
+    decimate_voxel,
+    voxel_size_for_grade,
+)
+from ahn_cli.prep.spill import DiskFloorError
 from ahn_cli.prep.voxel_stream import stream_voxel_thin
 
 _SPILL_SUBDIR = "voxel_spill"  # mirrors voxel_stream._SPILL_SUBDIR
@@ -31,11 +37,13 @@ Point = tuple[float, float, float, float, int]  # x, y, z, gps_time, class
 _GRADE_1M = 3  # voxel edge length 1.0 m (see decimate._VOXEL_SIZES)
 
 
-def _write_laz(path: Path, points: list[Point]) -> None:
+def _write_laz(
+    path: Path, points: list[Point], *, scale: float = 0.01
+) -> None:
     """Write a synthetic format-6 (gps_time + classification) LAZ file."""
     header = laspy.LasHeader(point_format=6, version="1.4")
     header.offsets = np.array([0.0, 0.0, 0.0], dtype=float)
-    header.scales = np.array([0.01, 0.01, 0.01], dtype=float)
+    header.scales = np.array([scale, scale, scale], dtype=float)
     las = laspy.LasData(header)
     arr = np.array(points, dtype=float)
     las.x = arr[:, 0]
@@ -224,7 +232,7 @@ def test_supplied_workdir_clears_a_stale_spill(tmp_path: Path) -> None:
     workdir = tmp_path / "scratch"
     stale = workdir / _SPILL_SUBDIR
     stale.mkdir(parents=True)
-    (stale / "chunk_000001.parquet").write_bytes(b"garbage from a dead run")
+    (stale / "seg_000001.bin").write_bytes(b"garbage from a dead run")
     _write_laz(src, _CLOUD)
 
     count = stream_voxel_thin(src, out, _GRADE_1M, (), (), workdir=workdir)
@@ -278,3 +286,161 @@ def test_rejects_non_positive_chunk_points(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="chunk_points"):
         stream_voxel_thin(src, out, _GRADE_1M, (), (), chunk_points=0)
+
+
+def test_matches_the_in_memory_voxel_reference_on_a_random_cloud(
+    tmp_path: Path,
+) -> None:
+    """Streaming survivors match `decimate.decimate_voxel` on the same data.
+
+    Builds a random cloud, streams it through the class filter and voxel
+    thin, then re-derives the expected survivors by reading the *stored*
+    (scale-quantized) cloud back and running the in-memory reference over
+    it -- an independent cross-check of the whole spill/partition/reduce
+    pipeline against the algorithm it is required to match.
+    """
+    rng = np.random.default_rng(0)
+    n = 2000
+    coords = rng.uniform(0, 50, size=(n, 3))
+    classes = rng.choice([2, 6, 9], size=n)
+    points: list[Point] = [
+        (
+            float(coords[i, 0]),
+            float(coords[i, 1]),
+            float(coords[i, 2]),
+            float(i),
+            int(classes[i]),
+        )
+        for i in range(n)
+    ]
+    src = tmp_path / "src.laz"
+    out = tmp_path / "out.laz"
+    _write_laz(src, points)
+    include = (2, 6)
+    grade = 3
+
+    stream_voxel_thin(src, out, grade, include, (), chunk_points=257)
+
+    stored = _read(src)
+    keep = np.isin(np.asarray(stored.classification), include)
+    stored_coords = np.column_stack(
+        [np.asarray(stored.x), np.asarray(stored.y), np.asarray(stored.z)]
+    )[keep].astype(np.float64)
+    stored_gps = np.asarray(stored.gps_time)[keep]
+    expected_indices = decimate_voxel(
+        stored_coords, grade, backend=NumpyBackend()
+    )
+
+    assert (
+        _read(out).gps_time.tolist() == stored_gps[expected_indices].tolist()
+    )
+
+
+def test_multi_segment_and_multi_partition_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Shrinking the segment/partition size constants forces several of each."""
+    monkeypatch.setattr(voxel_stream_module, "_SEGMENT_BYTES", 40)
+    monkeypatch.setattr(voxel_stream_module, "_PARTITION_TARGET_BYTES", 40)
+    src = tmp_path / "src.laz"
+    out = tmp_path / "out.laz"
+    _write_laz(src, _CLOUD)
+
+    count = stream_voxel_thin(src, out, _GRADE_1M, (), (), chunk_points=1)
+
+    assert count == 2
+    assert _read(out).gps_time.tolist() == [100.0, 101.0]
+
+
+def test_disk_floor_breach_raises_and_cleans_up(tmp_path: Path) -> None:
+    """A disk-floor breach raises, removes the spill dir, and leaves output untouched."""
+    src = tmp_path / "src.laz"
+    out = tmp_path / "out.laz"
+    workdir = tmp_path / "scratch"
+    _write_laz(src, _CLOUD)
+
+    with pytest.raises(DiskFloorError):
+        stream_voxel_thin(
+            src, out, _GRADE_1M, (), (), workdir=workdir, min_free_bytes=2**62
+        )
+
+    assert not out.exists()
+    assert not (workdir / _SPILL_SUBDIR).exists()
+
+
+def test_extreme_extent_raises_int32_cell_range_error(tmp_path: Path) -> None:
+    """A voxel cell coordinate outside int32 range is a clear ValueError.
+
+    Two points 3e9 m apart on x, with a 1.0 m LAS scale (so both raw LAS
+    ints stay comfortably inside int32) but a 0.25 m voxel size (grade 1):
+    the resulting cell index is far outside int32 range.
+    """
+    src = tmp_path / "src.laz"
+    out = tmp_path / "out.laz"
+    _write_laz(
+        src,
+        [
+            (-1_500_000_000.0, 0.0, 0.0, 100.0, 2),
+            (1_500_000_000.0, 0.0, 0.0, 101.0, 2),
+        ],
+        scale=1.0,
+    )
+
+    with pytest.raises(ValueError, match="int32 range"):
+        stream_voxel_thin(src, out, 1, (), ())
+
+
+def test_reduce_pass_handles_a_singleton_partition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A partition holding exactly one record skips the boundary-diff slice."""
+    monkeypatch.setattr(voxel_stream_module, "_PARTITION_TARGET_BYTES", 1)
+    src = tmp_path / "src.laz"
+    out = tmp_path / "out.laz"
+    _write_laz(src, _CLOUD)
+
+    count = stream_voxel_thin(src, out, _GRADE_1M, (), ())
+
+    assert count == 2
+    assert _read(out).gps_time.tolist() == [100.0, 101.0]
+
+
+def test_disk_floor_breach_during_output_write_cleans_up_the_temp_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A disk-floor breach mid pass-5 write removes the partial temp output.
+
+    Forces the second ``ensure_free_disk`` call (the grade-0 identity path's
+    only calls: the top-level output-dir guard, then one per written chunk)
+    to raise, so the breach happens inside :func:`_write_pass`'s own
+    try/except rather than before it is even entered.
+    """
+    src = tmp_path / "src.laz"
+    out = tmp_path / "out.laz"
+    _write_laz(src, _CLOUD)
+    real_ensure_free_disk = voxel_stream_module.ensure_free_disk
+    calls = 0
+
+    def _fake_ensure_free_disk(
+        directory: Path, incoming_bytes: int = 0, *, min_free_bytes: int
+    ) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            msg = "synthetic disk floor breach"
+            raise DiskFloorError(msg)
+        real_ensure_free_disk(
+            directory, incoming_bytes, min_free_bytes=min_free_bytes
+        )
+
+    monkeypatch.setattr(
+        voxel_stream_module, "ensure_free_disk", _fake_ensure_free_disk
+    )
+
+    with pytest.raises(DiskFloorError):
+        stream_voxel_thin(
+            src, out, 0, (), ()
+        )  # grade 0: straight to _write_pass
+
+    assert not out.exists()
+    assert not (tmp_path / "out.tmp.laz").exists()

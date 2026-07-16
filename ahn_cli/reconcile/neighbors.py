@@ -11,8 +11,11 @@ at once.
 Determinism is a load-bearing guardrail: within each target's neighbour row the
 result is sorted by ascending squared distance, ties broken by ascending source
 index, so identical inputs yield byte-identical ``(sq_dist, idx)`` on any machine
-running the same scipy. ``k`` is clamped to the source count; an empty source or
-target degrades to a zero-width / zero-row result rather than raising, so callers
+running the same scipy. The query fans across all cores (``workers=-1``); rows
+are independent and this tie-break normalizes ordering, so the output is
+invariant to core/worker count. ``k`` is clamped to the source count; an empty
+source or target degrades to a zero-width / zero-row result rather than raising,
+so callers
 treat "no neighbours" as "void cell" uniformly.
 """
 
@@ -69,7 +72,10 @@ def query_knn(
             np.empty((0, k_eff), dtype=np.intp),
         )
 
-    dist, raw_idx = tree.query(target_xy, k=k_eff)
+    # workers=-1 fans the per-row queries across all cores; rows are
+    # independent and the lexsort tie-break below normalizes ordering, so output
+    # stays byte-identical regardless of worker count.
+    dist, raw_idx = tree.query(target_xy, k=k_eff, workers=-1)
     # scipy returns 1-D arrays when k_eff == 1; normalise to (q, k_eff).
     dist = dist.reshape(q, k_eff).astype(np.float64)
     idx = raw_idx.reshape(q, k_eff).astype(np.intp)

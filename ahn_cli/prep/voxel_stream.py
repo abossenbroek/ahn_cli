@@ -56,6 +56,7 @@ survivor set), so identical input yields byte-identical output.
 
 from __future__ import annotations
 
+import contextlib
 import math
 import shutil
 import tempfile
@@ -186,6 +187,12 @@ def stream_voxel_thin(
           would leave the target volume below ``min_free_bytes`` free; the spill
           directory and any partial output are removed and ``output`` is left
           untouched.
+        - :class:`OSError` on an I/O failure while streaming, spilling, or
+          writing -- an anticipated outcome on real hardware, with the same
+          cleanup guarantees as a floor breach; the prep pipeline wraps it
+          (with ``ValueError`` and ``DiskFloorError``) into its typed
+          :class:`~ahn_cli.prep.transform.PrepError` at the ``prepare()``
+          boundary.
     """
     if chunk_points <= 0:
         msg = f"chunk_points must be a positive point count; got {chunk_points}."
@@ -250,13 +257,14 @@ def _thin_with_spill(
     output directly.
     """
     spill = workdir / _SPILL_SUBDIR
-    if spill.is_dir():
-        shutil.rmtree(spill)
-    elif spill.exists():
-        # A stale plain file at the spill path (not something this pipeline
-        # writes, but a crashed or foreign process might) would make rmtree
-        # raise NotADirectoryError.
+    if spill.is_symlink() or spill.is_file():
+        # A stale symlink or plain file at the spill path (not something
+        # this pipeline writes, but a crashed or foreign process might
+        # leave one) would make rmtree raise -- and a symlink must be
+        # removed as a link, never followed into its target.
         spill.unlink()
+    elif spill.is_dir():
+        shutil.rmtree(spill)
     spill.mkdir(parents=True)
     try:
         ensure_free_disk(workdir, min_free_bytes=min_free_bytes)
@@ -364,14 +372,14 @@ def _spill_pass(
         nonlocal buffer, buffered_bytes, seg_no
         if not buffer:
             return
-        combined = buffer[0] if len(buffer) == 1 else np.concatenate(buffer)
         path = spill / f"seg_{seg_no:06d}.bin"
-        ensure_free_disk(
-            spill, combined.nbytes, min_free_bytes=min_free_bytes
-        )
+        ensure_free_disk(spill, buffered_bytes, min_free_bytes=min_free_bytes)
         with path.open("ab") as handle:
             advise_no_cache(handle)
-            combined.tofile(handle)
+            # Written record-array by record-array: concatenating first
+            # would transiently double the segment's memory.
+            for record in buffer:
+                record.tofile(handle)
         segments.append(path)
         buffer = []
         buffered_bytes = 0
@@ -634,46 +642,58 @@ def _write_pass(
     written = 0
     filtered = 0
     try:
-        with (
-            laspy.open(str(source)) as reader,
-            laspy.open(
-                str(tmp_out), mode="w", header=reader.header
-            ) as writer,
-        ):
-            total = int(reader.header.point_count)
-            total_chunks = max(1, -(-total // chunk_points))
-            point_size = reader.header.point_format.size
-            for chunk_no, chunk in enumerate(
-                reader.chunk_iterator(chunk_points), start=1
-            ):
-                cls_keep = _class_keep(
-                    np.asarray(chunk.classification), include, exclude
-                )
-                count = int(cls_keep.sum())
-                if survivors_path is None:
-                    point_keep = cls_keep
-                else:
-                    local = cursor.take_window(filtered + count) - filtered
-                    point_keep = np.zeros(len(chunk), dtype=np.bool_)
-                    point_keep[np.flatnonzero(cls_keep)[local]] = True
-                filtered += count
-                selected = chunk[point_keep]
-                if len(selected) > 0:
-                    ensure_free_disk(
-                        tmp_out.parent,
-                        len(selected) * point_size,
-                        min_free_bytes=min_free_bytes,
+        with laspy.open(str(source)) as reader:
+            writer = laspy.open(str(tmp_out), mode="w", header=reader.header)
+            finalised = False
+            try:
+                total = int(reader.header.point_count)
+                total_chunks = max(1, -(-total // chunk_points))
+                point_size = reader.header.point_format.size
+                for chunk_no, chunk in enumerate(
+                    reader.chunk_iterator(chunk_points), start=1
+                ):
+                    cls_keep = _class_keep(
+                        np.asarray(chunk.classification), include, exclude
                     )
-                    writer.write_points(selected)
-                    written += len(selected)
-                report(chunk_no, total_chunks)
-            # Closing the writer finalises the LAZ header/chunk table -- the
-            # one write the per-chunk guards above don't cover.
-            ensure_free_disk(
-                tmp_out.parent,
-                _FINALIZE_HEADROOM_BYTES,
-                min_free_bytes=min_free_bytes,
-            )
+                    count = int(cls_keep.sum())
+                    if survivors_path is None:
+                        point_keep = cls_keep
+                    else:
+                        local = (
+                            cursor.take_window(filtered + count) - filtered
+                        )
+                        point_keep = np.zeros(len(chunk), dtype=np.bool_)
+                        point_keep[np.flatnonzero(cls_keep)[local]] = True
+                    filtered += count
+                    selected = chunk[point_keep]
+                    if len(selected) > 0:
+                        ensure_free_disk(
+                            tmp_out.parent,
+                            len(selected) * point_size,
+                            min_free_bytes=min_free_bytes,
+                        )
+                        writer.write_points(selected)
+                        written += len(selected)
+                    report(chunk_no, total_chunks)
+                # Closing the writer finalises the LAZ header/chunk table --
+                # the one write the per-chunk guards above don't cover. The
+                # close is explicit, directly after its guard: a
+                # context-managed writer would finalise in ``__exit__`` even
+                # when the guard raises, and a genuinely failing close would
+                # supersede the guard's typed error.
+                ensure_free_disk(
+                    tmp_out.parent,
+                    _FINALIZE_HEADROOM_BYTES,
+                    min_free_bytes=min_free_bytes,
+                )
+                writer.close()
+                finalised = True
+            finally:
+                if not finalised:
+                    # Best-effort teardown; the temp is discarded anyway and
+                    # a close failure must never mask the original error.
+                    with contextlib.suppress(Exception):
+                        writer.close()
         tmp_out.replace(output)
     finally:
         # No-op after a successful replace (the temp no longer exists);

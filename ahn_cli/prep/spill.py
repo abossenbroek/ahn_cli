@@ -146,7 +146,12 @@ class PartitionWriter:
           file and is omitted).
 
     Failure modes:
-        - :class:`DiskFloorError` from a flush that would breach the floor.
+        - :class:`DiskFloorError` from a flush that would breach the floor;
+          checked before the file is opened, so it is exactly-once
+          retry-safe (see Contract).
+        - :class:`OSError` from a failed write itself; the buffer is kept
+          but the file may already hold a partial append -- treat the spill
+          directory as poisoned (see Contract).
     """
 
     def __init__(
@@ -223,18 +228,21 @@ class PartitionWriter:
         chunks = self._buffers[partition_id]
         if not chunks:
             return
-        combined = chunks[0] if len(chunks) == 1 else np.concatenate(chunks)
+        total = sum(chunk.nbytes for chunk in chunks)
         path = self._paths[partition_id]
         ensure_free_disk(
             path.parent,
-            combined.nbytes,
+            total,
             min_free_bytes=self._min_free_bytes,
         )
         with path.open("ab") as handle:
             advise_no_cache(handle)
-            combined.tofile(handle)
+            # Written chunk by chunk: concatenating first would transiently
+            # double this partition's buffered memory.
+            for chunk in chunks:
+                chunk.tofile(handle)
         self._buffers[partition_id] = []
-        self._buffered_bytes -= combined.nbytes
+        self._buffered_bytes -= total
 
     def close(self) -> list[Path]:
         """Flush remaining buffers and return the partition paths that exist."""

@@ -83,7 +83,9 @@ Two new/changed modules:
     global buffered total exceeds `buffer_bytes` (default 256 MB) all
     buffers flush. A flush checks the disk floor with the exact byte count
     about to be written, then opens the partition file in append mode,
-    writes with `ndarray.tofile`, and closes — so at most one spill file
+    writes the buffered chunks sequentially with `ndarray.tofile` (never
+    concatenated first — concatenation would transiently double the
+    buffered memory), and closes — so at most one spill file
     handle is ever open regardless of partition count, and a breach cannot
     create a stray empty file. A partition's buffer is cleared (and the
     byte accounting decremented) only after its write succeeds, so a
@@ -166,17 +168,22 @@ every partition-buffer flush, every run write, every merge output block,
 before each output chunk in pass 5, and — with a generous fixed headroom
 (`_FINALIZE_HEADROOM_BYTES`, 4 MiB) — before the LAZ writer's close-time
 header/chunk-table finalisation, the one write that has no per-chunk
-guard. A breach raises `DiskFloorError`; the `finally` removes the spill
-dir; the temp output (if any) is removed; `output` is never replaced by a
-partial file. At the `prepare()` boundary, `OSError` and `ValueError`
+guard. The finalisation is performed as an explicit `writer.close()`
+immediately after its guard: a context-managed close would run even when
+the guard raises, and its own failure would supersede the guard's typed
+error; on failure paths the writer is instead closed best-effort with its
+error suppressed, so the original error always reaches the caller. A
+breach raises `DiskFloorError`; the `finally` removes the spill dir; the
+temp output (if any) is removed; `output` is never replaced by a partial
+file. At the `prepare()` boundary, `OSError` and `ValueError`
 from the voxel path are wrapped into `PrepError` alongside
 `DiskFloorError`, so no streaming failure reaches the CLI as a raw
 traceback.
 
 A scratch `workdir` must not be shared by concurrent prep runs: every run
-claims the same `voxel_spill/` subdirectory and clears it (directory or
-stale file) at start, which is also what makes crashed-run state
-self-healing.
+claims the same `voxel_spill/` subdirectory and clears it (directory,
+stale file, or stale symlink — removed as a link, never followed) at
+start, which is also what makes crashed-run state self-healing.
 
 ### Determinism and bit-exactness
 

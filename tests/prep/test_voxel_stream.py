@@ -527,3 +527,71 @@ def test_disk_floor_breach_at_writer_finalisation_cleans_up(
 
     assert not out.exists()
     assert not (tmp_path / "out.tmp.laz").exists()
+
+
+def test_supplied_workdir_clears_a_stale_spill_symlink(
+    tmp_path: Path,
+) -> None:
+    """A stale symlink at the spill path is unlinked, never followed.
+
+    ``shutil.rmtree`` refuses a symlink-to-directory outright, so the link
+    itself must be removed -- and its target must survive untouched.
+    """
+    src = tmp_path / "src.laz"
+    out = tmp_path / "out.laz"
+    workdir = tmp_path / "scratch"
+    workdir.mkdir()
+    target = tmp_path / "innocent"
+    target.mkdir()
+    (target / "keep.txt").write_text("do not delete")
+    (workdir / _SPILL_SUBDIR).symlink_to(target)
+    _write_laz(src, _CLOUD)
+
+    count = stream_voxel_thin(src, out, _GRADE_1M, (), (), workdir=workdir)
+
+    assert count == 2
+    assert (
+        target / "keep.txt"
+    ).exists()  # the link was removed, not the target
+    assert not (workdir / _SPILL_SUBDIR).exists()
+
+
+def test_finalisation_guard_error_wins_over_a_failing_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The guard's typed error is not masked by a close that also fails.
+
+    Simulates a genuinely full disk at finalisation time: the headroom guard
+    breaches AND the writer's own ``close()`` raises. The typed
+    ``DiskFloorError`` must reach the caller (the best-effort teardown close
+    swallows its own failure), and the temp output must still be removed.
+    """
+    src = tmp_path / "src.laz"
+    out = tmp_path / "out.laz"
+    _write_laz(src, _CLOUD)
+    real_ensure_free_disk = voxel_stream_module.ensure_free_disk
+
+    def _fail_at_finalisation(
+        directory: Path, incoming_bytes: int = 0, *, min_free_bytes: int
+    ) -> None:
+        if incoming_bytes == _FINALIZE_HEADROOM:
+            msg = "synthetic finalisation floor breach"
+            raise DiskFloorError(msg)
+        real_ensure_free_disk(
+            directory, incoming_bytes, min_free_bytes=min_free_bytes
+        )
+
+    def _explode_close(_self: object) -> None:
+        msg = "no space left on device"
+        raise OSError(msg)
+
+    monkeypatch.setattr(
+        voxel_stream_module, "ensure_free_disk", _fail_at_finalisation
+    )
+    monkeypatch.setattr("laspy.laswriter.LasWriter.close", _explode_close)
+
+    with pytest.raises(DiskFloorError, match="finalisation"):
+        stream_voxel_thin(src, out, 0, (), ())
+
+    assert not out.exists()
+    assert not (tmp_path / "out.tmp.laz").exists()

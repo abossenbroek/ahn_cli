@@ -68,7 +68,6 @@ import numpy as np
 from ahn_cli.prep.decimate import voxel_size_for_grade
 from ahn_cli.prep.spill import (
     MIN_FREE_DISK_BYTES,
-    DiskFloorError,
     PartitionWriter,
     advise_no_cache,
     ensure_free_disk,
@@ -606,8 +605,10 @@ def _write_pass(
 
     Failure modes:
         - :class:`~ahn_cli.prep.spill.DiskFloorError` if an output chunk write
-          would breach the floor; the partial temp file is removed and the
-          error re-raised, leaving ``output`` untouched.
+          would breach the floor. On *any* failure -- floor breach, source
+          read error, interrupt -- the partial temp file is removed in a
+          ``finally`` and ``output`` is left untouched: the swap into
+          ``output`` is the last operation inside the guarded block.
     """
     tmp_out = output.with_name(f"{output.stem}.tmp{output.suffix}")
     cursor = _SurvivorCursor(survivors_path, chunk_points)
@@ -647,8 +648,10 @@ def _write_pass(
                     writer.write_points(selected)
                     written += len(selected)
                 report(chunk_no, total_chunks)
-    except DiskFloorError:
+        tmp_out.replace(output)
+    finally:
+        # No-op after a successful replace (the temp no longer exists);
+        # removes the partial temp on every failure path, including ones the
+        # floor guard doesn't raise (source read errors, interrupts).
         tmp_out.unlink(missing_ok=True)
-        raise
-    tmp_out.replace(output)
     return written

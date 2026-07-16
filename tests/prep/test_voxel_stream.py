@@ -413,7 +413,7 @@ def test_disk_floor_breach_during_output_write_cleans_up_the_temp_file(
     Forces the second ``ensure_free_disk`` call (the grade-0 identity path's
     only calls: the top-level output-dir guard, then one per written chunk)
     to raise, so the breach happens inside :func:`_write_pass`'s own
-    try/except rather than before it is even entered.
+    try/finally rather than before it is even entered.
     """
     src = tmp_path / "src.laz"
     out = tmp_path / "out.laz"
@@ -444,3 +444,28 @@ def test_disk_floor_breach_during_output_write_cleans_up_the_temp_file(
 
     assert not out.exists()
     assert not (tmp_path / "out.tmp.laz").exists()
+
+
+def test_generic_write_failure_cleans_up_the_temp_file(
+    tmp_path: Path,
+) -> None:
+    """Any mid-write failure removes the partial temp and keeps the original.
+
+    A non-:class:`DiskFloorError` failure (here: the progress callback
+    raising) must exercise :func:`_write_pass`'s ``finally`` cleanup, not
+    just the floor-breach path. Run in place (``source == output``) to also
+    prove the original file survives byte-identical.
+    """
+    path = tmp_path / "cloud.laz"
+    _write_laz(path, _CLOUD)
+    before = path.read_bytes()
+
+    def _explode(_done: int, _total: int) -> None:
+        msg = "synthetic mid-write failure"
+        raise RuntimeError(msg)
+
+    with pytest.raises(RuntimeError, match="synthetic mid-write failure"):
+        stream_voxel_thin(path, path, _GRADE_1M, (), (), progress=_explode)
+
+    assert path.read_bytes() == before
+    assert not (tmp_path / "cloud.tmp.laz").exists()

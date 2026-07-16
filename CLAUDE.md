@@ -134,7 +134,8 @@ AHN CLI acquires and transforms Dutch elevation data (AHN — Actueel Hoogtebest
 4. **`prep/`** (transform/export bounded context): turns cached raw source tiles into finished deliverables. Never reaches out to a distribution portal itself.
    - `transform.py` — `prepare()` orchestrates dedup → class filter → thin → provenance → export.
    - `dedup.py` — tile de-duplication (crop-before-merge, then an exact XYZ + GPS-time sweep); reuses `harmonize_headers` from the legacy `process.py` module (still a live dependency — see Legacy modules below).
-   - `decimate.py` — graded thinning: voxel-grid and Poisson-disk methods, pure-numpy reference backend with an optional Apple-silicon MLX GPU accelerator (`uv sync --extra mlx`, arm64 macOS only); CPU and GPU backends are required to produce identical voxel output.
+   - `decimate.py` — graded thinning: voxel-grid and Poisson-disk methods, pure-numpy reference backend with an optional Apple-silicon MLX GPU accelerator (`uv sync --extra mlx`, arm64 macOS only); CPU and GPU backends are required to produce identical voxel output. This is the **in-memory reference** for the voxel semantics; `transform.py` routes prep's voxel thinning through `voxel_stream.py` instead (the in-memory voxel path OOMs on national-scale clouds), while Poisson stays in-memory here.
+   - `voxel_stream.py` — **out-of-core** voxel thinning (`stream_voxel_thin`): the memory-bounded path prep actually uses for a `VoxelThinning` request. Streams the LAZ in chunks (never `reader.read()`), spills each class-kept point's `(x, y, z, idx)` to per-chunk Parquet in a scratch `--workdir`, offloads the group-by-voxel → min-index reduction to Polars' streaming engine, then re-streams to write survivors through a temp-file swap. Same voxel contract as `decimate.py` (smallest filtered index per voxel, ascending order, deterministic) but with peak memory independent of point count.
    - `ply.py` — exports `pointcloud.ply` for TouchDesigner (`-p/--points`).
    - `positions.py` — exports `dsm.tif` to a deterministic `positions.exr` (3-channel float32 OpenEXR).
 
@@ -232,7 +233,7 @@ The project uses modern Python tooling:
 - `pyright` (strict mode) for type checking
 - `pytest` for testing (`--cov=ahn_cli --cov-branch`, `fail_under = 100` on non-legacy code)
 - Python 3.10–3.12 supported
-- Key libraries: laspy (point clouds), copclib (COPC container writing), geopandas/shapely (geometry), rasterio (rasters/COGs), scipy (kNN), pyproj (EPSG:7415 → ECEF/EPSG:4979 for 3D Tiles), pdal (optional), mlx (optional, Apple-silicon GPU decimation)
+- Key libraries: laspy (point clouds), copclib (COPC container writing), polars (out-of-core voxel-thinning group-by, pinned for determinism), geopandas/shapely (geometry), rasterio (rasters/COGs), scipy (kNN), pyproj (EPSG:7415 → ECEF/EPSG:4979 for 3D Tiles), pdal (optional), mlx (optional, Apple-silicon GPU decimation)
 
 ### CI
 

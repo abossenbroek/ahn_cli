@@ -44,6 +44,7 @@ from ahn_cli.prep.decimate import (
 )
 from ahn_cli.prep.dedup import CanonicalTile, DedupStats, deduplicate_tiles
 from ahn_cli.prep.ply import export_ply
+from ahn_cli.prep.voxel_stream import stream_voxel_thin
 from ahn_cli.provenance import read_provenance, write_provenance
 
 if TYPE_CHECKING:
@@ -85,6 +86,9 @@ class PrepRequest:
         - ``thinning`` is the validated graded-thinning request (voxel-grid or
           Poisson-disk), or ``None`` for no additional thinning. It is additive
           to the legacy nth-point decimation, which is unaffected.
+        - ``workdir`` is the scratch directory for out-of-core voxel thinning's
+          Parquet spill; ``None`` uses a private temp dir cleaned up afterwards.
+          It is unused by the Poisson and class-filter-only paths.
 
     Invariants:
         - Frozen: an immutable, hashable value object, equal by field value.
@@ -95,6 +99,7 @@ class PrepRequest:
     exclude_classes: tuple[int, ...] = ()
     export_points: bool = False
     thinning: Thinning | None = None
+    workdir: Path | None = None
 
 
 def prepare(
@@ -201,14 +206,17 @@ def _apply_selection(
 
     When neither a class filter nor a thinning request applies, the deduplicated
     file is already final and is left untouched (its header point count is
-    returned). Otherwise the cloud is read once, the class mask and thinning are
+    returned). A voxel-thinning request is handled out of core by
+    :func:`~ahn_cli.prep.voxel_stream.stream_voxel_thin` (streamed class filter +
+    voxel group-by, bounded memory). Otherwise -- a class-filter-only or a
+    Poisson request -- the cloud is read once, the class mask and thinning are
     applied in the documented "filter then decimate" order, and the result is
     written back deterministically.
 
-    When a thinning request applies, calls ``progress(0, 1)`` before it runs
-    and ``progress(1, 1)`` after (a single atomic tick, since thinning has no
-    natural finer-grained unit of work); defaults to a no-op so callers that
-    don't care about progress are unaffected.
+    When the in-memory thinning path applies, calls ``progress(0, 1)`` before it
+    runs and ``progress(1, 1)`` after (a single atomic tick); the streaming voxel
+    path instead ticks once per streamed chunk. Both default to a no-op so
+    callers that don't care about progress are unaffected.
     """
     include = request.include_classes
     exclude = request.exclude_classes
@@ -216,6 +224,16 @@ def _apply_selection(
     if not include and not exclude and thinning is None:
         with laspy.open(str(output)) as reader:
             return int(reader.header.point_count)
+    if isinstance(thinning, VoxelThinning):
+        return stream_voxel_thin(
+            output,
+            output,
+            thinning.grade,
+            include,
+            exclude,
+            workdir=request.workdir,
+            progress=progress,
+        )
     with laspy.open(str(output)) as reader:
         las = reader.read()
     keep = _class_mask(las, include, exclude)

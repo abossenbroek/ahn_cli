@@ -14,4 +14,5 @@ class cKDTree:
         self,
         x: npt.NDArray[np.float64],
         k: int = ...,
+        workers: int = ...,
     ) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.intp]]: ...

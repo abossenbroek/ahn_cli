@@ -28,6 +28,9 @@ from ahn_cli.prep.spill import DiskFloorError
 from ahn_cli.prep.voxel_stream import stream_voxel_thin
 
 _SPILL_SUBDIR = "voxel_spill"  # mirrors voxel_stream._SPILL_SUBDIR
+_FINALIZE_HEADROOM = (
+    4 * 1024**2
+)  # mirrors voxel_stream._FINALIZE_HEADROOM_BYTES
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -469,3 +472,58 @@ def test_generic_write_failure_cleans_up_the_temp_file(
 
     assert path.read_bytes() == before
     assert not (tmp_path / "cloud.tmp.laz").exists()
+
+
+def test_supplied_workdir_clears_a_stale_spill_file(tmp_path: Path) -> None:
+    """A stale plain FILE at the spill path is replaced, not a raw crash.
+
+    Nothing in the pipeline writes a file at that exact path, but a crashed
+    or foreign process might; ``rmtree`` alone would raise
+    ``NotADirectoryError``.
+    """
+    src = tmp_path / "src.laz"
+    out = tmp_path / "out.laz"
+    workdir = tmp_path / "scratch"
+    workdir.mkdir()
+    (workdir / _SPILL_SUBDIR).write_bytes(b"stale file, not a directory")
+    _write_laz(src, _CLOUD)
+
+    count = stream_voxel_thin(src, out, _GRADE_1M, (), (), workdir=workdir)
+
+    assert count == 2
+    assert _read(out).gps_time.tolist() == [100.0, 101.0]
+    assert not (workdir / _SPILL_SUBDIR).exists()
+
+
+def test_disk_floor_breach_at_writer_finalisation_cleans_up(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A breach at the close-time finalisation guard still cleans the temp.
+
+    The guard is recognised by its fixed headroom byte count -- the one
+    ``ensure_free_disk`` call the per-chunk loop doesn't issue.
+    """
+    src = tmp_path / "src.laz"
+    out = tmp_path / "out.laz"
+    _write_laz(src, _CLOUD)
+    real_ensure_free_disk = voxel_stream_module.ensure_free_disk
+
+    def _fail_at_finalisation(
+        directory: Path, incoming_bytes: int = 0, *, min_free_bytes: int
+    ) -> None:
+        if incoming_bytes == _FINALIZE_HEADROOM:
+            msg = "synthetic finalisation floor breach"
+            raise DiskFloorError(msg)
+        real_ensure_free_disk(
+            directory, incoming_bytes, min_free_bytes=min_free_bytes
+        )
+
+    monkeypatch.setattr(
+        voxel_stream_module, "ensure_free_disk", _fail_at_finalisation
+    )
+
+    with pytest.raises(DiskFloorError, match="finalisation"):
+        stream_voxel_thin(src, out, 0, (), ())
+
+    assert not out.exists()
+    assert not (tmp_path / "out.tmp.laz").exists()

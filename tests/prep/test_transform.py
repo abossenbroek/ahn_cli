@@ -394,6 +394,28 @@ def test_prepare_maps_disk_floor_error_to_prep_error(
         prepare(PrepRequest(data_dir=site, thinning=VoxelThinning(grade=3)))
 
 
+def test_prepare_maps_voxel_stream_os_error_to_prep_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A raw OSError from the streaming voxel path surfaces as a PrepError.
+
+    Transient I/O failures mid-stream are environment conditions the CLI
+    must report tidily, exactly like a disk-floor breach.
+    """
+    site = _fetched_site(tmp_path / "delft")
+
+    def _raise_os_error(*_args: object, **_kwargs: object) -> int:
+        msg = "disk I/O error mid-stream"
+        raise OSError(msg)
+
+    monkeypatch.setattr(
+        transform_module, "stream_voxel_thin", _raise_os_error
+    )
+
+    with pytest.raises(PrepError, match="voxel thinning failed"):
+        prepare(PrepRequest(data_dir=site, thinning=VoxelThinning(grade=3)))
+
+
 def test_prepare_rejects_a_cloud_stacked_at_one_position(
     tmp_path: Path,
 ) -> None:

@@ -89,7 +89,9 @@ class PrepRequest:
           to the legacy nth-point decimation, which is unaffected.
         - ``workdir`` is the scratch directory for out-of-core voxel thinning's
           binary spill files; ``None`` uses a private temp dir cleaned up afterwards.
-          It is unused by the Poisson and class-filter-only paths.
+          It is unused by the Poisson and class-filter-only paths. A workdir
+          must not be shared by concurrent prep runs: each run claims the
+          same spill subdirectory and clears it at start.
 
     Invariants:
         - Frozen: an immutable, hashable value object, equal by field value.
@@ -236,8 +238,12 @@ def _apply_selection(
                 workdir=request.workdir,
                 progress=progress,
             )
-        except DiskFloorError as exc:
-            raise PrepError(str(exc)) from exc
+        except (DiskFloorError, OSError, ValueError) as exc:
+            # Disk floor, I/O trouble mid-stream, and the too-large-extent
+            # cell-range check are all environment/data conditions the CLI
+            # must report tidily, not leak as tracebacks.
+            msg = f"out-of-core voxel thinning failed: {exc}"
+            raise PrepError(msg) from exc
     with laspy.open(str(output)) as reader:
         las = reader.read()
     keep = _class_mask(las, include, exclude)

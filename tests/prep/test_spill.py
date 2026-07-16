@@ -1,4 +1,4 @@
-"""Tests for the dependent-free external-spill primitives in `ahn_cli.prep.spill`.
+"""Tests for the dependency-free external-spill primitives in `ahn_cli.prep.spill`.
 
 Drives `ensure_free_disk`, `advise_no_cache`, `PartitionWriter`,
 `write_sorted_run`, `merge_sorted_runs`, and `iter_sorted_values` to full
@@ -342,3 +342,48 @@ def test_iter_sorted_values_empty_file_yields_nothing(tmp_path: Path) -> None:
     write_sorted_run(path, np.empty(0, dtype=np.int64))
 
     assert list(iter_sorted_values(path)) == []
+
+
+def test_partition_writer_failed_flush_keeps_records_for_a_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A mid-flush failure loses nothing and a retry writes each record once.
+
+    The second partition's floor check fails: its file must not appear (the
+    floor is checked before the file is even opened), its records must stay
+    buffered, and a retried ``close()`` must write them exactly once while
+    not duplicating the first partition's already-flushed records.
+    """
+    writer = PartitionWriter(tmp_path, 2)
+    writer.append(np.array([0, 1], dtype=np.int64), _records([10, 11]))
+    real_ensure_free_disk = spill_module.ensure_free_disk
+    calls = 0
+
+    def _fail_second_check(
+        directory: Path, incoming_bytes: int = 0, *, min_free_bytes: int
+    ) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            msg = "synthetic floor breach"
+            raise DiskFloorError(msg)
+        real_ensure_free_disk(
+            directory, incoming_bytes, min_free_bytes=min_free_bytes
+        )
+
+    monkeypatch.setattr(spill_module, "ensure_free_disk", _fail_second_check)
+    with pytest.raises(DiskFloorError):
+        writer.close()
+    assert not (tmp_path / "partition_0001.bin").exists()
+
+    monkeypatch.setattr(
+        spill_module, "ensure_free_disk", real_ensure_free_disk
+    )
+    paths = writer.close()
+
+    assert [path.name for path in paths] == [
+        "partition_0000.bin",
+        "partition_0001.bin",
+    ]
+    assert np.fromfile(paths[0], dtype=_RECORD_DTYPE)["idx"].tolist() == [10]
+    assert np.fromfile(paths[1], dtype=_RECORD_DTYPE)["idx"].tolist() == [11]

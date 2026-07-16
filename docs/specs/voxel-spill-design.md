@@ -53,9 +53,10 @@ Polars' streaming engine. That works, but:
    engines do for out-of-core group-by): hash-partition records by cell so
    every cell lands wholly in one partition; reduce each partition in
    memory; only the tiny survivor-index streams (8 B each) go through a
-   k-way external merge. The bulk data is written and read exactly once
-   past the initial spill, and the in-memory reduce is a vectorized sort of
-   a bounded slab.
+   k-way external merge. Past the initial spill the bulk data sees one
+   rewrite and two sequential reads (repartition read+write, then the
+   reduce read) — never a comparison sort on disk — and the in-memory
+   reduce is a vectorized sort of a bounded slab.
 3. **Keep Polars** — rejected by directive (dependency-free) and by goal 3
    (unobservable spill).
 
@@ -76,12 +77,20 @@ Two new/changed modules:
     `fcntl`/`F_NOCACHE` is unavailable.
   - `PartitionWriter` — buffered fan-out writer: `append(partition_ids,
     records)` splits a structured-array batch by partition id (stable
-    argsort + searchsorted) into per-partition in-memory buffers; when the
+    argsort + searchsorted) into per-partition in-memory buffers, visiting
+    only the partitions present in the batch and copying each slice (a view
+    would pin the whole batch, breaking the byte accounting); when the
     global buffered total exceeds `buffer_bytes` (default 256 MB) all
-    buffers flush. A flush opens the partition file in append mode, checks
-    the disk floor with the exact byte count about to be written, writes
-    with `ndarray.tofile`, and closes — so at most one spill file handle is
-    ever open regardless of partition count. `close()` flushes and returns
+    buffers flush. A flush checks the disk floor with the exact byte count
+    about to be written, then opens the partition file in append mode,
+    writes with `ndarray.tofile`, and closes — so at most one spill file
+    handle is ever open regardless of partition count, and a breach cannot
+    create a stray empty file. A partition's buffer is cleared (and the
+    byte accounting decremented) only after its write succeeds, so a
+    floor-breach flush failure is exactly-once retry-safe (the check
+    precedes the open); a failure inside a write keeps the buffer but may
+    leave a partial append, so callers treat the spill as poisoned (the
+    voxel pipeline removes it wholesale). `close()` flushes and returns
     the per-partition paths that exist.
   - `write_sorted_run(path, values)` — disk-floor-checked `<i8` run writer.
   - `merge_sorted_runs(runs, out_dir, *, fan_in=64, buffer_items)` — k-way
@@ -154,9 +163,20 @@ short-circuits passes 2–4 (empty survivor set).
 
 Start of run (workdir volume and output volume), every segment append,
 every partition-buffer flush, every run write, every merge output block,
-and before each output chunk in pass 5. A breach raises `DiskFloorError`;
-the `finally` removes the spill dir; the temp output (if any) is removed;
-`output` is never replaced by a partial file.
+before each output chunk in pass 5, and — with a generous fixed headroom
+(`_FINALIZE_HEADROOM_BYTES`, 4 MiB) — before the LAZ writer's close-time
+header/chunk-table finalisation, the one write that has no per-chunk
+guard. A breach raises `DiskFloorError`; the `finally` removes the spill
+dir; the temp output (if any) is removed; `output` is never replaced by a
+partial file. At the `prepare()` boundary, `OSError` and `ValueError`
+from the voxel path are wrapped into `PrepError` alongside
+`DiskFloorError`, so no streaming failure reaches the CLI as a raw
+traceback.
+
+A scratch `workdir` must not be shared by concurrent prep runs: every run
+claims the same `voxel_spill/` subdirectory and clears it (directory or
+stale file) at start, which is also what makes crashed-run state
+self-healing.
 
 ### Determinism and bit-exactness
 

@@ -96,8 +96,20 @@ _PARTITION_TARGET_BYTES = 128 * 1024**2
 _PARTITION_MIN = 1
 _PARTITION_MAX = 4096
 
-_PARTITION_READ_RECORDS = 500_000
-"""Records read per pass-2 segment-read block (bounds transient memory)."""
+_PARTITION_READ_RECORDS = 2_000_000
+"""Records read per pass-2 segment-read block (bounds transient memory).
+
+Sized so the block (~40 MB of records plus the float64 conversion
+temporaries) stays small next to the reduce pass's partition slab while
+keeping the number of :meth:`PartitionWriter.append` calls -- each a Python
+loop over the partitions present in the block -- low."""
+
+_FINALIZE_HEADROOM_BYTES = 4 * 1024**2
+"""Free-space headroom demanded before the LAZ writer finalises on close.
+
+laspy rewrites the header and chunk table and flushes its compressor when
+the writer closes -- a small (measured: tens of bytes to ~10 KB) but
+otherwise unguarded write. 4 MiB is a deliberately generous bound on it."""
 
 _RAW_DTYPE = np.dtype(
     [("X", "<i4"), ("Y", "<i4"), ("Z", "<i4"), ("idx", "<i8")]
@@ -238,8 +250,13 @@ def _thin_with_spill(
     output directly.
     """
     spill = workdir / _SPILL_SUBDIR
-    if spill.exists():
+    if spill.is_dir():
         shutil.rmtree(spill)
+    elif spill.exists():
+        # A stale plain file at the spill path (not something this pipeline
+        # writes, but a crashed or foreign process might) would make rmtree
+        # raise NotADirectoryError.
+        spill.unlink()
     spill.mkdir(parents=True)
     try:
         ensure_free_disk(workdir, min_free_bytes=min_free_bytes)
@@ -604,9 +621,11 @@ def _write_pass(
     the only pass that reports progress. Returns the written count.
 
     Failure modes:
-        - :class:`~ahn_cli.prep.spill.DiskFloorError` if an output chunk write
-          would breach the floor. On *any* failure -- floor breach, source
-          read error, interrupt -- the partial temp file is removed in a
+        - :class:`~ahn_cli.prep.spill.DiskFloorError` if an output chunk
+          write -- or the writer's close-time header/chunk-table
+          finalisation, guarded with ``_FINALIZE_HEADROOM_BYTES`` -- would
+          breach the floor. On *any* failure -- floor breach, source read
+          error, interrupt -- the partial temp file is removed in a
           ``finally`` and ``output`` is left untouched: the swap into
           ``output`` is the last operation inside the guarded block.
     """
@@ -648,6 +667,13 @@ def _write_pass(
                     writer.write_points(selected)
                     written += len(selected)
                 report(chunk_no, total_chunks)
+            # Closing the writer finalises the LAZ header/chunk table -- the
+            # one write the per-chunk guards above don't cover.
+            ensure_free_disk(
+                tmp_out.parent,
+                _FINALIZE_HEADROOM_BYTES,
+                min_free_bytes=min_free_bytes,
+            )
         tmp_out.replace(output)
     finally:
         # No-op after a successful replace (the temp no longer exists);

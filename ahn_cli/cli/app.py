@@ -398,7 +398,8 @@ def fetch(
     type=click.Path(file_okay=False, path_type=Path),
     help=(
         "Scratch directory for out-of-core voxel thinning's spill files "
-        "(default: a private temp dir, cleaned up afterwards)."
+        "(default: a private temp dir, cleaned up afterwards). Must not be "
+        "shared by concurrent prep runs."
     ),
 )
 @click.option(
@@ -452,7 +453,13 @@ def prep(  # noqa: PLR0913 -- one CLI param per prep option; a bag object would 
             thin_bar = (
                 stack.enter_context(
                     _progress_bar(
-                        enabled=progress, unit="chunk", desc="prep (thin)"
+                        enabled=progress,
+                        # Voxel thinning streams and ticks per chunk; Poisson
+                        # runs in memory as one atomic phase.
+                        unit="chunk"
+                        if isinstance(thinning, VoxelThinning)
+                        else "phase",
+                        desc="prep (thin)",
                     )
                 )
                 if thinning is not None

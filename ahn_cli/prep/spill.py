@@ -120,14 +120,26 @@ class PartitionWriter:
         - Writes to ``directory / f"{prefix}_%04d.bin"`` for partition ids in
           ``[0, partition_count)``; ``directory`` must already exist.
         - :meth:`append` splits a batch of records by partition id (stable
-          argsort + searchsorted) into per-partition in-memory buffers.
+          argsort + searchsorted) into per-partition in-memory buffers,
+          visiting only the partitions present in the batch and copying each
+          slice, so a buffered chunk never pins the whole batch array and
+          the byte accounting below is exact.
         - The buffered byte total across every partition is capped at
           ``buffer_bytes``; reaching or exceeding it flushes every buffer.
-        - Each flush opens one partition file at a time in append mode,
-          checks the disk floor for the exact byte count about to be
-          written, applies :func:`advise_no_cache`, writes with
+        - Each flush checks the disk floor for the exact byte count about to
+          be written, then opens one partition file at a time in append
+          mode, applies :func:`advise_no_cache`, writes with
           :meth:`numpy.ndarray.tofile`, and closes -- so at most one spill
-          file handle is ever open, regardless of ``partition_count``.
+          file handle is ever open, regardless of ``partition_count``. A
+          partition's buffer is cleared only after its write succeeds, so a
+          failed flush leaves every unwritten buffer (including the failing
+          partition's) intact and the byte accounting consistent. Because
+          the floor check precedes the open, a :class:`DiskFloorError` is
+          retry-safe: :meth:`close` again once space frees and every record
+          is written exactly once. A failure *inside* a write (a raw
+          ``OSError``) also keeps the buffer, but the file may already hold
+          a partial append -- treat the spill directory as poisoned then,
+          as the voxel pipeline does by removing it wholesale.
         - :meth:`close` flushes any remaining buffered records and returns
           the partition file paths that were actually written, in ascending
           partition-id order (a partition that received no records has no
@@ -167,26 +179,28 @@ class PartitionWriter:
         """Route ``records`` to their partition buffers by ``partition_ids``.
 
         ``partition_ids[i]`` names the partition of ``records[i]``; both
-        arrays share length. Flushes every buffer once the global buffered
-        total reaches ``buffer_bytes``.
+        arrays share length. Only the partitions present in the batch are
+        visited (never all ``partition_count`` of them), and each slice is
+        copied out of the sorted batch so buffering never pins the batch
+        array. Flushes every buffer once the global buffered total reaches
+        ``buffer_bytes``.
         """
         if partition_ids.shape[0] == 0:
             return
         order = np.argsort(partition_ids, kind="stable")
         sorted_ids = partition_ids[order]
         sorted_records = records[order]
-        boundaries = np.searchsorted(
-            sorted_ids, np.arange(self._partition_count + 1)
-        )
-        for partition_id in range(self._partition_count):
-            begin, end = (
-                boundaries[partition_id],
-                boundaries[partition_id + 1],
-            )
-            if begin == end:
-                continue
-            chunk = sorted_records[begin:end]
-            self._buffers[partition_id].append(chunk)
+        present = np.unique(sorted_ids)
+        begins = np.searchsorted(sorted_ids, present, side="left")
+        ends = np.searchsorted(sorted_ids, present, side="right")
+        for partition_id, begin, end in zip(
+            present, begins, ends, strict=True
+        ):
+            # Copy: a view would keep the whole sorted batch alive for as
+            # long as it sits in the buffer, so real memory could far exceed
+            # the ``nbytes`` this accounting admits to.
+            chunk = sorted_records[begin:end].copy()
+            self._buffers[int(partition_id)].append(chunk)
             self._buffered_bytes += chunk.nbytes
         if self._buffered_bytes >= self._buffer_bytes:
             self._flush_all()
@@ -195,24 +209,32 @@ class PartitionWriter:
         """Flush every partition's buffer to disk, one file handle at a time."""
         for partition_id in range(self._partition_count):
             self._flush_partition(partition_id)
-        self._buffered_bytes = 0
 
     def _flush_partition(self, partition_id: int) -> None:
-        """Append ``partition_id``'s buffered records to its file and clear it."""
+        """Append ``partition_id``'s buffered records to its file.
+
+        The buffer is cleared -- and the global byte accounting decremented --
+        only after the write succeeds, and the disk floor is checked before
+        the file is even opened (so a breach cannot leave a stray empty
+        partition file, and a floor breach is exactly-once retry-safe). A
+        failure inside the write itself keeps the buffer too, but may leave
+        a partial append in the file -- see the class contract.
+        """
         chunks = self._buffers[partition_id]
         if not chunks:
             return
         combined = chunks[0] if len(chunks) == 1 else np.concatenate(chunks)
-        self._buffers[partition_id] = []
         path = self._paths[partition_id]
+        ensure_free_disk(
+            path.parent,
+            combined.nbytes,
+            min_free_bytes=self._min_free_bytes,
+        )
         with path.open("ab") as handle:
-            ensure_free_disk(
-                path.parent,
-                combined.nbytes,
-                min_free_bytes=self._min_free_bytes,
-            )
             advise_no_cache(handle)
             combined.tofile(handle)
+        self._buffers[partition_id] = []
+        self._buffered_bytes -= combined.nbytes
 
     def close(self) -> list[Path]:
         """Flush remaining buffers and return the partition paths that exist."""

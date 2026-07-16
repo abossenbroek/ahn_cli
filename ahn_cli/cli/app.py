@@ -392,13 +392,24 @@ def fetch(
     help="Poisson-disk RNG seed (deterministic sampling).",
 )
 @click.option(
+    "--workdir",
+    "workdir",
+    default=None,
+    type=click.Path(file_okay=False, path_type=Path),
+    help=(
+        "Scratch directory for out-of-core voxel thinning's spill files "
+        "(default: a private temp dir, cleaned up afterwards). Must not be "
+        "shared by concurrent prep runs."
+    ),
+)
+@click.option(
     "--progress/--no-progress",
     "progress",
     default=True,
     show_default=True,
     help="Show a progress bar during the run.",
 )
-def prep(
+def prep(  # noqa: PLR0913 -- one CLI param per prep option; a bag object would only hide them
     data: Path,
     include_class: str | None,
     exclude_class: str | None,
@@ -406,6 +417,7 @@ def prep(
     thin_grade: int | None,
     thin_radius: float | None,
     thin_seed: int,
+    workdir: Path | None,
     *,
     points: bool,
     progress: bool,
@@ -429,6 +441,7 @@ def prep(
         exclude_classes=exclude,
         export_points=points,
         thinning=thinning,
+        workdir=workdir,
     )
     try:
         with contextlib.ExitStack() as stack:
@@ -440,7 +453,13 @@ def prep(
             thin_bar = (
                 stack.enter_context(
                     _progress_bar(
-                        enabled=progress, unit="phase", desc="prep (thin)"
+                        enabled=progress,
+                        # Voxel thinning streams and ticks per chunk; Poisson
+                        # runs in memory as one atomic phase.
+                        unit="chunk"
+                        if isinstance(thinning, VoxelThinning)
+                        else "phase",
+                        desc="prep (thin)",
                     )
                 )
                 if thinning is not None

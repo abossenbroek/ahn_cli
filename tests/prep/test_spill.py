@@ -27,10 +27,12 @@ from ahn_cli.prep.spill import (
 if TYPE_CHECKING:
     from pathlib import Path
 
+    import numpy.typing as npt
+
 _RECORD_DTYPE = np.dtype([("idx", "<i8")])
 
 
-def _records(values: list[int]) -> np.ndarray:
+def _records(values: list[int]) -> npt.NDArray[np.void]:
     """Build a tiny structured array of the shared test record dtype."""
     arr = np.zeros(len(values), dtype=_RECORD_DTYPE)
     arr["idx"] = values

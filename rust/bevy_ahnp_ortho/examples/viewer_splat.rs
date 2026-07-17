@@ -102,6 +102,12 @@ fn frame_camera(mut commands: Commands, packs: Query<&AhnpPack>, orbit: Option<R
     commands.insert_resource(Orbit(framing));
 }
 
+// TODO(viewer): support keyboard zoom in/out. The camera distance is fixed by
+// `Framing::fit_default` and only the azimuth animates here — add a
+// `Res<ButtonInput<KeyCode>>` (e.g. `+`/`-` or `[`/`]`, plus `MouseWheel`) that
+// scales the orbit radius and feed it into `orbit_transform`. Same `orbit_camera`
+// shape is shared by `viewer.rs`, `viewer_points.rs`, and `demo.rs`, so factor
+// the zoom into one place rather than copying it four times.
 fn orbit_camera(
     time: Res<Time>,
     orbit: Option<Res<Orbit>>,

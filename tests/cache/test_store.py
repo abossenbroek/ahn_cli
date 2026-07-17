@@ -4,6 +4,7 @@ The store is exercised end-to-end against ``tmp_path`` -- no real network is
 used anywhere; the fetcher is an injected in-process closure.
 """
 
+import threading
 from pathlib import Path
 
 import pytest
@@ -168,3 +169,70 @@ def test_tampered_content_fails_checksum_verification(tmp_path: Path) -> None:
 
     with pytest.raises(ChecksumMismatchError):
         cache.get(_key())
+
+
+def test_concurrent_put_of_the_same_key_never_corrupts_the_index(
+    tmp_path: Path,
+) -> None:
+    """N threads racing to ``put()`` one key always leave a valid entry.
+
+    Whichever writer's blob lands last, :meth:`get` must return one of the
+    written payloads in full -- never a checksum failure or a crash from a
+    torn read of two overlapping writes to the same index entry.
+    """
+    cache = ContentAddressedCache(root=tmp_path)
+    key = _key()
+    payloads = [f"payload-{i}-".encode() * 500 for i in range(16)]
+
+    def worker(payload: bytes) -> None:
+        cache.put(key, payload)
+
+    threads = [threading.Thread(target=worker, args=(p,)) for p in payloads]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    result = cache.get(key)
+    assert result in payloads
+
+
+def test_crash_between_blob_and_index_write_never_leaves_a_corrupt_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A crash mid-index-write must never leave a dangling/corrupt entry.
+
+    Establishes one valid entry, then simulates a hard-kill exactly while the
+    *second* ``put()`` is writing the index (the blob write for the new
+    content already completed): the destination file is opened, half its new
+    content is written, then the write raises -- mimicking a process crash
+    mid-write. Today's ``write_text`` writes directly to the real index path,
+    so this leaves it truncated and pointing at no real blob (a bare
+    ``FileNotFoundError`` from :meth:`get`, not a clean signal). Once ``put``
+    writes through a temp file + ``os.replace``, the same fault lands on the
+    temp file only: the real index entry is untouched, so ``get`` still
+    resolves the *old* content -- this assertion fails on current
+    ``store.py`` and must pass after the fix.
+    """
+    cache = ContentAddressedCache(root=tmp_path)
+    key = _key()
+    cache.put(key, _CONTENT)
+    index_path = tmp_path / "index" / key.digest()
+    before = index_path.read_text()
+
+    def crashing_write_text(
+        self: Path, data: str, *args: object, **kwargs: object
+    ) -> int:
+        del args, kwargs
+        with self.open("w", encoding="utf-8") as handle:
+            handle.write(data[: len(data) // 2])
+        msg = "simulated crash mid index write"
+        raise OSError(msg)
+
+    monkeypatch.setattr(Path, "write_text", crashing_write_text)
+
+    with pytest.raises(OSError, match="simulated crash"):
+        cache.put(key, b"a completely different payload")
+
+    assert index_path.read_text() == before
+    assert cache.get(key) == _CONTENT

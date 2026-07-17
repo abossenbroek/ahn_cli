@@ -6,11 +6,18 @@ root: an ``index/`` entry per key recording the content hash, and a ``blobs/``
 entry per content hash holding the bytes. On read the stored bytes are re-hashed
 and checked against the recorded hash, so a tampered or corrupt blob fails
 verification instead of being returned silently.
+
+Every write (blob or index entry) lands on a temp file in the destination's own
+directory, then an atomic rename swaps it into place -- so a crash mid-write,
+or a concurrent :meth:`ContentAddressedCache.put` racing another writer for
+the same key, can only ever leave the destination as its previous content or
+the new content in full, never a torn write in between.
 """
 
 from __future__ import annotations
 
 import hashlib
+import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -22,6 +29,47 @@ if TYPE_CHECKING:
 
 _INDEX_DIRNAME = "index"
 _BLOBS_DIRNAME = "blobs"
+
+
+def _tmp_path_for(path: Path) -> Path:
+    """Return a unique temp path beside ``path``, on the same filesystem.
+
+    Sharing the destination's directory keeps the later atomic rename on one
+    filesystem (a cross-filesystem replace is not atomic); the random suffix
+    means concurrent writers to the same destination never collide on the
+    same temp file.
+    """
+    return path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+
+
+def _atomic_write_bytes(path: Path, data: bytes) -> None:
+    """Write ``data`` to ``path`` crash-safely: temp file + atomic rename.
+
+    A reader can only ever observe ``path``'s previous content or ``data`` in
+    full -- never a partial write, whether from a crash mid-write or another
+    writer racing to the same destination.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = _tmp_path_for(path)
+    try:
+        tmp_path.write_bytes(data)
+        tmp_path.replace(path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` crash-safely: temp file + atomic rename.
+
+    Mirrors :func:`_atomic_write_bytes` for the index entry's text content.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = _tmp_path_for(path)
+    try:
+        tmp_path.write_text(text)
+        tmp_path.replace(path)
+    finally:
+        tmp_path.unlink(missing_ok=True)
 
 
 class ChecksumMismatchError(Exception):
@@ -72,14 +120,16 @@ class ContentAddressedCache:
               entry mapping ``key`` to that hash, creating parent directories
               as needed.
             - Returns the 64-character lowercase hex content hash.
+            - Crash-safe: both the blob and the index entry are written via a
+              temp file + ``os.replace()`` (see module docstring), so a crash
+              or a concurrent :meth:`put` of the same key never leaves the
+              index pointing at an absent or partial blob.
         """
         content_hash = hashlib.sha256(content).hexdigest()
         blob_path = self._blob_path(content_hash)
-        blob_path.parent.mkdir(parents=True, exist_ok=True)
-        blob_path.write_bytes(content)
+        _atomic_write_bytes(blob_path, content)
         index_path = self._index_path(key)
-        index_path.parent.mkdir(parents=True, exist_ok=True)
-        index_path.write_text(content_hash)
+        _atomic_write_text(index_path, content_hash)
         return content_hash
 
     def get(self, key: CacheKey) -> bytes | None:

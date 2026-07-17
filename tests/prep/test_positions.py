@@ -17,13 +17,14 @@ from __future__ import annotations
 
 import hashlib
 import struct
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import numpy.typing as npt
 import pytest
 import rasterio
 from rasterio.transform import from_bounds
+from rasterio.windows import Window
 
 from ahn_cli.prep.positions import (
     PositionsExportError,
@@ -354,6 +355,89 @@ def test_non_square_raster_round_trips(tmp_path: Path) -> None:
 
 
 # --------------------------------------------------------------------------
+# Streaming: bounded memory, and equality against a whole-load oracle
+# --------------------------------------------------------------------------
+
+
+def test_export_reads_the_dsm_one_scanline_at_a_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every DSM read is a single-row window -- never a whole-band read.
+
+    Wraps :meth:`rasterio.DatasetReader.read` and asserts every call it
+    intercepts carries a ``window`` bounded to exactly one scanline, proving
+    the export genuinely streams rather than materialising the elevation
+    plane whole under the hood.
+    """
+    elevation = np.arange(20, dtype=np.float32).reshape(4, 5)
+    src = tmp_path / "dsm.tif"
+    _write_dsm(src, elevation)
+    out = tmp_path / "positions.exr"
+    real_read = rasterio.DatasetReader.read
+
+    def _guarded_read(
+        self: rasterio.DatasetReader,
+        indexes: int | None = None,
+        *,
+        window: Window | None = None,
+    ) -> npt.NDArray[np.float32]:
+        assert isinstance(window, Window), (
+            "DSM read without a bounding window"
+        )
+        assert window.height == 1, (
+            f"expected a single-scanline window, got height={window.height}"
+        )
+        return real_read(self, indexes, window=window)
+
+    monkeypatch.setattr(rasterio.DatasetReader, "read", _guarded_read)
+
+    export_positions(src, out)
+
+    _, _, _, _, b = _parse_exr(out.read_bytes())
+    assert np.array_equal(b, elevation)
+
+
+def test_export_matches_a_whole_load_oracle(tmp_path: Path) -> None:
+    """The streamed export matches an independent whole-load computation.
+
+    Reads the DSM fully in the test itself (a from-scratch reimplementation
+    of the retired whole-array algorithm: pixel-centre easting/northing via
+    the transform, nodata collapsed to the ``0.0`` sentinel) and asserts the
+    streamed :func:`export_positions` produces bit-identical R/G/B planes.
+    """
+    rng = np.random.default_rng(0)
+    height, width = 6, 9
+    elevation = rng.uniform(-5, 50, size=(height, width)).astype(np.float32)
+    elevation[1, 2] = _NODATA
+    elevation[4, 7] = _NODATA
+    src = tmp_path / "dsm.tif"
+    _write_dsm(src, elevation)
+    out = tmp_path / "positions.exr"
+
+    stats = export_positions(src, out)
+
+    with rasterio.open(src) as dataset:
+        # Same untyped-Affine-to-tuple cast the export itself uses (see its
+        # ``affine = cast(...)`` comment): the stub exposes no typed members.
+        transform = cast("tuple[float, ...]", dataset.transform)
+    a, b_coef, c, d, e, f = transform[:6]
+    cols = np.arange(width, dtype=np.float64) + 0.5
+    rows = np.arange(height, dtype=np.float64) + 0.5
+    col_grid, row_grid = np.meshgrid(cols, rows)
+    expected_r = (a * col_grid + b_coef * row_grid + c).astype(np.float32)
+    expected_g = (d * col_grid + e * row_grid + f).astype(np.float32)
+    void = elevation == np.float32(_NODATA)
+    expected_b = elevation.copy()
+    expected_b[void] = np.float32(0.0)
+
+    _, _, r, g, b = _parse_exr(out.read_bytes())
+    assert np.array_equal(r, expected_r)
+    assert np.array_equal(g, expected_g)
+    assert np.array_equal(b, expected_b)
+    assert stats.nodata_pixels == int(np.count_nonzero(void))
+
+
+# --------------------------------------------------------------------------
 # Failure mode
 # --------------------------------------------------------------------------
 
@@ -368,9 +452,13 @@ def test_constant_elevation_dsm_is_refused(tmp_path: Path) -> None:
     """A multi-pixel DSM at one constant elevation carries no genuine relief."""
     src = tmp_path / "dsm.tif"
     _write_dsm(src, np.full((2, 2), 5.0, dtype=np.float32))
+    out = tmp_path / "out.exr"
 
     with pytest.raises(PositionsExportError, match="genuine relief"):
-        export_positions(src, tmp_path / "out.exr")
+        export_positions(src, out)
+    # The rejected run leaves no partial output or leftover temp file behind.
+    assert not out.exists()
+    assert not (tmp_path / "out.tmp.exr").exists()
 
 
 def test_all_nodata_dsm_is_refused(tmp_path: Path) -> None:

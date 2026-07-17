@@ -40,12 +40,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, BinaryIO
 
+from ahn_cli.prep.spill import (
+    MIN_FREE_DISK_BYTES,
+    DiskFloorError,
+    ensure_free_disk,
+)
 from ahn_cli.tiles3d.errors import Tiles3dError
+from ahn_cli.tiles3d.parallel import default_window, ordered_encode
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
     from ahn_cli.tiles3d.mesh import Region
+    from ahn_cli.tiles3d.parallel import PoolFactory
 
 __all__ = [
     "BLOB_ALIGNMENT",
@@ -59,6 +66,7 @@ __all__ = [
     "INDEX_OFFSET",
     "LEVEL_RECORD_SIZE",
     "MAGIC",
+    "MIN_FREE_DISK_BYTES",
     "NO_TEXTURE_SHA256",
     "LevelRecord",
     "Pack",
@@ -67,6 +75,7 @@ __all__ = [
     "PackIndexEntry",
     "TileKey",
     "read_pack",
+    "require_free_disk",
     "write_pack",
 ]
 
@@ -267,6 +276,29 @@ class Pack:
 # --------------------------------------------------------------------------
 
 
+def require_free_disk(
+    directory: Path,
+    incoming_bytes: int,
+    *,
+    min_free_bytes: int = MIN_FREE_DISK_BYTES,
+) -> None:
+    """Guard a tiles3d write against the shared 20 GB free-disk floor.
+
+    Reuses :func:`ahn_cli.prep.spill.ensure_free_disk` (the same floor the
+    out-of-core prep path enforces) and translates its
+    :class:`~ahn_cli.prep.spill.DiskFloorError` into the tiles3d context's
+    :class:`~ahn_cli.tiles3d.errors.Tiles3dError`, so a breach surfaces as the
+    verb's own typed error and the build's crash-safe swap restores the
+    previous deliverable untouched.
+    """
+    try:
+        ensure_free_disk(
+            directory, incoming_bytes, min_free_bytes=min_free_bytes
+        )
+    except DiskFloorError as exc:
+        raise Tiles3dError(str(exc)) from exc
+
+
 def write_pack(
     dest: Path | BinaryIO,
     entries: Sequence[PackEntry],
@@ -274,6 +306,9 @@ def write_pack(
     *,
     root_geometric_error: float,
     content_kind: int,
+    workers: int = 1,
+    window: int | None = None,
+    pool_factory: PoolFactory | None = None,
 ) -> bytes:
     """Stream a spec-valid ``AHNP`` pack to ``dest`` in one bounded pass.
 
@@ -283,24 +318,32 @@ def write_pack(
           ``level_count`` (the distinct levels, which must be a contiguous
           ``0..N-1``).
         - ``blob_source(key)`` returns ``(primary_bytes, texture_bytes)``
-          for one tile, fetched lazily in index order so at most one tile's
-          blobs are resident. ``texture_bytes`` is ``None`` for a game or
-          splat pack (``content_kind = 1`` or ``2``) and non-empty for a
-          heightfield pack (``content_kind = 0``).
+          for one tile, called once per tile. ``texture_bytes`` is ``None``
+          for a game or splat pack (``content_kind = 1`` or ``2``) and
+          non-empty for a heightfield pack (``content_kind = 0``).
         - Writes the header (with ``dataset_id`` and both CRCs), the level
           directory, the sorted index, the hash section, then every blob in
           index order 16-aligned with zero inter-blob padding, and returns
           the pack's ``dataset_id`` (32 bytes). ``dest`` may be a path or a
           seekable binary file; a path is opened, written and closed.
+        - ``workers`` (default ``1``) fans the ``blob_source`` encodes across
+          an injectable ``pool_factory`` (default a thread pool), keeping the
+          results streamed to disk in index order with at most ``window``
+          (default ``2 * workers``) encoded blobs resident. ``workers == 1``
+          is the serial reference, run inline with no pool. The output bytes
+          are identical for every worker count.
+        - When ``dest`` is a path, every blob write is guarded by the shared
+          20 GB free-disk floor (:func:`require_free_disk`); an in-memory
+          ``dest`` (a rebuild buffer) is not.
         - Deterministic: identical bytes for identical inputs.
 
     Failure modes (each a :class:`~ahn_cli.tiles3d.errors.Tiles3dError`):
         - ``content_kind`` not in ``{0, 1, 2}``; ``root_geometric_error``
           non-finite; ``entries`` empty; a duplicate tile key; a non-zero
           ``tz``; a non-finite or non-well-ordered region / geometric error;
-          a level set that is not a contiguous ``0..N-1``; an empty primary
-          blob; a heightfield tile with a missing / empty texture, or a
-          game/splat tile whose ``blob_source`` returns a texture.
+          an empty primary blob; a heightfield tile with a missing / empty
+          texture, or a game/splat tile whose ``blob_source`` returns a
+          texture; a write that would breach the free-disk floor.
     """
     if content_kind not in (
         CONTENT_KIND_HEIGHTFIELD,
@@ -322,6 +365,7 @@ def write_pack(
         raise Tiles3dError(msg)
     ordered = _order_entries(entries)
     levels = _level_directory(ordered)
+    effective_window = default_window(workers) if window is None else window
     if isinstance(dest, Path):
         with dest.open("wb") as handle:
             return _stream(
@@ -331,9 +375,22 @@ def write_pack(
                 blob_source,
                 root_geometric_error,
                 content_kind,
+                workers=workers,
+                window=effective_window,
+                pool_factory=pool_factory,
+                disk_dir=dest.parent,
             )
     return _stream(
-        dest, ordered, levels, blob_source, root_geometric_error, content_kind
+        dest,
+        ordered,
+        levels,
+        blob_source,
+        root_geometric_error,
+        content_kind,
+        workers=workers,
+        window=effective_window,
+        pool_factory=pool_factory,
+        disk_dir=None,
     )
 
 
@@ -453,26 +510,47 @@ def _layout(tile_count: int, level_count: int) -> _Layout:
     )
 
 
-def _stream(
+def _stream(  # noqa: PLR0913 -- one keyword per injected write-path seam
     handle: BinaryIO,
     ordered: list[PackEntry],
     levels: list[LevelRecord],
     blob_source: Callable[[TileKey], tuple[bytes, bytes | None]],
     root_geometric_error: float,
     content_kind: int,
+    *,
+    workers: int,
+    window: int,
+    pool_factory: PoolFactory | None,
+    disk_dir: Path | None,
 ) -> bytes:
-    """Write blobs from ``blob_region_start`` then seek back to patch meta."""
+    """Write blobs from ``blob_region_start`` then seek back to patch meta.
+
+    The ``blob_source`` encodes run through :func:`ordered_encode`, so up to
+    ``window`` tiles encode concurrently while this writer drains them in the
+    canonical index order and streams each to disk — bounded memory, unchanged
+    bytes. Each blob write is guarded by the free-disk floor when a real
+    ``disk_dir`` is known (an in-memory rebuild buffer passes ``None``).
+    """
     layout = _layout(len(ordered), len(levels))
     handle.seek(layout.blob_region_start)
     cursor = layout.blob_region_start
     index_bytes = bytearray()
     hash_bytes = bytearray()
-    for entry in ordered:
-        primary, texture = blob_source(entry.key)
+    blobs = ordered_encode(
+        ordered,
+        lambda entry: blob_source(entry.key),
+        workers=workers,
+        window=window,
+        pool_factory=pool_factory,
+    )
+    for entry, (primary, texture) in zip(ordered, blobs, strict=True):
         if not primary:
             msg = f"pack entry {entry.key} has an empty primary blob."
             raise Tiles3dError(msg)
         _require_u32(len(primary), f"entry {entry.key} primary_size")
+        if disk_dir is not None:
+            incoming = len(primary) + (0 if texture is None else len(texture))
+            require_free_disk(disk_dir, incoming)
         cursor = _align(handle, cursor)
         primary_offset = cursor
         handle.write(primary)

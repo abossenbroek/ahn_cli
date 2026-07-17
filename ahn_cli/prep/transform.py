@@ -58,6 +58,7 @@ _AHN_SUBDIR = "ahn"
 _POINTCLOUD_LAZ = "pointcloud.laz"
 _POINTCLOUD_PLY = "pointcloud.ply"
 _PROVENANCE = "provenance.json"
+_HASH_CHUNK = 1 << 20
 
 
 def _no_op_progress(_done: int, _total: int) -> None:
@@ -209,15 +210,20 @@ def _apply_selection(
 
     When neither a class filter nor a thinning request applies, the deduplicated
     file is already final and is left untouched (its header point count is
-    returned). A voxel-thinning request is handled out of core by
-    :func:`~ahn_cli.prep.voxel_stream.stream_voxel_thin` (streamed class filter +
-    voxel group-by, bounded memory). Otherwise -- a class-filter-only or a
-    Poisson request -- the cloud is read once, the class mask and thinning are
+    returned). A class-filter-only request (no thinning) and a voxel-thinning
+    request are both handled out of core by
+    :func:`~ahn_cli.prep.voxel_stream.stream_voxel_thin` -- the former as
+    grade 0, that function's streamed class-filter identity -- so neither ever
+    loads the whole cloud. Only a Poisson-disk request falls back to the
+    in-memory path: its reference backend needs pairwise distances over the
+    whole (already class-filtered) cloud to reject points below the minimum
+    spacing, so it does not scale to national-size clouds the way the other
+    two paths above do; it is read once, the class mask and thinning are
     applied in the documented "filter then decimate" order, and the result is
     written back deterministically.
 
-    When the in-memory thinning path applies, calls ``progress(0, 1)`` before it
-    runs and ``progress(1, 1)`` after (a single atomic tick); the streaming voxel
+    When the in-memory Poisson path applies, calls ``progress(0, 1)`` before it
+    runs and ``progress(1, 1)`` after (a single atomic tick); the streaming
     path instead ticks once per streamed chunk. Both default to a no-op so
     callers that don't care about progress are unaffected.
     """
@@ -227,12 +233,13 @@ def _apply_selection(
     if not include and not exclude and thinning is None:
         with laspy.open(str(output)) as reader:
             return int(reader.header.point_count)
-    if isinstance(thinning, VoxelThinning):
+    if thinning is None or isinstance(thinning, VoxelThinning):
+        grade = thinning.grade if isinstance(thinning, VoxelThinning) else 0
         try:
             return stream_voxel_thin(
                 output,
                 output,
-                thinning.grade,
+                grade,
                 include,
                 exclude,
                 workdir=request.workdir,
@@ -242,18 +249,18 @@ def _apply_selection(
             # Disk floor, I/O trouble mid-stream, and the too-large-extent
             # cell-range check are all environment/data conditions the CLI
             # must report tidily, not leak as tracebacks.
-            msg = f"out-of-core voxel thinning failed: {exc}"
+            verb = "voxel thinning" if grade else "class filtering"
+            msg = f"out-of-core {verb} failed: {exc}"
             raise PrepError(msg) from exc
     with laspy.open(str(output)) as reader:
         las = reader.read()
     keep = _class_mask(las, include, exclude)
     las.points = las.points[keep]
-    if thinning is not None:
-        report = progress if progress is not None else _no_op_progress
-        report(0, 1)
-        indices = thin(_coords(las), thinning, backend=NumpyBackend())
-        las.points = las.points[indices]
-        report(1, 1)
+    report = progress if progress is not None else _no_op_progress
+    report(0, 1)
+    indices = thin(_coords(las), thinning, backend=NumpyBackend())
+    las.points = las.points[indices]
+    report(1, 1)
     las.write(str(output))
     return len(las.points)
 
@@ -350,7 +357,7 @@ def _write_prep_provenance(
         download_started_at=_earliest(provenances),
         download_finished_at=_latest(provenances),
         input_checksum=_concat_checksum([tile.path for tile in tiles]),
-        output_checksum=hashlib.sha256(output.read_bytes()).hexdigest(),
+        output_checksum=_sha256_file(output),
         tool_version=base.tool_version,
         generation=base.generation,
         request_keys=(
@@ -384,6 +391,19 @@ def _concat_checksum(paths: list[Path]) -> str:
     digest = hashlib.sha256()
     for path in paths:
         digest.update(path.read_bytes())
+    return digest.hexdigest()
+
+
+def _sha256_file(path: Path) -> str:
+    """Return a file's SHA-256 hex, hashed in bounded-memory chunks.
+
+    Used for the finished ``pointcloud.laz``'s output checksum, which can be a
+    national-scale cloud far too large to hold whole via ``read_bytes()``.
+    """
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(_HASH_CHUNK), b""):
+            digest.update(block)
     return digest.hexdigest()
 
 

@@ -38,6 +38,7 @@ pinned (never floated to the newest available layer).
 
 from __future__ import annotations
 
+import concurrent.futures
 import hashlib
 import json
 from dataclasses import dataclass, field
@@ -46,9 +47,11 @@ from importlib.metadata import version
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, cast
 
+import numpy as np
 import rasterio
 import requests
 from rasterio.merge import merge
+from rasterio.windows import Window
 
 from ahn_cli.cache import CacheKey, ContentAddressedCache
 from ahn_cli.domain import (
@@ -58,7 +61,6 @@ from ahn_cli.domain import (
     Vintage,
     ensure_valid_bbox,
 )
-from ahn_cli.domain.authenticity import uniform_image
 from ahn_cli.fetch.acquisition import (
     AcquisitionError,
     AcquisitionRequest,
@@ -73,7 +75,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator
     from pathlib import Path
 
-    import numpy as np
     import numpy.typing as npt
 
     from ahn_cli.domain import ProgressCallback
@@ -85,6 +86,8 @@ _MOSAIC_NAME = "ortho.tif"
 _CACHE_DIRNAME = ".cache"
 _TIF_SUFFIX = ".tif"
 _POSITION_LEN = 2
+_ROW_BLOCK = 256
+"""Rows read per windowed block in the mosaic's streamed pixel pass."""
 
 # The pinned Beeldmateriaal RGB open-data vintage. Pinned, never floated to the
 # newest layer (spec requirement). 2025 is the first vintage with full
@@ -584,21 +587,84 @@ def select_ortho_dataset(
     raise OrthoUnavailableError(msg)
 
 
-def _pixel_checksum(
-    mosaic: npt.NDArray[np.uint8],
-    crs: str,
-    resolution_m: float,
-) -> str:
-    """Return a SHA-256 over the mosaic pixel array and its raster header.
+class _UniformityTracker:
+    """Streaming equivalent of :func:`~ahn_cli.domain.authenticity.uniform_image`.
 
-    The digest covers crs, dtype, shape and resolution before the raw pixel
-    bytes, so it is a stable content address for the mosaic that does not depend
-    on the (non-deterministic) GeoTIFF container encoding.
+    That shared predicate needs the whole ``(bands, rows, cols)`` pixel array
+    at once; this class reaches the identical per-band verdict (every band
+    constant among its finite values, or no finite values at all, is
+    "uniform") by folding one windowed block of one band at a time, so the
+    mosaic is never held whole in memory.
     """
-    header = f"{crs}|{mosaic.dtype}|{mosaic.shape}|{resolution_m}".encode()
-    digest = hashlib.sha256(header)
-    digest.update(mosaic.tobytes())
-    return digest.hexdigest()
+
+    def __init__(self, band_count: int) -> None:
+        """Track uniformity across ``band_count`` bands, none differing yet."""
+        self._first: list[np.generic | None] = [None] * band_count
+        self._differs: list[bool] = [False] * band_count
+
+    def update(self, band_index: int, block: npt.NDArray[np.generic]) -> None:
+        """Fold one windowed block of band ``band_index`` in."""
+        if self._differs[band_index]:
+            return
+        finite = block[np.isfinite(block)]
+        if finite.size == 0:
+            return
+        first = self._first[band_index]
+        if first is None:
+            first = finite.flat[0]
+            self._first[band_index] = first
+        if bool(np.any(finite != first)):
+            self._differs[band_index] = True
+
+    @property
+    def is_uniform(self) -> bool:
+        """Whether every band folded in so far is constant (or all-void)."""
+        return not any(self._differs)
+
+
+def _pixel_checksum_header(
+    crs: str,
+    dtype: npt.DTypeLike,
+    shape: tuple[int, int, int],
+    resolution_m: float,
+) -> bytes:
+    """Encode the crs/dtype/shape/resolution header a mosaic checksum leads with.
+
+    Kept separate from the raw pixel bytes so it is a stable content address
+    for the mosaic that does not depend on the (non-deterministic) GeoTIFF
+    container encoding.
+    """
+    return f"{crs}|{np.dtype(dtype)}|{shape}|{resolution_m}".encode()
+
+
+def _stream_pixel_check(
+    dataset: rasterio.DatasetReader, crs: str, resolution_m: float
+) -> tuple[bool, str]:
+    """Fold ``dataset``'s pixels into the uniformity verdict and checksum.
+
+    Reads one band at a time, in ``_ROW_BLOCK``-row windows -- band-outer,
+    row-inner, matching the byte order a whole-array ``.tobytes()`` over
+    ``(bands, rows, cols)`` would produce -- so both the authenticity check
+    and the checksum are computed without ever holding the mosaic whole.
+    """
+    count = dataset.count
+    height = dataset.height
+    width = dataset.width
+    dtype = dataset.dtypes[0]
+    digest = hashlib.sha256(
+        _pixel_checksum_header(
+            crs, dtype, (count, height, width), resolution_m
+        )
+    )
+    tracker = _UniformityTracker(count)
+    for band in range(1, count + 1):
+        for row_start in range(0, height, _ROW_BLOCK):
+            block_height = min(_ROW_BLOCK, height - row_start)
+            window = Window(0, row_start, width, block_height)
+            block = dataset.read(band, window=window)
+            tracker.update(band - 1, block)
+            digest.update(block.tobytes())
+    return tracker.is_uniform, digest.hexdigest()
 
 
 def mosaic_and_clip(
@@ -615,8 +681,13 @@ def mosaic_and_clip(
           resolution, so the output dimensions are exactly the AOI extent
           divided by the pixel size, and an overlap band is written once (no
           double-counting). Sheets are ordered by filename for a
-          deterministic merge; the mosaic is written to ``out_path`` as a
-          GeoTIFF and its pixel-array checksum returned.
+          deterministic merge. The merge writes directly to a sibling temp
+          file in ``mem_limit``-bounded windowed chunks (never a whole
+          in-RAM mosaic array), and the authenticity check plus pixel
+          checksum are then folded from that temp file in windowed row
+          blocks; only once both pass is the temp file swapped into
+          ``out_path``, so a rejected mosaic never leaves a partial or
+          poisoned file there.
 
     Failure modes:
         - Propagates :class:`rasterio.errors.RasterioError` from a bad sheet.
@@ -627,43 +698,56 @@ def mosaic_and_clip(
     ordered = sorted(tile_paths, key=lambda path: path.name)
     with rasterio.open(ordered[0]) as first:
         crs = str(first.crs)
-        dtype = first.dtypes[0]
         res = first.res
-    mosaic, transform = merge(
-        [str(path) for path in ordered], bounds=aoi, res=res
-    )
-    pixels: npt.NDArray[np.uint8] = mosaic
-    if uniform_image(pixels):
-        msg = (
-            "orthophoto mosaic is a single uniform colour across every "
-            "pixel — that is placeholder imagery, not genuine "
-            "Beeldmateriaal photography; refusing to write "
-            f"{out_path.name}."
-        )
-        raise AcquisitionError(msg)
-    count = pixels.shape[0]
-    height = pixels.shape[1]
-    width = pixels.shape[2]
     resolution_m = res[0]
-    with rasterio.open(
-        out_path,
-        "w",
-        driver="GTiff",
-        height=height,
-        width=width,
-        count=count,
-        dtype=dtype,
-        crs=crs,
-        transform=transform,
-    ) as dst:
-        dst.write(pixels)
+    tmp_path = out_path.with_name(f"{out_path.stem}.tmp{out_path.suffix}")
+    try:
+        merge(
+            [str(path) for path in ordered],
+            bounds=aoi,
+            res=res,
+            dst_path=tmp_path,
+            # The Beeldmateriaal source tiles are JPEG/YCbCr; ``merge`` copies
+            # the first sheet's ``photometric=YCbCr`` into the destination but
+            # not its ``compress=JPEG``, and GDAL rejects that pairing. Pin a
+            # plain, uncompressed RGB GeoTIFF (the pre-streaming output profile)
+            # so decoded pixels are unchanged and the container is always valid.
+            # NOTE: keep this uncompressed. ``merge`` streams arbitrary
+            # destination windows via ``dst.write(window=...)``, and a
+            # compressed GeoTIFF (DEFLATE/LZW) rejects such random block writes
+            # ("Write failed") -- only uncompressed allows the seek-and-write
+            # merge does. A smaller on-disk mosaic would need a separate
+            # block-sequential re-encode pass; the Westland-scale path is the
+            # ``pipeline`` verb, which tiles the ortho and never writes a
+            # monolithic file, so this only affects standalone ``fetch``.
+            dst_kwds={"photometric": "RGB", "compress": "none"},
+        )
+        with rasterio.open(tmp_path) as written:
+            width = int(written.width)
+            height = int(written.height)
+            is_uniform, checksum = _stream_pixel_check(
+                written, crs, resolution_m
+            )
+        if is_uniform:
+            msg = (
+                "orthophoto mosaic is a single uniform colour across every "
+                "pixel — that is placeholder imagery, not genuine "
+                "Beeldmateriaal photography; refusing to write "
+                f"{out_path.name}."
+            )
+            raise AcquisitionError(msg)
+        tmp_path.replace(out_path)
+    finally:
+        # No-op after a successful replace (the temp no longer exists);
+        # removes the partial/rejected temp on every other path.
+        tmp_path.unlink(missing_ok=True)
     return OrthoMosaic(
         bbox=aoi,
         crs=crs,
         width=width,
         height=height,
         resolution_m=resolution_m,
-        pixel_checksum=_pixel_checksum(pixels, crs, resolution_m),
+        pixel_checksum=checksum,
     )
 
 
@@ -710,6 +794,63 @@ def _request_keys(
     return tuple(keys)
 
 
+def _fetch_ortho_tile(
+    tile: OrthoTile,
+    key: CacheKey,
+    cache: ContentAddressedCache,
+    http_get: HttpGet,
+) -> tuple[OrthoTile, CacheKey, bytes]:
+    """Download (or reuse the cache for) one ortho sheet.
+
+    Failure modes:
+        - :class:`AcquisitionError` if ``http_get`` raises for this sheet.
+    """
+    try:
+        content = cache.get_or_fetch(
+            key, _downloader(http_get, tile.download_url)
+        )
+    except requests.RequestException as exc:
+        msg = f"download failed for {tile.download_url}: {exc}"
+        raise AcquisitionError(msg) from exc
+    return tile, key, content
+
+
+def _fetch_ortho_tiles(
+    tiles: tuple[OrthoTile, ...],
+    dataset: OrthoDataset,
+    cache: ContentAddressedCache,
+    http_get: HttpGet,
+    download_jobs: int,
+) -> list[tuple[OrthoTile, CacheKey, bytes]]:
+    """Download every sheet through ``download_jobs`` concurrent workers.
+
+    Contract:
+        - Returns one result per sheet, ordered by ``tile_id`` ascending --
+          regardless of the order in which the pool completes them, so
+          callers must never rely on as-completed order for the emitted
+          sequence.
+    """
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=download_jobs
+    ) as executor:
+        futures = [
+            executor.submit(
+                _fetch_ortho_tile,
+                tile,
+                CacheKey(
+                    product=Product.ORTHO,
+                    tile_id=tile.tile_id,
+                    vintage=dataset.vintage,
+                ),
+                cache,
+                http_get,
+            )
+            for tile in tiles
+        ]
+        results = [future.result() for future in futures]
+    return sorted(results, key=lambda result: result[0].tile_id)
+
+
 def acquire_ortho(
     request: AcquisitionRequest,
     *,
@@ -719,6 +860,7 @@ def acquire_ortho(
     tool_version: str | None = None,
     registry: OrthoDatasetRegistry | None = None,
     progress: ProgressCallback | None = None,
+    download_jobs: int = 1,
 ) -> OrthoAcquisition:
     """Acquire the orthophoto for ``request`` into ``<site>/ortho/ortho.tif``.
 
@@ -731,11 +873,17 @@ def acquire_ortho(
           ``ortho.tif.provenance.json`` sidecar.
         - Deterministic: sheet order, mosaic pixels, and (with injected ``now``
           / ``tool_version``) provenance bytes are stable for the same feed and
-          sheets.
+          sheets, regardless of ``download_jobs``.
         - Idempotent downloads: a sheet already in the cache is not re-fetched.
         - Calls ``progress(tiles_done, total_tiles)`` once per downloaded sheet
           (before the mosaic step); defaults to a no-op so callers that don't
           care about progress are unaffected.
+        - ``download_jobs`` (default ``1``, serial) is the number of sheets
+          downloaded concurrently through a ``ThreadPoolExecutor`` when
+          greater than 1. Downloads may complete in any order, but every
+          other effect -- writes, checksum verification, and ``progress``
+          calls -- is always emitted in ascending ``tile_id`` order, matching
+          the ``download_jobs=1`` sequence exactly.
 
     Failure modes:
         - :class:`AcquisitionError` if the bbox is malformed / selector unwired
@@ -745,7 +893,11 @@ def acquire_ortho(
           failure funnels here so the CLI reports it cleanly. A sheet the
           mosaic authenticity gate or the checksum check rejects is evicted
           from the cache before the error is raised, so a retry re-downloads
-          it instead of replaying the poisoned bytes.
+          it instead of replaying the poisoned bytes. With
+          ``download_jobs=1`` a rejected sheet stops the run before any later
+          sheet is downloaded; with ``download_jobs>1`` every sheet's
+          download is already in flight, so later sheets may already have
+          been fetched (and cached) by the time the rejection is raised.
     """
     report = progress if progress is not None else _no_op_progress
     ortho_dir = request.site_dir / _ORTHO_SUBDIR
@@ -780,20 +932,10 @@ def acquire_ortho(
     tile_checksums: dict[str, str] = {}
     sheet_keys: list[CacheKey] = []
     total_tiles = len(resolved.tiles)
-    for tile in resolved.tiles:
-        key = CacheKey(
-            product=Product.ORTHO,
-            tile_id=tile.tile_id,
-            vintage=dataset.vintage,
-        )
+
+    def emit(tile: OrthoTile, key: CacheKey, content: bytes) -> None:
+        """Verify a downloaded sheet's checksum, write it, and report."""
         sheet_keys.append(key)
-        try:
-            content = cache.get_or_fetch(
-                key, _downloader(http_get, tile.download_url)
-            )
-        except requests.RequestException as exc:
-            msg = f"download failed for {tile.download_url}: {exc}"
-            raise AcquisitionError(msg) from exc
         digest = hashlib.sha256(content).hexdigest()
         if digest != tile.sha256:
             cache.discard(key)
@@ -808,6 +950,21 @@ def acquire_ortho(
         tile_paths.append(tile_path)
         tile_checksums[tile.download_url] = digest
         report(len(tile_paths), total_tiles)
+
+    if download_jobs <= 1:
+        for tile in resolved.tiles:
+            key = CacheKey(
+                product=Product.ORTHO,
+                tile_id=tile.tile_id,
+                vintage=dataset.vintage,
+            )
+            _, _, content = _fetch_ortho_tile(tile, key, cache, http_get)
+            emit(tile, key, content)
+    else:
+        for tile, key, content in _fetch_ortho_tiles(
+            resolved.tiles, dataset, cache, http_get, download_jobs
+        ):
+            emit(tile, key, content)
 
     mosaic_path = ortho_dir / _MOSAIC_NAME
     try:

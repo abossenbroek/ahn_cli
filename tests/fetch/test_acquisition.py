@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import math
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -104,6 +105,37 @@ class _Recorder:
     def laz_urls(self) -> list[str]:
         """Return only the tile-download URLs seen so far."""
         return [url for url in self.urls if url.endswith(".LAZ")]
+
+
+class _ScrambledLazDownloader:
+    """An injected HttpGet that finishes LAZ downloads out of tile-id order.
+
+    ``C_37EN1`` (the lexicographically smallest of the two-tile fixture area,
+    and the one the old serial loop always downloads and writes first) is
+    made to block until ``C_37EN2`` has already finished -- so the pool's
+    *completion* order is reversed from tile-id order, proving the emitted
+    sequence comes from a sort, not from as-completed order.
+    """
+
+    def __init__(self) -> None:
+        self._second_done = threading.Event()
+        self.completion_order: list[str] = []
+        self._lock = threading.Lock()
+
+    def __call__(self, url: str) -> bytes:
+        """Return the ATOM feed for feed URLs; scramble LAZ completion order."""
+        if not url.endswith(".LAZ"):
+            return _ATOM_BYTES
+        if "37EN1" in url:
+            assert self._second_done.wait(timeout=5), (
+                "the second tile never completed"
+            )
+        content = _genuine_laz_bytes()
+        with self._lock:
+            self.completion_order.append(url)
+        if "37EN1" not in url:
+            self._second_done.set()
+        return content
 
 
 class _SwitchablePayload:
@@ -607,6 +639,77 @@ def test_acquire_downloads_covering_tiles_from_a_geojson(
     )
 
     assert [p.name for p in written] == ["C_37EN1.LAZ", "C_37EN2.LAZ"]
+
+
+def test_acquire_with_jobs_emits_tile_id_order_despite_scrambled_completion(
+    tmp_path: Path,
+) -> None:
+    """download_jobs>1 always writes in tile-id order, whatever the pool does.
+
+    The pool completes ``C_37EN2`` before ``C_37EN1`` here, but the written
+    sequence (and therefore every provenance/report side effect) must still
+    come out sorted ascending by tile_id -- proving the result is collected
+    and sorted rather than emitted in as-completed order.
+    """
+    site = tmp_path / "delft"
+    path = _write_geojson(tmp_path, _polygon(*_COVERED_WGS84))
+    http_get = _ScrambledLazDownloader()
+
+    written = acquire(
+        _geojson_request(site, path),
+        http_get=http_get,
+        now=_fixed_now,
+        tool_version="v",
+        download_jobs=4,
+    )
+
+    assert "37EN1" not in http_get.completion_order[0]
+    assert [p.name for p in written] == ["C_37EN1.LAZ", "C_37EN2.LAZ"]
+
+
+def test_acquire_is_byte_identical_across_job_counts(tmp_path: Path) -> None:
+    """download_jobs=1 and download_jobs=8 write byte-identical output."""
+    path = _write_geojson(tmp_path, _polygon(*_COVERED_WGS84))
+
+    site_serial = tmp_path / "serial"
+    written_serial = acquire(
+        _geojson_request(site_serial, path),
+        http_get=_Recorder(),
+        now=_fixed_now,
+        tool_version="v",
+        download_jobs=1,
+    )
+
+    site_parallel = tmp_path / "parallel"
+    written_parallel = acquire(
+        _geojson_request(site_parallel, path),
+        http_get=_Recorder(),
+        now=_fixed_now,
+        tool_version="v",
+        download_jobs=8,
+    )
+
+    assert [p.name for p in written_serial] == [
+        p.name for p in written_parallel
+    ]
+    for serial_path, parallel_path in zip(
+        written_serial, written_parallel, strict=True
+    ):
+        assert serial_path.read_bytes() == parallel_path.read_bytes()
+
+    serial_provenance = sorted(
+        (site_serial / "ahn").glob("*.provenance.json")
+    )
+    parallel_provenance = sorted(
+        (site_parallel / "ahn").glob("*.provenance.json")
+    )
+    assert [p.name for p in serial_provenance] == [
+        p.name for p in parallel_provenance
+    ]
+    for serial_sidecar, parallel_sidecar in zip(
+        serial_provenance, parallel_provenance, strict=True
+    ):
+        assert serial_sidecar.read_bytes() == parallel_sidecar.read_bytes()
 
 
 def test_acquire_reports_progress_per_tile(tmp_path: Path) -> None:

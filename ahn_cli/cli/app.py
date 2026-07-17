@@ -38,6 +38,9 @@ from ahn_cli.fetch.source import (
     source_kind_tokens,
 )
 from ahn_cli.fetch.viirs import ViirsImportError, import_viirs
+from ahn_cli.pipeline.errors import PipelineError
+from ahn_cli.pipeline.run import run_spec
+from ahn_cli.pipeline.spec import parse_json, parse_yaml
 from ahn_cli.prep.decimate import (
     DEFAULT_SEED,
     PoissonThinning,
@@ -271,13 +274,23 @@ def cli() -> None:
     show_default=True,
     help="Show a progress bar during the run.",
 )
-def fetch(
+@click.option(
+    "-j",
+    "--jobs",
+    "jobs",
+    type=int,
+    default=1,
+    show_default=True,
+    help="Concurrent tile downloads (AHN and, with --ortho, orthophoto).",
+)
+def fetch(  # noqa: PLR0913 -- one CLI param per fetch option; a bag object would only hide them
     out: Path,
     city: str | None,
     bbox: str | None,
     geojson: str | None,
     ahn: str,
     source: str,
+    jobs: int,
     *,
     dsm: bool,
     ortho: bool,
@@ -292,6 +305,9 @@ def fetch(
     ``--dsm`` it additionally windowed-reads the DSM COG and clips it to
     ``<out>/dsm.tif`` with its own provenance sidecar; with ``--ortho`` it also
     mosaics the Beeldmateriaal orthophoto to ``<out>/ortho/ortho.tif``.
+    ``-j/--jobs`` (default 1, serial) downloads that many tiles concurrently
+    for the AHN and orthophoto steps; the written output is identical to a
+    serial run regardless of the job count.
     """
     selector, area = _select_area(city, bbox, geojson)
     generation = _GENERATION_REGISTRY.resolve_token(ahn)
@@ -311,6 +327,7 @@ def fetch(
             acquire(
                 request,
                 progress=_tqdm_progress(bar) if bar is not None else None,
+                download_jobs=jobs,
             )
         if dsm:
             with _progress_bar(
@@ -327,6 +344,7 @@ def fetch(
                 acquire_ortho(
                     request,
                     progress=_tqdm_progress(bar) if bar is not None else None,
+                    download_jobs=jobs,
                 )
     except AcquisitionError as exc:
         raise click.ClickException(str(exc)) from exc
@@ -880,6 +898,17 @@ def copc_command(
     ),
 )
 @click.option(
+    "--workers",
+    "workers",
+    type=click.IntRange(min=1),
+    default=None,
+    help=(
+        "Parallel per-tile encode workers (default: all CPU cores). The "
+        "writer streams to disk in canonical order, so any worker count "
+        "yields byte-identical output; use 1 to force the serial path."
+    ),
+)
+@click.option(
     "--progress/--no-progress",
     "progress",
     default=True,
@@ -891,6 +920,7 @@ def tiles3d_command(
     heights: Path,
     out: Path,
     profile_name: str,
+    workers: int | None,
     *,
     progress: bool,
 ) -> None:
@@ -922,6 +952,7 @@ def tiles3d_command(
                 out,
                 profile=profile,
                 progress=cb,
+                workers=workers,
             )
         except Tiles3dError as exc:
             raise click.ClickException(str(exc)) from exc
@@ -969,3 +1000,60 @@ def _tqdm_progress(bar: tqdm[NoReturn]) -> ProgressCallback:
         bar.refresh()
 
     return _report
+
+
+_YAML_SUFFIXES = frozenset({".yaml", ".yml"})
+"""Spec file suffixes parsed as YAML; every other suffix is parsed as JSON."""
+
+
+@cli.group(name="pipeline")
+def pipeline_group() -> None:
+    """Fuse the verbs into a tile-streaming pipeline driven by a spec."""
+
+
+@pipeline_group.command(name="run")
+@click.argument(
+    "spec_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+)
+@click.option(
+    "--point-spacing-m",
+    "point_spacing_m",
+    type=float,
+    default=None,
+    help=(
+        "AHN native point spacing (metres) driving the reconcile halo floor; "
+        "defaults to the read-source fallback."
+    ),
+)
+def pipeline_run_command(
+    spec_path: Path, point_spacing_m: float | None
+) -> None:
+    """Run a PDAL-style pipeline spec (YAML or JSON) end-to-end.
+
+    Parses the spec, wires its ``read`` source, stage chain and sink, then
+    streams every tile end-to-end in bounded memory -- resumable and
+    deterministic. Writes the sink's deliverable (a 3D Tiles ``tileset.json``
+    plus, for a lossy profile, a packed ``tiles.hfp`` and sidecars; or the
+    per-tile reconciled-grid store for a cloud sink) into the spec's output
+    directory.
+    """
+    text = spec_path.read_text(encoding="utf-8")
+    parse = (
+        parse_yaml
+        if spec_path.suffix.lower() in _YAML_SUFFIXES
+        else parse_json
+    )
+    try:
+        spec = parse(text)
+        result = (
+            run_spec(spec)
+            if point_spacing_m is None
+            else run_spec(spec, point_spacing_m=point_spacing_m)
+        )
+    except PipelineError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(
+        f"Pipeline {result.deliverable_path}: {result.tile_count} tile(s) "
+        f"({result.processed} computed, {result.skipped} resumed)."
+    )

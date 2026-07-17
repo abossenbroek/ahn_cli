@@ -710,12 +710,17 @@ def mosaic_and_clip(
             # The Beeldmateriaal source tiles are JPEG/YCbCr; ``merge`` copies
             # the first sheet's ``photometric=YCbCr`` into the destination but
             # not its ``compress=JPEG``, and GDAL rejects that pairing. Pin a
-            # plain RGB GeoTIFF so decoded pixels are unchanged and the
-            # container is always valid, with lossless DEFLATE so a
-            # Westland-scale ortho stays on disk (an uncompressed 8x8 km / 8 cm
-            # RGB mosaic is ~30 GB; DEFLATE cuts that several-fold with zero
-            # pixel change, and downstream windowed reads decompress per block).
-            dst_kwds={"photometric": "RGB", "compress": "deflate"},
+            # plain, uncompressed RGB GeoTIFF (the pre-streaming output profile)
+            # so decoded pixels are unchanged and the container is always valid.
+            # NOTE: keep this uncompressed. ``merge`` streams arbitrary
+            # destination windows via ``dst.write(window=...)``, and a
+            # compressed GeoTIFF (DEFLATE/LZW) rejects such random block writes
+            # ("Write failed") -- only uncompressed allows the seek-and-write
+            # merge does. A smaller on-disk mosaic would need a separate
+            # block-sequential re-encode pass; the Westland-scale path is the
+            # ``pipeline`` verb, which tiles the ortho and never writes a
+            # monolithic file, so this only affects standalone ``fetch``.
+            dst_kwds={"photometric": "RGB", "compress": "none"},
         )
         with rasterio.open(tmp_path) as written:
             width = int(written.width)

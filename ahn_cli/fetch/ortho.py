@@ -38,6 +38,7 @@ pinned (never floated to the newest available layer).
 
 from __future__ import annotations
 
+import concurrent.futures
 import hashlib
 import json
 from dataclasses import dataclass, field
@@ -710,6 +711,63 @@ def _request_keys(
     return tuple(keys)
 
 
+def _fetch_ortho_tile(
+    tile: OrthoTile,
+    key: CacheKey,
+    cache: ContentAddressedCache,
+    http_get: HttpGet,
+) -> tuple[OrthoTile, CacheKey, bytes]:
+    """Download (or reuse the cache for) one ortho sheet.
+
+    Failure modes:
+        - :class:`AcquisitionError` if ``http_get`` raises for this sheet.
+    """
+    try:
+        content = cache.get_or_fetch(
+            key, _downloader(http_get, tile.download_url)
+        )
+    except requests.RequestException as exc:
+        msg = f"download failed for {tile.download_url}: {exc}"
+        raise AcquisitionError(msg) from exc
+    return tile, key, content
+
+
+def _fetch_ortho_tiles(
+    tiles: tuple[OrthoTile, ...],
+    dataset: OrthoDataset,
+    cache: ContentAddressedCache,
+    http_get: HttpGet,
+    download_jobs: int,
+) -> list[tuple[OrthoTile, CacheKey, bytes]]:
+    """Download every sheet through ``download_jobs`` concurrent workers.
+
+    Contract:
+        - Returns one result per sheet, ordered by ``tile_id`` ascending --
+          regardless of the order in which the pool completes them, so
+          callers must never rely on as-completed order for the emitted
+          sequence.
+    """
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=download_jobs
+    ) as executor:
+        futures = [
+            executor.submit(
+                _fetch_ortho_tile,
+                tile,
+                CacheKey(
+                    product=Product.ORTHO,
+                    tile_id=tile.tile_id,
+                    vintage=dataset.vintage,
+                ),
+                cache,
+                http_get,
+            )
+            for tile in tiles
+        ]
+        results = [future.result() for future in futures]
+    return sorted(results, key=lambda result: result[0].tile_id)
+
+
 def acquire_ortho(
     request: AcquisitionRequest,
     *,
@@ -719,6 +777,7 @@ def acquire_ortho(
     tool_version: str | None = None,
     registry: OrthoDatasetRegistry | None = None,
     progress: ProgressCallback | None = None,
+    download_jobs: int = 1,
 ) -> OrthoAcquisition:
     """Acquire the orthophoto for ``request`` into ``<site>/ortho/ortho.tif``.
 
@@ -731,11 +790,17 @@ def acquire_ortho(
           ``ortho.tif.provenance.json`` sidecar.
         - Deterministic: sheet order, mosaic pixels, and (with injected ``now``
           / ``tool_version``) provenance bytes are stable for the same feed and
-          sheets.
+          sheets, regardless of ``download_jobs``.
         - Idempotent downloads: a sheet already in the cache is not re-fetched.
         - Calls ``progress(tiles_done, total_tiles)`` once per downloaded sheet
           (before the mosaic step); defaults to a no-op so callers that don't
           care about progress are unaffected.
+        - ``download_jobs`` (default ``1``, serial) is the number of sheets
+          downloaded concurrently through a ``ThreadPoolExecutor`` when
+          greater than 1. Downloads may complete in any order, but every
+          other effect -- writes, checksum verification, and ``progress``
+          calls -- is always emitted in ascending ``tile_id`` order, matching
+          the ``download_jobs=1`` sequence exactly.
 
     Failure modes:
         - :class:`AcquisitionError` if the bbox is malformed / selector unwired
@@ -745,7 +810,11 @@ def acquire_ortho(
           failure funnels here so the CLI reports it cleanly. A sheet the
           mosaic authenticity gate or the checksum check rejects is evicted
           from the cache before the error is raised, so a retry re-downloads
-          it instead of replaying the poisoned bytes.
+          it instead of replaying the poisoned bytes. With
+          ``download_jobs=1`` a rejected sheet stops the run before any later
+          sheet is downloaded; with ``download_jobs>1`` every sheet's
+          download is already in flight, so later sheets may already have
+          been fetched (and cached) by the time the rejection is raised.
     """
     report = progress if progress is not None else _no_op_progress
     ortho_dir = request.site_dir / _ORTHO_SUBDIR
@@ -780,20 +849,10 @@ def acquire_ortho(
     tile_checksums: dict[str, str] = {}
     sheet_keys: list[CacheKey] = []
     total_tiles = len(resolved.tiles)
-    for tile in resolved.tiles:
-        key = CacheKey(
-            product=Product.ORTHO,
-            tile_id=tile.tile_id,
-            vintage=dataset.vintage,
-        )
+
+    def emit(tile: OrthoTile, key: CacheKey, content: bytes) -> None:
+        """Verify a downloaded sheet's checksum, write it, and report."""
         sheet_keys.append(key)
-        try:
-            content = cache.get_or_fetch(
-                key, _downloader(http_get, tile.download_url)
-            )
-        except requests.RequestException as exc:
-            msg = f"download failed for {tile.download_url}: {exc}"
-            raise AcquisitionError(msg) from exc
         digest = hashlib.sha256(content).hexdigest()
         if digest != tile.sha256:
             cache.discard(key)
@@ -808,6 +867,21 @@ def acquire_ortho(
         tile_paths.append(tile_path)
         tile_checksums[tile.download_url] = digest
         report(len(tile_paths), total_tiles)
+
+    if download_jobs <= 1:
+        for tile in resolved.tiles:
+            key = CacheKey(
+                product=Product.ORTHO,
+                tile_id=tile.tile_id,
+                vintage=dataset.vintage,
+            )
+            _, _, content = _fetch_ortho_tile(tile, key, cache, http_get)
+            emit(tile, key, content)
+    else:
+        for tile, key, content in _fetch_ortho_tiles(
+            resolved.tiles, dataset, cache, http_get, download_jobs
+        ):
+            emit(tile, key, content)
 
     mosaic_path = ortho_dir / _MOSAIC_NAME
     try:

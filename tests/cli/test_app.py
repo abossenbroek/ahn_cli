@@ -118,15 +118,18 @@ class _AcquireSpy:
     def __init__(self) -> None:
         self.request: AcquisitionRequest | None = None
         self.progress: ProgressCallback | None = None
+        self.download_jobs: int | None = None
 
     def __call__(
         self,
         request: AcquisitionRequest,
         *,
         progress: ProgressCallback | None = None,
+        download_jobs: int = 1,
     ) -> tuple[Path, ...]:
         self.request = request
         self.progress = progress
+        self.download_jobs = download_jobs
         return ()
 
 
@@ -136,15 +139,18 @@ class _OrthoSpy:
     def __init__(self) -> None:
         self.requests: list[AcquisitionRequest] = []
         self.progress: ProgressCallback | None = None
+        self.download_jobs: int | None = None
 
     def __call__(
         self,
         request: AcquisitionRequest,
         *,
         progress: ProgressCallback | None = None,
+        download_jobs: int = 1,
     ) -> None:
         self.requests.append(request)
         self.progress = progress
+        self.download_jobs = download_jobs
 
 
 def test_fetch_bbox_dispatches_to_acquire(
@@ -165,6 +171,50 @@ def test_fetch_bbox_dispatches_to_acquire(
     assert spy.request is not None
     assert spy.request.selector.value == "bbox"
     assert spy.request.source is SourceKind.PDOK
+
+
+def test_fetch_jobs_defaults_to_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without -j/--jobs, acquire() is called with the serial default."""
+    spy = _AcquireSpy()
+    monkeypatch.setattr(app, "acquire", spy)
+
+    result = CliRunner().invoke(
+        cli,
+        ["fetch", "--out", str(tmp_path / "s"), "--bbox", "0,0,1,1"],
+    )
+
+    assert result.exit_code == 0
+    assert spy.download_jobs == 1
+
+
+def test_fetch_jobs_flag_flows_to_acquire_and_acquire_ortho(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """-j/--jobs is passed through to both acquire() and acquire_ortho()."""
+    acquire_spy = _AcquireSpy()
+    ortho_spy = _OrthoSpy()
+    monkeypatch.setattr(app, "acquire", acquire_spy)
+    monkeypatch.setattr(app, "acquire_ortho", ortho_spy)
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "fetch",
+            "--out",
+            str(tmp_path / "s"),
+            "--bbox",
+            "0,0,1,1",
+            "--ortho",
+            "-j",
+            "8",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert acquire_spy.download_jobs == 8
+    assert ortho_spy.download_jobs == 8
 
 
 class _DsmSpy:

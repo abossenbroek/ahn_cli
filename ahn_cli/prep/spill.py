@@ -24,15 +24,16 @@ Two concerns are addressed:
 
 from __future__ import annotations
 
-import fcntl
+import importlib
 import shutil
 from typing import TYPE_CHECKING
 
 import numpy as np
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
+    from collections.abc import Callable, Iterator, Sequence
     from pathlib import Path
+    from types import ModuleType
     from typing import BinaryIO
 
     import numpy.typing as npt
@@ -48,6 +49,26 @@ _DEFAULT_BUFFER_BYTES = 256 * 1024**2
 
 _DEFAULT_MERGE_BUFFER_ITEMS = 1_000_000
 """Default per-run in-memory block size for the merge/read primitives."""
+
+
+def import_fcntl(
+    import_module: Callable[[str], ModuleType] = importlib.import_module,
+) -> ModuleType | None:
+    """Import :mod:`fcntl`, or ``None`` on platforms without it (Windows).
+
+    ``import_module`` is injectable so both the "available" and
+    "unavailable" branches are exercisable without an actual fcntl-less
+    platform in CI, mirroring
+    :func:`ahn_cli.prep.decimate.select_backend`'s mlx-import pattern.
+    """
+    try:
+        return import_module("fcntl")
+    except ImportError:
+        return None
+
+
+fcntl = import_fcntl()
+"""The :mod:`fcntl` module, or ``None`` on platforms without it (Windows)."""
 
 _F_NOCACHE = getattr(fcntl, "F_NOCACHE", None)
 """``fcntl.F_NOCACHE`` where the platform defines it (macOS only); else
@@ -105,10 +126,10 @@ def advise_no_cache(fileobj: BinaryIO) -> None:
           platforms that define ``F_NOCACHE`` (macOS), so large sequential
           spill writes do not evict the working set from the page cache --
           the same technique SQLite uses on macOS.
-        - A silent no-op wherever ``F_NOCACHE`` is unavailable (Linux and
-          other platforms); never raises.
+        - A silent no-op wherever ``F_NOCACHE`` is unavailable (Linux,
+          Windows, and other platforms); never raises.
     """
-    if _F_NOCACHE is None:
+    if fcntl is None or _F_NOCACHE is None:
         return
     fcntl.fcntl(fileobj.fileno(), _F_NOCACHE, 1)
 

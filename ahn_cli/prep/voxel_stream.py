@@ -34,7 +34,11 @@ flow is five streaming passes over a scratch spill directory:
    and keep the smallest index in each occupied cell -- the partitioning
    guarantees every point of a given cell lands in the same partition, so this
    local reduction is exact. Writes the partition's surviving indices as a
-   sorted run.
+   sorted run. The pass-2 partition count is clamped at
+   :data:`_PARTITION_MAX` (a file-handle/overhead budget, not a hard memory
+   ceiling): a partition still too large to read at once past that clamp is
+   re-hash-partitioned further here, recursively, before being reduced --
+   see :func:`_reduce_partition`.
 4. **Merge.** K-way merge the per-partition sorted runs into one sorted stream
    of every surviving index, via :func:`~ahn_cli.prep.spill.merge_sorted_runs`.
 5. **Write.** Re-stream the source a second time and, per chunk, consume the
@@ -96,6 +100,38 @@ _PARTITION_TARGET_BYTES = 128 * 1024**2
 
 _PARTITION_MIN = 1
 _PARTITION_MAX = 4096
+"""Initial pass-2 fan-out cap (file-handle/overhead budget, not a hard ceiling:
+see :data:`_PARTITION_MAX_BYTES` -- a partition that is still oversized after
+this cap bites is re-split further in pass 3, so arbitrarily large inputs
+still spill within :data:`~ahn_cli.prep.spill.MIN_FREE_DISK_BYTES`)."""
+
+_PARTITION_MAX_BYTES = 4 * _PARTITION_TARGET_BYTES
+"""Safety ceiling on a single partition file's size before pass 3 re-splits it
+further instead of reading it whole into memory. Set well above
+``_PARTITION_TARGET_BYTES`` so ordinary partitions (sized to that target, with
+some hash-skew slack) are read directly; a partition breaching this only
+happens once ``_partition_count_for`` has clamped at ``_PARTITION_MAX`` for a
+cloud too large for that many partitions to keep each one small."""
+
+_RESPLIT_FACTOR = 64
+"""Sub-partitions an oversized partition is re-hashed into, per recursion
+level (``_RESPLIT_FACTOR ** depth`` cumulative fan-out)."""
+
+_MAX_RESPLIT_DEPTH = 6
+"""Recursion depth safety valve for :func:`_reduce_partition`.
+
+Past this depth a still-oversized partition is reduced in memory regardless.
+Re-splitting hashes only a partition's voxel-cell coordinates, so it can only
+separate *distinct* cells that collided into the same bucket; it can never
+divide a single cell's own points across sub-partitions (they always hash
+together), so unbounded recursion could not rescue the pathological case of
+one voxel cell alone holding enough points to exceed
+``_PARTITION_MAX_BYTES`` -- that working set is irreducible by partitioning."""
+
+_RESPLIT_SALT_BASE = np.uint64(0x2545F4914F6CDD1D)
+"""Odd 64-bit constant salting each re-split recursion level's hash distinctly
+from the pass-2 hash and from every other level, so distinct cells that
+collided at one level are spread apart at the next."""
 
 _PARTITION_READ_RECORDS = 2_000_000
 """Records read per pass-2 segment-read block (bounds transient memory).
@@ -542,31 +578,120 @@ def _reduce_pass(
     """Reduce each partition to its surviving (smallest-idx-per-cell) indices.
 
     Every point of a given voxel cell lands in the same partition (by
-    construction of the pass-2 hash), so this local reduction -- sort by
-    cell then index, keep the first (smallest-idx) record per cell -- is
-    exact. Deletes each partition file once it is read; writes the sorted
-    survivor indices of each partition as a run.
+    construction of the pass-2 hash), so this local reduction is exact
+    regardless of how many further re-split levels a given partition needed
+    (see :func:`_reduce_partition`): a cell's points can never be separated
+    across sub-partitions, since every re-split level hashes the same cell
+    coordinates. Deletes each partition file once it is read; writes the
+    sorted survivor indices of each partition (or re-split sub-partition) as
+    its own run.
     """
     run_paths: list[Path] = []
     for index, path in enumerate(partition_paths):
-        records = np.fromfile(path, dtype=_PARTITION_DTYPE)
-        path.unlink()
-        order = np.lexsort(
-            (records["idx"], records["cz"], records["cy"], records["cx"])
-        )
-        ordered = records[order]
-        is_start = np.ones(len(ordered), dtype=np.bool_)
-        if len(ordered) > 1:
-            is_start[1:] = (
-                (ordered["cx"][1:] != ordered["cx"][:-1])
-                | (ordered["cy"][1:] != ordered["cy"][:-1])
-                | (ordered["cz"][1:] != ordered["cz"][:-1])
+        run_paths.extend(
+            _reduce_partition(
+                path, runs_dir, f"{index:06d}", min_free_bytes, depth=0
             )
-        survivors = np.sort(ordered["idx"][is_start])
-        run_path = runs_dir / f"run_{index:06d}.bin"
-        write_sorted_run(run_path, survivors, min_free_bytes=min_free_bytes)
-        run_paths.append(run_path)
+        )
     return run_paths
+
+
+def _reduce_partition(
+    path: Path,
+    runs_dir: Path,
+    label: str,
+    min_free_bytes: int,
+    *,
+    depth: int,
+) -> list[Path]:
+    """Reduce one partition file to its surviving sorted-index run(s).
+
+    A partition whose file size still exceeds :data:`_PARTITION_MAX_BYTES`
+    (only reachable once :func:`_partition_count_for` has clamped at
+    :data:`_PARTITION_MAX` for an extremely large cloud) is re-hash-
+    partitioned into :data:`_RESPLIT_FACTOR` further sub-partitions with a
+    depth-salted hash -- via :func:`_resplit_partition`, itself streamed in
+    bounded blocks -- and each sub-partition is reduced recursively, up to
+    :data:`_MAX_RESPLIT_DEPTH`. An in-budget partition (the common case) is
+    read whole and reduced directly, exactly as before this recursion
+    existed.
+    """
+    size = path.stat().st_size
+    if size > _PARTITION_MAX_BYTES and depth < _MAX_RESPLIT_DEPTH:
+        sub_paths = _resplit_partition(
+            path, runs_dir, label, depth, min_free_bytes
+        )
+        path.unlink()
+        run_paths: list[Path] = []
+        for sub_index, sub_path in enumerate(sub_paths):
+            run_paths.extend(
+                _reduce_partition(
+                    sub_path,
+                    runs_dir,
+                    f"{label}_{sub_index:04d}",
+                    min_free_bytes,
+                    depth=depth + 1,
+                )
+            )
+        return run_paths
+    records = np.fromfile(path, dtype=_PARTITION_DTYPE)
+    path.unlink()
+    order = np.lexsort(
+        (records["idx"], records["cz"], records["cy"], records["cx"])
+    )
+    ordered = records[order]
+    is_start = np.ones(len(ordered), dtype=np.bool_)
+    if len(ordered) > 1:
+        is_start[1:] = (
+            (ordered["cx"][1:] != ordered["cx"][:-1])
+            | (ordered["cy"][1:] != ordered["cy"][:-1])
+            | (ordered["cz"][1:] != ordered["cz"][:-1])
+        )
+    survivors = np.sort(ordered["idx"][is_start])
+    run_path = runs_dir / f"run_{label}.bin"
+    write_sorted_run(run_path, survivors, min_free_bytes=min_free_bytes)
+    return [run_path]
+
+
+def _resplit_partition(
+    path: Path,
+    runs_dir: Path,
+    label: str,
+    depth: int,
+    min_free_bytes: int,
+) -> list[Path]:
+    """Stream-read an oversized partition and re-hash it into fresh sub-files.
+
+    Reads ``path`` in ``_PARTITION_READ_RECORDS``-record blocks (never the
+    whole oversized file at once) and routes each block through a fresh
+    :class:`~ahn_cli.prep.spill.PartitionWriter` keyed by a depth-salted
+    rehash of each record's already-computed voxel cell -- a different salt
+    per depth so cells that collided at one level spread apart at the next.
+    Returns the sub-partition file paths :meth:`PartitionWriter.close`
+    reports.
+    """
+    sub_dir = runs_dir / f"resplit_{label}_{depth:02d}"
+    sub_dir.mkdir()
+    salt = _RESPLIT_SALT_BASE * np.uint64(depth + 1)
+    writer = PartitionWriter(
+        sub_dir, _RESPLIT_FACTOR, prefix="sub", min_free_bytes=min_free_bytes
+    )
+    record_count = path.stat().st_size // _PARTITION_DTYPE.itemsize
+    with path.open("rb") as handle:
+        remaining = record_count
+        while remaining > 0:
+            block = min(_PARTITION_READ_RECORDS, remaining)
+            records = np.fromfile(handle, dtype=_PARTITION_DTYPE, count=block)
+            remaining -= block
+            hashed = (
+                records["cx"].astype(np.int64).astype(np.uint64) * _HASH_K1
+                ^ records["cy"].astype(np.int64).astype(np.uint64) * _HASH_K2
+                ^ records["cz"].astype(np.int64).astype(np.uint64) * _HASH_K3
+                ^ salt
+            )
+            sub_ids = (hashed % np.uint64(_RESPLIT_FACTOR)).astype(np.int64)
+            writer.append(sub_ids, records)
+    return writer.close()
 
 
 class _SurvivorCursor:

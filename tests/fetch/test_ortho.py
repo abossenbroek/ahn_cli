@@ -749,6 +749,65 @@ def test_mosaic_pixel_checksum_is_deterministic(tmp_path: Path) -> None:
     assert first == second
 
 
+def test_mosaic_handles_jpeg_ycbcr_source_tiles(tmp_path: Path) -> None:
+    """A JPEG/YCbCr source mosaics to a valid, uncompressed RGB GeoTIFF.
+
+    The real Beeldmateriaal HRL tiles are ``photometric=YCbCr`` /
+    ``compress=JPEG``. ``rasterio.merge`` copies the first sheet's
+    ``photometric`` into the destination profile but not its ``compress``,
+    and GDAL rejects ``PHOTOMETRIC=YCBCR`` without ``COMPRESS=JPEG`` -- so the
+    windowed write fails unless ``mosaic_and_clip`` pins a clean output
+    profile. This fixture reproduces that exact failure (the earlier synthetic
+    tests used plain RGB GeoTIFFs and never exercised it). JPEG is lossy, so we
+    assert a valid, non-uniform, uncompressed RGB result rather than exact
+    pixels.
+    """
+    # 64x64 @ 0.5 m so the tiled JPEG has full 16x16 blocks to encode.
+    res = 0.5
+    minx, miny = 194000.0, 443000.0
+    size = 64
+    maxx, maxy = minx + size * res, miny + size * res
+    aoi: BBox = (minx, miny, maxx, maxy)
+    ramp = np.tile(np.arange(size, dtype=np.uint8), (size, 1))
+    pixels: npt.NDArray[np.uint8] = np.stack(
+        [
+            ramp,
+            ((ramp * 2) % 255).astype(np.uint8),
+            (255 - ramp).astype(np.uint8),
+        ]
+    )
+    tile = tmp_path / "2025_kb_00_RGB_JPEG_hrl.tif"
+    with rasterio.open(
+        tile,
+        "w",
+        driver="GTiff",
+        height=size,
+        width=size,
+        count=3,
+        dtype="uint8",
+        crs="EPSG:28992",
+        transform=from_bounds(minx, miny, maxx, maxy, size, size),
+        photometric="YCbCr",
+        compress="JPEG",
+        tiled=True,
+        blockxsize=16,
+        blockysize=16,
+    ) as dst:
+        dst.write(pixels)
+
+    out = tmp_path / "ortho.tif"
+    mosaic = mosaic_and_clip((tile,), aoi, out)
+
+    assert mosaic.width == size
+    assert mosaic.height == size
+    with rasterio.open(out) as produced:
+        assert produced.count == 3
+        assert produced.dtypes[0] == "uint8"
+        # Container is a plain, valid GeoTIFF (no JPEG/YCbCr round-trip).
+        assert produced.profile.get("compress") is None
+        assert produced.read().std() > 0  # genuine imagery, not uniform
+
+
 def test_mosaic_uses_the_windowed_merge_write_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -772,9 +831,16 @@ def test_mosaic_uses_the_windowed_merge_write_path(
         bounds: BBox | None = None,
         res: float | tuple[float, float] | None = None,
         dst_path: Path,
+        dst_kwds: dict[str, object] | None = None,
     ) -> None:
         calls.append(dst_path)
-        return real_merge(sources, bounds=bounds, res=res, dst_path=dst_path)
+        return real_merge(
+            sources,
+            bounds=bounds,
+            res=res,
+            dst_path=dst_path,
+            dst_kwds=dst_kwds,
+        )
 
     monkeypatch.setattr(ortho_module, "merge", _guarded_merge)
 

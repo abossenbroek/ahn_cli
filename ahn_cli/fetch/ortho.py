@@ -707,6 +707,12 @@ def mosaic_and_clip(
             bounds=aoi,
             res=res,
             dst_path=tmp_path,
+            # The Beeldmateriaal source tiles are JPEG/YCbCr; ``merge`` copies
+            # the first sheet's ``photometric=YCbCr`` into the destination but
+            # not its ``compress=JPEG``, and GDAL rejects that pairing. Pin a
+            # plain, uncompressed RGB GeoTIFF (the pre-streaming output profile),
+            # so decoded pixels are unchanged and the container is always valid.
+            dst_kwds={"photometric": "RGB", "compress": "none"},
         )
         with rasterio.open(tmp_path) as written:
             width = int(written.width)

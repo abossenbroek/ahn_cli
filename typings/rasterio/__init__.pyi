@@ -58,6 +58,8 @@ class DatasetReader:
     def height(self) -> int: ...
     @property
     def nodata(self) -> float | None: ...
+    @property
+    def profile(self) -> dict[str, object]: ...
     def read(
         self,
         indexes: int | list[int] | None = ...,
@@ -83,4 +85,7 @@ def open(
     crs: str | CRS | None = ...,
     transform: Affine | None = ...,
     nodata: float | None = ...,
+    # GDAL creation options (photometric, compress, tiled, blockxsize, ...)
+    # vary by driver; accept any so the partial stub need not enumerate them.
+    **creation_options: object,
 ) -> DatasetReader: ...

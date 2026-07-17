@@ -803,8 +803,12 @@ def test_mosaic_handles_jpeg_ycbcr_source_tiles(tmp_path: Path) -> None:
     with rasterio.open(out) as produced:
         assert produced.count == 3
         assert produced.dtypes[0] == "uint8"
-        # Container is a plain, valid GeoTIFF (no JPEG/YCbCr round-trip).
-        assert produced.profile.get("compress") is None
+        # A valid RGB GeoTIFF with lossless DEFLATE -- never a JPEG/YCbCr
+        # round-trip (which would be lossy) and never the invalid
+        # YCbCr-without-JPEG pairing that GDAL rejects.
+        compress = produced.profile.get("compress")
+        assert isinstance(compress, str)
+        assert compress.lower() == "deflate"
         assert produced.read().std() > 0  # genuine imagery, not uniform
 
 

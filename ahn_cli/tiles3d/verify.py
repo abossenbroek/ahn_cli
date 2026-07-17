@@ -952,7 +952,9 @@ def _verify_byte_identity(out_dir: Path, computed: ComputedBuild) -> None:
     so this covers every ``.glb`` plus ``tileset.json``; the packed lossy
     profiles have their own backstop (:func:`_verify_packed_byte_identity`).
     """
-    for uri, expected in computed.glbs.items():
+    for key in computed.order:
+        expected, _texture = computed.blob_source(key)
+        uri = computed.uri_of[key]
         _require(
             (out_dir / uri).read_bytes() == expected,
             f"{uri} does not byte-equal its independent rebuild.",

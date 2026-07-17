@@ -44,7 +44,12 @@ from ahn_cli.tiles3d.emit import (
 )
 from ahn_cli.tiles3d.errors import Tiles3dError
 from ahn_cli.tiles3d.manifest import FileDigest, render_manifest
-from ahn_cli.tiles3d.pack import write_pack
+from ahn_cli.tiles3d.pack import require_free_disk, write_pack
+from ahn_cli.tiles3d.parallel import (
+    default_window,
+    default_workers,
+    ordered_encode,
+)
 from ahn_cli.tiles3d.profile import Profile
 from ahn_cli.tiles3d.provenance import PROVENANCE_NAME, render_provenance
 from ahn_cli.tiles3d.quadtree import plan_quadtree
@@ -56,6 +61,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from ahn_cli.tiles3d.emit import ComputedBuild, PackedBuild
+    from ahn_cli.tiles3d.parallel import PoolFactory
 
 __all__ = ["ProgressCallback", "Tiles3dBuildResult", "build_tiles3d"]
 
@@ -113,6 +119,8 @@ def build_tiles3d(
     tile_pixels: int = 256,
     profile: Profile = Profile.STRICT,
     progress: ProgressCallback | None = None,
+    workers: int | None = None,
+    pool_factory: PoolFactory | None = None,
 ) -> Tiles3dBuildResult:
     """Convert the ortho map + reconciled heights into 3D Tiles 1.1.
 
@@ -131,6 +139,11 @@ def build_tiles3d(
         - Everything written is hard-verified (strict re-read + independent
           recomputation) before returning.
         - Calls ``progress(tiles_done, tile_total)`` per computed tile.
+        - ``workers`` (default the machine CPU count) fans the CPU-bound
+          per-tile encode across a thread pool while the writer keeps
+          streaming to disk in canonical order with a bounded window resident;
+          ``workers=1`` is the serial reference and every worker count yields
+          byte-identical output. ``pool_factory`` injects the pool (tests).
         - Returns a :class:`Tiles3dBuildResult`.
 
     Invariants:
@@ -152,6 +165,8 @@ def build_tiles3d(
           (:func:`load_terrain`, :func:`plan_quadtree`), an unwritable
           output location, and any post-write verification failure.
     """
+    resolved_workers = default_workers() if workers is None else workers
+    window = default_window(resolved_workers)
     terrain = load_terrain(ortho, heights)
     tree = plan_quadtree(terrain.width, terrain.height, tile_pixels)
     if profile is Profile.STRICT:
@@ -161,7 +176,13 @@ def build_tiles3d(
         vertices, triangles = computed.vertices, computed.triangles
 
         def write_deliverable() -> None:
-            _write_strict(out, computed)
+            _write_strict(
+                out,
+                computed,
+                workers=resolved_workers,
+                window=window,
+                pool_factory=pool_factory,
+            )
     else:
         packed = compute_packed_build(
             terrain, tree, profile=profile, progress=progress
@@ -169,7 +190,14 @@ def build_tiles3d(
         vertices, triangles = packed.vertices, packed.triangles
 
         def write_deliverable() -> None:
-            _write_packed(out, packed, profile)
+            _write_packed(
+                out,
+                packed,
+                profile,
+                workers=resolved_workers,
+                window=window,
+                pool_factory=pool_factory,
+            )
 
     tileset_path = out / TILESET_NAME
     backup_dir = out / BACKUP_SUBDIR
@@ -218,22 +246,50 @@ def build_tiles3d(
     )
 
 
-def _write_strict(out: Path, computed: ComputedBuild) -> None:
-    """Write the strict profile's loose ``tiles/`` glbs + ``tileset.json``."""
+def _write_strict(
+    out: Path,
+    computed: ComputedBuild,
+    *,
+    workers: int,
+    window: int,
+    pool_factory: PoolFactory | None,
+) -> None:
+    """Write the strict profile's loose ``tiles/`` glbs + ``tileset.json``.
+
+    The per-tile encodes fan out through :func:`ordered_encode` (bounded
+    window, byte-identical to the serial reference), while this loop drains
+    them in emit order and streams each glb to disk under the free-disk floor.
+    """
     (out / TILES_SUBDIR).mkdir(parents=True, exist_ok=True)
-    for uri, data in computed.glbs.items():
-        (out / uri).write_bytes(data)
+    blobs = ordered_encode(
+        computed.order,
+        computed.blob_source,
+        workers=workers,
+        window=window,
+        pool_factory=pool_factory,
+    )
+    for key, (content, _texture) in zip(computed.order, blobs, strict=True):
+        require_free_disk(out, len(content))
+        (out / computed.uri_of[key]).write_bytes(content)
     write_tileset(computed.document, out / TILESET_NAME)
 
 
-def _write_packed(out: Path, packed: PackedBuild, profile: Profile) -> None:
+def _write_packed(
+    out: Path,
+    packed: PackedBuild,
+    profile: Profile,
+    *,
+    workers: int,
+    window: int,
+    pool_factory: PoolFactory | None,
+) -> None:
     """Write the packed lossy deliverable: pack, sidecars, manifest.
 
-    The pack is streamed straight to ``tiles.hfp`` (bounded memory: the
-    writer keeps at most one tile's blobs resident), then the ``dataset_id``
-    it returns is embedded in ``provenance.json`` and the manifest ties the
-    three loose files plus the pack to it. Every text sidecar is written as
-    LF bytes on every platform.
+    The pack is streamed straight to ``tiles.hfp``: the per-tile encodes fan
+    out through a bounded window while the writer keeps only that window
+    resident, then the ``dataset_id`` it returns is embedded in
+    ``provenance.json`` and the manifest ties the three loose files plus the
+    pack to it. Every text sidecar is written as LF bytes on every platform.
     """
     out.mkdir(parents=True, exist_ok=True)
     hfp_path = out / TILES_HFP_NAME
@@ -246,6 +302,9 @@ def _write_packed(out: Path, packed: PackedBuild, profile: Profile) -> None:
         packed.blob_source,
         root_geometric_error=packed.root_geometric_error,
         content_kind=packed.content_kind,
+        workers=workers,
+        window=window,
+        pool_factory=pool_factory,
     )
     write_tileset(packed.document, tileset_path)
     tileset_bytes = tileset_path.read_bytes()

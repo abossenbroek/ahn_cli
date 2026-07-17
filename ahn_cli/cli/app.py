@@ -898,6 +898,17 @@ def copc_command(
     ),
 )
 @click.option(
+    "--workers",
+    "workers",
+    type=click.IntRange(min=1),
+    default=None,
+    help=(
+        "Parallel per-tile encode workers (default: all CPU cores). The "
+        "writer streams to disk in canonical order, so any worker count "
+        "yields byte-identical output; use 1 to force the serial path."
+    ),
+)
+@click.option(
     "--progress/--no-progress",
     "progress",
     default=True,
@@ -909,6 +920,7 @@ def tiles3d_command(
     heights: Path,
     out: Path,
     profile_name: str,
+    workers: int | None,
     *,
     progress: bool,
 ) -> None:
@@ -940,6 +952,7 @@ def tiles3d_command(
                 out,
                 profile=profile,
                 progress=cb,
+                workers=workers,
             )
         except Tiles3dError as exc:
             raise click.ClickException(str(exc)) from exc

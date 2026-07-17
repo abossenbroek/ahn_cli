@@ -182,12 +182,15 @@ recomputation from the input rasters**. Any failure → outputs deleted →
 ## Orchestrator, CLI, provenance
 
 - `build_tiles3d(ortho: Path, heights: Path, out: Path, *, tile_pixels:
-  int = 256, progress: ProgressCallback | None = None) ->
-  Tiles3dBuildResult` (frozen result: paths, tile count, levels, vertex /
-  triangle totals). On any failure, all partially written outputs are
-  removed (copc `build.py` pattern).
+  int = 256, profile: Profile = STRICT, progress: ProgressCallback | None =
+  None, workers: int | None = None, pool_factory: PoolFactory | None = None)
+  -> Tiles3dBuildResult` (frozen result: paths, tile count, levels, vertex /
+  triangle totals). `workers` defaults to the CPU count; `pool_factory` is the
+  test seam. On any failure, all partially written outputs are removed (copc
+  `build.py` pattern).
 - CLI subcommand `tiles3d` in `cli/app.py`: options `--ortho`
-  (exists), `--heights` (exists), `--out` (dir), tqdm progress, and
+  (exists), `--heights` (exists), `--out` (dir), `--profile`, `--workers`
+  (`IntRange(min=1)`, default all cores), tqdm progress, and
   `Tiles3dError → click.ClickException` (exit 1); Click arg errors exit 2.
 - Provenance: parity with `copc` (result object returned; no sidecar).
 
@@ -215,6 +218,78 @@ recomputation from the input rasters**. Any failure → outputs deleted →
 - `cli/__init__.py` docstring + CLAUDE.md: document the new subcommand and
   the `reconcile --format exr` prerequisite, and the stricter reconcile
   contract (full coverage required; voids are errors).
+
+## Follow-up: parallel per-tile encode (W10, 2026-07-17)
+
+**Finding.** A real 2×2 km Westland run showed the standalone `tiles3d`
+build is single-threaded — ~47 min for 21,845 splat tiles. The pack writer
+(`pack.write_pack`) drove one CPU-bound `blob_source(key)` encode per tile
+*inline* on the calling thread; the writer's own work is pure I/O, so one
+core did all the encoding (gaussian build + zstd for splat;
+quantize/meshopt/JPEG for game; `.hf`/JPEG for heightfield; float32 glTF +
+PNG for strict) while the rest sat idle. Every tile is an independent,
+deterministic pure function of the terrain, so the encode fans out trivially.
+
+**Design — bounded reorder window (`parallel.py`).** `ordered_encode(keys,
+encode, *, workers, window, pool_factory)` encodes up to `window` tiles
+concurrently but yields results in the **exact** `keys` order, so the writer
+keeps streaming to disk in canonical order with the output bytes unchanged.
+Two properties hold at once — parallel encode *and* bounded on-disk streaming:
+at most `window` encoded blobs are ever resident (default `window = 2 *
+workers`, a small multiple of the worker count), independent of the tile
+count. It never "encodes everything into RAM, then writes". `workers == 1`
+runs inline with no pool — the byte-for-byte serial reference.
+
+The driver primes `window` futures, then for each result it drains (in
+submission = key order) it submits one more, so the in-flight/resident set is
+capped at `window` for any tile count. `write_pack` and the strict loose-file
+writer (`build._write_strict`) both drain this iterator; `emit.compute_build`
+was made lazy to match `compute_packed_build` (it holds a per-tile
+`blob_source`, not a materialised glb dict), so the strict path is bounded too.
+
+**Thread pool, not process pool.** The heavy per-tile work is numpy array
+math plus C-extension codecs (zstd, Pillow JPEG, pyproj) that all release the
+GIL, so a `ThreadPoolExecutor` parallelises the hot sections without pickling
+anything. A process pool would have to pickle the large in-memory terrain grid
+to every worker and pickle the `blob_source` closure — which is not picklable
+at all — for no gain over threads on GIL-releasing codecs. The thread pool
+shares the one terrain grid and keeps the encode a pure function, so
+byte-identity and determinism are automatic: results are consumed in key order
+regardless of finish order. The pool + worker count are injectable seams
+(`PoolFactory`, `workers`) for deterministic tests.
+
+**Byte-identity guarantee (enforced by construction).** The build writes with
+`workers = cpu_count`; the unconditional post-write verifier
+(`verify._verify_packed_byte_identity` / `_verify_byte_identity`) rebuilds
+every artifact **serially** (`workers = 1`) and byte-compares. Any divergence
+between the parallel and serial encodings would fail verification and reject
+the build — so parallel == serial is checked on every single build, not just
+in tests. `--workers` (CLI) / `workers=` (`build_tiles3d`) select the count;
+the free-disk floor is reused (`pack.require_free_disk` wraps
+`prep.spill.ensure_free_disk`, translating `DiskFloorError → Tiles3dError`) and
+checked at every blob write, so a breach leaves the crash-safe swap's held
+previous deliverable untouched.
+
+**Measured speedup.** Isolating the encode via `write_pack` (BytesIO sink,
+serial `workers=1` vs `workers=cpu_count`) over an 85-tile plan of real 256px
+production leaves (a 2048×2048 smooth scene, 4 levels) on a 12-core host —
+`dataset_id` byte-identical between the two runs in every case:
+
+| profile | serial | parallel (12) | speedup |
+|---|---|---|---|
+| splat | 8.00 s | 1.61 s | 4.97× |
+| game | 7.69 s | 1.37 s | 5.62× |
+| heightfield | 7.06 s | 1.33 s | 5.32× |
+
+That is near-linear on the CPU-bound codecs (the sub-12× reflects Amdahl —
+the serial tree-walk plan, the pack writer's own I/O, and short-stream codec
+overhead). The win requires substantial per-tile work: at 32px tiles the encode
+is dominated by Python-level array setup that holds the GIL, so threads add
+overhead and *lose* (~0.6×) — which is why the production leaf is 256px and the
+encode-dominated Westland splat case is where the gain is largest. `workers=1`
+is byte-for-byte the pre-W10 serial path. See
+`tests/tiles3d/test_parallel_build.py` for the
+byte-identity / determinism / bounded-window / disk-floor / crash-safety locks.
 
 ## Follow-up: conformance results (2026-07-11)
 

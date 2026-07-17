@@ -17,6 +17,7 @@ free-RAM sensing behind an injectable probe that backs the RAM-adaptive tiling
 
 from __future__ import annotations
 
+from ahn_cli.pipeline.assemble import assemble_tiles3d
 from ahn_cli.pipeline.errors import PipelineError
 from ahn_cli.pipeline.machine import (
     MachineFacts,
@@ -34,6 +35,9 @@ from ahn_cli.pipeline.model import (
     TileKey,
     TilePayload,
 )
+from ahn_cli.pipeline.planners import GridTilePlanner, QuadtreePlanner
+from ahn_cli.pipeline.run import PipelineRunResult, run_spec
+from ahn_cli.pipeline.sources import ReadSource, WindowedOrtho
 from ahn_cli.pipeline.spec import (
     HALO_AUTO,
     AoiSpec,
@@ -62,10 +66,14 @@ __all__ = [
     "EncodedTile",
     "FetchStage",
     "GridTile",
+    "GridTilePlanner",
     "MachineFacts",
     "PipelineError",
+    "PipelineRunResult",
     "PipelineSpec",
     "PointTile",
+    "QuadtreePlanner",
+    "ReadSource",
     "ReadStage",
     "ReconcileStage",
     "Stage",
@@ -77,12 +85,15 @@ __all__ = [
     "TilePayload",
     "Tiles3dStage",
     "TilingSpec",
+    "WindowedOrtho",
     "WriteStage",
+    "assemble_tiles3d",
     "canonical",
     "free_ram_bytes",
     "machine_facts",
     "parse_json",
     "parse_yaml",
+    "run_spec",
     "spec_hash",
     "stage_type",
 ]

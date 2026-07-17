@@ -46,9 +46,11 @@ from importlib.metadata import version
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, cast
 
+import numpy as np
 import rasterio
 import requests
 from rasterio.merge import merge
+from rasterio.windows import Window
 
 from ahn_cli.cache import CacheKey, ContentAddressedCache
 from ahn_cli.domain import (
@@ -58,7 +60,6 @@ from ahn_cli.domain import (
     Vintage,
     ensure_valid_bbox,
 )
-from ahn_cli.domain.authenticity import uniform_image
 from ahn_cli.fetch.acquisition import (
     AcquisitionError,
     AcquisitionRequest,
@@ -73,7 +74,6 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator
     from pathlib import Path
 
-    import numpy as np
     import numpy.typing as npt
 
     from ahn_cli.domain import ProgressCallback
@@ -85,6 +85,8 @@ _MOSAIC_NAME = "ortho.tif"
 _CACHE_DIRNAME = ".cache"
 _TIF_SUFFIX = ".tif"
 _POSITION_LEN = 2
+_ROW_BLOCK = 256
+"""Rows read per windowed block in the mosaic's streamed pixel pass."""
 
 # The pinned Beeldmateriaal RGB open-data vintage. Pinned, never floated to the
 # newest layer (spec requirement). 2025 is the first vintage with full
@@ -584,21 +586,84 @@ def select_ortho_dataset(
     raise OrthoUnavailableError(msg)
 
 
-def _pixel_checksum(
-    mosaic: npt.NDArray[np.uint8],
-    crs: str,
-    resolution_m: float,
-) -> str:
-    """Return a SHA-256 over the mosaic pixel array and its raster header.
+class _UniformityTracker:
+    """Streaming equivalent of :func:`~ahn_cli.domain.authenticity.uniform_image`.
 
-    The digest covers crs, dtype, shape and resolution before the raw pixel
-    bytes, so it is a stable content address for the mosaic that does not depend
-    on the (non-deterministic) GeoTIFF container encoding.
+    That shared predicate needs the whole ``(bands, rows, cols)`` pixel array
+    at once; this class reaches the identical per-band verdict (every band
+    constant among its finite values, or no finite values at all, is
+    "uniform") by folding one windowed block of one band at a time, so the
+    mosaic is never held whole in memory.
     """
-    header = f"{crs}|{mosaic.dtype}|{mosaic.shape}|{resolution_m}".encode()
-    digest = hashlib.sha256(header)
-    digest.update(mosaic.tobytes())
-    return digest.hexdigest()
+
+    def __init__(self, band_count: int) -> None:
+        """Track uniformity across ``band_count`` bands, none differing yet."""
+        self._first: list[np.generic | None] = [None] * band_count
+        self._differs: list[bool] = [False] * band_count
+
+    def update(self, band_index: int, block: npt.NDArray[np.generic]) -> None:
+        """Fold one windowed block of band ``band_index`` in."""
+        if self._differs[band_index]:
+            return
+        finite = block[np.isfinite(block)]
+        if finite.size == 0:
+            return
+        first = self._first[band_index]
+        if first is None:
+            first = finite.flat[0]
+            self._first[band_index] = first
+        if bool(np.any(finite != first)):
+            self._differs[band_index] = True
+
+    @property
+    def is_uniform(self) -> bool:
+        """Whether every band folded in so far is constant (or all-void)."""
+        return not any(self._differs)
+
+
+def _pixel_checksum_header(
+    crs: str,
+    dtype: npt.DTypeLike,
+    shape: tuple[int, int, int],
+    resolution_m: float,
+) -> bytes:
+    """Encode the crs/dtype/shape/resolution header a mosaic checksum leads with.
+
+    Kept separate from the raw pixel bytes so it is a stable content address
+    for the mosaic that does not depend on the (non-deterministic) GeoTIFF
+    container encoding.
+    """
+    return f"{crs}|{np.dtype(dtype)}|{shape}|{resolution_m}".encode()
+
+
+def _stream_pixel_check(
+    dataset: rasterio.DatasetReader, crs: str, resolution_m: float
+) -> tuple[bool, str]:
+    """Fold ``dataset``'s pixels into the uniformity verdict and checksum.
+
+    Reads one band at a time, in ``_ROW_BLOCK``-row windows -- band-outer,
+    row-inner, matching the byte order a whole-array ``.tobytes()`` over
+    ``(bands, rows, cols)`` would produce -- so both the authenticity check
+    and the checksum are computed without ever holding the mosaic whole.
+    """
+    count = dataset.count
+    height = dataset.height
+    width = dataset.width
+    dtype = dataset.dtypes[0]
+    digest = hashlib.sha256(
+        _pixel_checksum_header(
+            crs, dtype, (count, height, width), resolution_m
+        )
+    )
+    tracker = _UniformityTracker(count)
+    for band in range(1, count + 1):
+        for row_start in range(0, height, _ROW_BLOCK):
+            block_height = min(_ROW_BLOCK, height - row_start)
+            window = Window(0, row_start, width, block_height)
+            block = dataset.read(band, window=window)
+            tracker.update(band - 1, block)
+            digest.update(block.tobytes())
+    return tracker.is_uniform, digest.hexdigest()
 
 
 def mosaic_and_clip(
@@ -615,8 +680,13 @@ def mosaic_and_clip(
           resolution, so the output dimensions are exactly the AOI extent
           divided by the pixel size, and an overlap band is written once (no
           double-counting). Sheets are ordered by filename for a
-          deterministic merge; the mosaic is written to ``out_path`` as a
-          GeoTIFF and its pixel-array checksum returned.
+          deterministic merge. The merge writes directly to a sibling temp
+          file in ``mem_limit``-bounded windowed chunks (never a whole
+          in-RAM mosaic array), and the authenticity check plus pixel
+          checksum are then folded from that temp file in windowed row
+          blocks; only once both pass is the temp file swapped into
+          ``out_path``, so a rejected mosaic never leaves a partial or
+          poisoned file there.
 
     Failure modes:
         - Propagates :class:`rasterio.errors.RasterioError` from a bad sheet.
@@ -627,43 +697,42 @@ def mosaic_and_clip(
     ordered = sorted(tile_paths, key=lambda path: path.name)
     with rasterio.open(ordered[0]) as first:
         crs = str(first.crs)
-        dtype = first.dtypes[0]
         res = first.res
-    mosaic, transform = merge(
-        [str(path) for path in ordered], bounds=aoi, res=res
-    )
-    pixels: npt.NDArray[np.uint8] = mosaic
-    if uniform_image(pixels):
-        msg = (
-            "orthophoto mosaic is a single uniform colour across every "
-            "pixel — that is placeholder imagery, not genuine "
-            "Beeldmateriaal photography; refusing to write "
-            f"{out_path.name}."
-        )
-        raise AcquisitionError(msg)
-    count = pixels.shape[0]
-    height = pixels.shape[1]
-    width = pixels.shape[2]
     resolution_m = res[0]
-    with rasterio.open(
-        out_path,
-        "w",
-        driver="GTiff",
-        height=height,
-        width=width,
-        count=count,
-        dtype=dtype,
-        crs=crs,
-        transform=transform,
-    ) as dst:
-        dst.write(pixels)
+    tmp_path = out_path.with_name(f"{out_path.stem}.tmp{out_path.suffix}")
+    try:
+        merge(
+            [str(path) for path in ordered],
+            bounds=aoi,
+            res=res,
+            dst_path=tmp_path,
+        )
+        with rasterio.open(tmp_path) as written:
+            width = int(written.width)
+            height = int(written.height)
+            is_uniform, checksum = _stream_pixel_check(
+                written, crs, resolution_m
+            )
+        if is_uniform:
+            msg = (
+                "orthophoto mosaic is a single uniform colour across every "
+                "pixel — that is placeholder imagery, not genuine "
+                "Beeldmateriaal photography; refusing to write "
+                f"{out_path.name}."
+            )
+            raise AcquisitionError(msg)
+        tmp_path.replace(out_path)
+    finally:
+        # No-op after a successful replace (the temp no longer exists);
+        # removes the partial/rejected temp on every other path.
+        tmp_path.unlink(missing_ok=True)
     return OrthoMosaic(
         bbox=aoi,
         crs=crs,
         width=width,
         height=height,
         resolution_m=resolution_m,
-        pixel_checksum=_pixel_checksum(pixels, crs, resolution_m),
+        pixel_checksum=checksum,
     )
 
 

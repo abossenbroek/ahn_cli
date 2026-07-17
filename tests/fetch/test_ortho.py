@@ -31,6 +31,7 @@ import requests
 from rasterio.transform import from_bounds
 
 from ahn_cli.domain import BBox, Product, Vintage
+from ahn_cli.fetch import ortho as ortho_module
 from ahn_cli.fetch.acquisition import (
     AcquisitionError,
     AcquisitionRequest,
@@ -53,7 +54,7 @@ from ahn_cli.fetch.ortho import (
 from ahn_cli.provenance import read_provenance
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
     from pathlib import Path
 
 # A small AOI on the Dutch national grid (EPSG:28992), 7m x 3m at 1m/px so the
@@ -710,6 +711,103 @@ def test_mosaic_pixel_checksum_is_deterministic(tmp_path: Path) -> None:
 
     assert first.pixel_checksum == second.pixel_checksum
     assert first == second
+
+
+def test_mosaic_uses_the_windowed_merge_write_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """mosaic_and_clip calls rasterio.merge.merge with ``dst_path``.
+
+    That is the windowed-write overload that streams to disk in bounded
+    chunks; the old whole-array-returning call (no ``dst_path``) would
+    require holding the entire mosaic in RAM. The guard's signature has no
+    default for ``dst_path``, so a call missing it would fail with a
+    ``TypeError`` before ever reaching the real ``merge``.
+    """
+    tiles_dir = tmp_path / "tiles"
+    _write_tiles(tiles_dir)
+    tile_paths = tuple(sorted(tiles_dir.glob("*.tif")))
+    real_merge = ortho_module.merge
+    calls: list[Path] = []
+
+    def _guarded_merge(
+        sources: Sequence[str],
+        *,
+        bounds: BBox | None = None,
+        res: float | tuple[float, float] | None = None,
+        dst_path: Path,
+    ) -> None:
+        calls.append(dst_path)
+        return real_merge(sources, bounds=bounds, res=res, dst_path=dst_path)
+
+    monkeypatch.setattr(ortho_module, "merge", _guarded_merge)
+
+    mosaic_and_clip(tile_paths, _AOI, tmp_path / "ortho.tif")
+
+    assert len(calls) == 1
+
+
+def test_pixel_checksum_matches_a_whole_load_oracle(tmp_path: Path) -> None:
+    """The streamed pixel checksum equals an independent whole-array SHA-256.
+
+    Re-derives the checksum from scratch (a from-scratch reimplementation of
+    the retired whole-array algorithm: read every band fully, hash the
+    crs/dtype/shape/resolution header then the raw pixel bytes) and asserts
+    it matches what the streamed :func:`mosaic_and_clip` recorded.
+    """
+    tiles_dir = tmp_path / "tiles"
+    _write_tiles(tiles_dir)
+    tile_paths = tuple(sorted(tiles_dir.glob("*.tif")))
+    out = tmp_path / "ortho.tif"
+
+    mosaic = mosaic_and_clip(tile_paths, _AOI, out)
+
+    with rasterio.open(out) as dataset:
+        pixels = dataset.read()
+        crs = str(dataset.crs)
+    header = (
+        f"{crs}|{pixels.dtype}|{pixels.shape}|{mosaic.resolution_m}"
+    ).encode()
+    expected = hashlib.sha256(header)
+    expected.update(pixels.tobytes())
+
+    assert mosaic.pixel_checksum == expected.hexdigest()
+    assert mosaic.crs == crs
+
+
+# --------------------------------------------------------------------------- #
+# Streaming uniformity check (bounded memory, per-band)
+# --------------------------------------------------------------------------- #
+
+
+def test_uniformity_tracker_treats_an_all_void_block_as_uniform() -> None:
+    """A block with no finite values contributes no variation."""
+    tracker = getattr(ortho_module, "_UniformityTracker")(band_count=1)  # noqa: B009
+
+    tracker.update(0, np.full((2, 2), np.nan, dtype=np.float32))
+
+    assert tracker.is_uniform is True
+
+
+def test_uniformity_tracker_ignores_a_repeat_of_the_first_value() -> None:
+    """A second block equal to the first band value stays uniform."""
+    tracker = getattr(ortho_module, "_UniformityTracker")(band_count=1)  # noqa: B009
+
+    tracker.update(0, np.array([[5, 5]], dtype=np.uint8))
+    tracker.update(0, np.array([[5, 5]], dtype=np.uint8))
+
+    assert tracker.is_uniform is True
+
+
+def test_uniformity_tracker_skips_updates_once_a_band_differs() -> None:
+    """Once a band is known non-uniform, later updates for it are a no-op."""
+    tracker = getattr(ortho_module, "_UniformityTracker")(band_count=1)  # noqa: B009
+    tracker.update(0, np.array([[1, 2]], dtype=np.uint8))
+    assert tracker.is_uniform is False
+
+    tracker.update(0, np.array([[9, 9]], dtype=np.uint8))  # short-circuited
+
+    assert tracker.is_uniform is False
 
 
 # --------------------------------------------------------------------------- #

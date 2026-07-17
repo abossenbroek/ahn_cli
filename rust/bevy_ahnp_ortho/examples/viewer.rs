@@ -12,6 +12,10 @@ use bevy::prelude::*;
 use bevy_ahnp_ortho::render::AhnpPack;
 use bevy_ahnp_ortho::{AhnpOrthoPlugin, Framing};
 
+#[path = "helpers/orbit.rs"]
+mod orbit;
+use orbit::{ELEVATION, Orbit, orbit_camera};
+
 fn main() {
     let path = std::env::args().nth(1).unwrap_or_else(|| {
         eprintln!("usage: viewer <path/to/tiles.hfp>");
@@ -50,19 +54,12 @@ fn open_pack(mut commands: Commands, path: Res<PackPath>) {
     }
 }
 
-/// The pack's [`Framing`], computed once the pack is open — the reusable
-/// library helper does the actual fit; the viewer just sweeps its azimuth.
-#[derive(Resource)]
-struct Orbit(Framing);
-
-/// Elevation the camera holds while orbiting (radians up from horizontal).
-const ELEVATION: f32 = 0.6;
-
 /// Spawn the camera once, framed on the pack's full world AABB via
-/// [`Framing::fit_default`], and store the framing. Runs every frame but
-/// no-ops after the first (guarded by the `Orbit` resource) — the pack
-/// entity isn't visible until the first `Update`, since `open_pack`'s spawn
-/// command applies at the Startup sync point.
+/// [`Framing::fit_default`], and store the framing in the shared [`Orbit`]
+/// resource. Runs every frame but no-ops after the first (guarded by the
+/// `Orbit` resource) — the pack entity isn't visible until the first `Update`,
+/// since `open_pack`'s spawn command applies at the Startup sync point.
+/// [`orbit_camera`] (shared helper) then sweeps azimuth and applies zoom.
 fn frame_camera(mut commands: Commands, packs: Query<&AhnpPack>, orbit: Option<Res<Orbit>>) {
     if orbit.is_some() {
         return;
@@ -76,19 +73,5 @@ fn frame_camera(mut commands: Commands, packs: Query<&AhnpPack>, orbit: Option<R
         framing.orbit_transform(0.0, ELEVATION),
         Tonemapping::None,
     ));
-    commands.insert_resource(Orbit(framing));
-}
-
-fn orbit_camera(
-    time: Res<Time>,
-    orbit: Option<Res<Orbit>>,
-    mut q: Query<&mut Transform, With<Camera3d>>,
-) {
-    let Some(orbit) = orbit else {
-        return;
-    };
-    let azimuth = time.elapsed_secs() * 0.15;
-    for mut t in &mut q {
-        *t = orbit.0.orbit_transform(azimuth, ELEVATION);
-    }
+    commands.insert_resource(Orbit::new(framing));
 }

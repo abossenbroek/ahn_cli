@@ -76,10 +76,27 @@ impl Framing {
     /// pick a secondary up vector near the poles, if a host needs to reach
     /// them cleanly.
     pub fn orbit_transform(&self, azimuth: f32, elevation: f32) -> Transform {
+        self.orbit_transform_zoom(azimuth, elevation, 1.0)
+    }
+
+    /// Like [`orbit_transform`](Self::orbit_transform) but at `zoom` × the fit
+    /// distance: `zoom < 1` moves the eye **closer** (zoom in), `zoom > 1`
+    /// **further** (zoom out); `zoom == 1` reproduces `orbit_transform`
+    /// exactly. This is the reusable primitive an interactive viewer drives
+    /// from keyboard/mouse-wheel input — the fit itself is unchanged, only the
+    /// standoff scales, so the look-at target and framing geometry stay put.
+    ///
+    /// `zoom` is floored at a small positive value, so a zero or negative input
+    /// can never collapse the standoff onto `center` (which would make
+    /// `looking_at`'s direction undefined). Interactive callers clamp zoom well
+    /// above this floor; it exists only to keep a stray direct call well-defined.
+    pub fn orbit_transform_zoom(&self, azimuth: f32, elevation: f32, zoom: f32) -> Transform {
+        const MIN_ZOOM: f32 = 1e-4;
+        let distance = self.distance * zoom.max(MIN_ZOOM);
         let (sa, ca) = azimuth.sin_cos();
         let (se, ce) = elevation.sin_cos();
-        let horizontal = self.distance * ce;
-        let eye = self.center + Vec3::new(sa * horizontal, self.distance * se, ca * horizontal);
+        let horizontal = distance * ce;
+        let eye = self.center + Vec3::new(sa * horizontal, distance * se, ca * horizontal);
         Transform::from_translation(eye).looking_at(self.center, Vec3::Y)
     }
 }
@@ -123,5 +140,27 @@ mod tests {
             let to_centre = (f.center - t.translation).normalize();
             assert!((t.forward().as_vec3() - to_centre).length() < 1e-3);
         }
+    }
+
+    #[test]
+    fn orbit_transform_zoom_scales_the_standoff_and_keeps_the_target() {
+        let f = Framing::fit(
+            (Vec3::new(-4.0, -3.0, -2.0), Vec3::new(6.0, 7.0, 8.0)),
+            DEFAULT_FOV_Y,
+        );
+        // zoom == 1 is identical to the plain orbit transform.
+        let base = f.orbit_transform(1.2, 0.3);
+        let same = f.orbit_transform_zoom(1.2, 0.3, 1.0);
+        assert!((base.translation - same.translation).length() < 1e-6);
+        // zoom scales the eye distance linearly; the look-at target is unmoved.
+        for &z in &[0.25_f32, 0.5, 2.0, 4.0] {
+            let t = f.orbit_transform_zoom(1.2, 0.3, z);
+            assert!((t.translation.distance(f.center) - f.distance * z).abs() < 1e-3);
+            let to_centre = (f.center - t.translation).normalize();
+            assert!((t.forward().as_vec3() - to_centre).length() < 1e-3);
+        }
+        // Non-positive zoom is floored to a tiny positive standoff, never zero.
+        let degenerate = f.orbit_transform_zoom(0.0, 0.6, 0.0);
+        assert!(degenerate.translation.distance(f.center) > 0.0);
     }
 }

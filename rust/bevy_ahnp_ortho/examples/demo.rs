@@ -73,6 +73,11 @@ use bevy_ahnp_ortho::render::{AhnpPack, SseThreshold};
 use bevy_ahnp_ortho::{AhnpOrthoPlugin, Framing};
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 
+#[path = "helpers/orbit.rs"]
+mod orbit;
+use bevy::input::mouse::MouseWheel;
+use orbit::{apply_zoom, zoom_delta};
+
 #[cfg(feature = "splat")]
 use bevy_ahnp_ortho::splat::SplatSettings;
 #[cfg(feature = "splat")]
@@ -142,11 +147,22 @@ struct CurrentPack(Option<Entity>);
 struct NeedsFraming(bool);
 
 /// The active [`Framing`], recomputed by [`reframe_on_load`] every time a
-/// pack (re)loads; [`orbit_camera`] sweeps the camera around it. `None`
-/// before the first pack has ever loaded.
-#[derive(Resource, Default)]
+/// pack (re)loads; [`orbit_camera`] sweeps the camera around it and applies the
+/// user's `zoom`. `framing` is `None` before the first pack has ever loaded.
+#[derive(Resource)]
 struct OrbitState {
     framing: Option<Framing>,
+    /// Standoff multiplier on the fit distance; 1.0 == the framed fit.
+    zoom: f32,
+}
+
+impl Default for OrbitState {
+    fn default() -> Self {
+        Self {
+            framing: None,
+            zoom: 1.0,
+        }
+    }
 }
 
 /// Text field + status line state for the file-loader panel.
@@ -290,19 +306,26 @@ fn reframe_on_load(
     needs_framing.0 = false;
 }
 
-/// Sweeps the camera around the active [`OrbitState`]'s framing — a no-op
-/// until the first pack has loaded.
+/// Sweeps the camera around the active [`OrbitState`]'s framing and folds in
+/// keyboard / mouse-wheel zoom (shared [`zoom_delta`]/[`apply_zoom`] mapping) —
+/// a no-op until the first pack has loaded.
 fn orbit_camera(
     time: Res<Time>,
-    orbit: Res<OrbitState>,
+    keys: Res<ButtonInput<KeyCode>>,
+    mut wheel: MessageReader<MouseWheel>,
+    mut orbit: ResMut<OrbitState>,
     mut q: Query<&mut Transform, With<Camera3d>>,
 ) {
+    let delta = zoom_delta(&keys, &mut wheel);
+    if delta != 0.0 {
+        orbit.zoom = apply_zoom(orbit.zoom, delta);
+    }
     let Some(framing) = orbit.framing else {
         return;
     };
     let azimuth = time.elapsed_secs() * 0.1;
     for mut t in &mut q {
-        *t = framing.orbit_transform(azimuth, ORBIT_ELEVATION);
+        *t = framing.orbit_transform_zoom(azimuth, ORBIT_ELEVATION, orbit.zoom);
     }
 }
 

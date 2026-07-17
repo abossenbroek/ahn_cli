@@ -183,6 +183,22 @@ def test_tiles3d_default_profile_writes_no_provenance(tmp_path: Path) -> None:
     assert not (out / "provenance.json").exists()
 
 
+def test_tiles3d_workers_flag_builds(tmp_path: Path) -> None:
+    """`--workers N` parses and drives a green parallel build."""
+    ortho, heights = _inputs(tmp_path)
+    out = tmp_path / "workers"
+    result = _run(out, ortho, heights, "--profile", "game", "--workers", "2")
+    assert result.exit_code == 0, result.output
+    assert (out / "tiles.hfp").is_file()
+
+
+def test_tiles3d_workers_flag_rejects_zero(tmp_path: Path) -> None:
+    """`--workers 0` is a usage error (the flag is bounded to >= 1)."""
+    ortho, heights = _inputs(tmp_path)
+    result = _run(tmp_path / "out", ortho, heights, "--workers", "0")
+    assert result.exit_code == 2
+
+
 def test_tiles3d_unknown_profile_is_rejected(tmp_path: Path) -> None:
     """An unknown --profile is the typed error translated to exit 1."""
     ortho, heights = _inputs(tmp_path)

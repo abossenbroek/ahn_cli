@@ -8,9 +8,10 @@ export -- runs offline against real point clouds.
 
 from __future__ import annotations
 
+import hashlib
 import shutil
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import laspy
 import numpy as np
@@ -22,9 +23,6 @@ from ahn_cli.prep.decimate import PoissonThinning, VoxelThinning
 from ahn_cli.prep.spill import DiskFloorError
 from ahn_cli.prep.transform import PrepError, PrepRequest, prepare
 from ahn_cli.provenance import read_provenance, write_provenance
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 _START = datetime(2026, 7, 10, 9, 0, tzinfo=timezone.utc)
 _FINISH = datetime(2026, 7, 10, 9, 0, 5, tzinfo=timezone.utc)
@@ -237,6 +235,66 @@ def test_prepare_exclude_drops_selected_classes(tmp_path: Path) -> None:
     assert 2 in present
 
 
+def test_prepare_class_filter_only_streams_without_loading_whole_cloud(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A class-filter-only prep (no thinning) never reads the whole cloud.
+
+    Routes the class-filter step through
+    :func:`~ahn_cli.prep.voxel_stream.stream_voxel_thin` at grade 0 (its
+    streamed class-filter identity) instead of the old whole-load
+    ``reader.read()`` path. Runs the full public ``prepare()`` pipeline (so
+    dedup's own legitimate whole-tile reads -- one per of the two source
+    tiles ``_fetched_site`` writes -- are accounted for) and asserts no
+    further :meth:`laspy.LasReader.read` call happens past those two.
+    """
+    site = _fetched_site(tmp_path / "delft")  # two source tiles
+    # getattr, not `.read` directly: laspy's vendored stub doesn't declare it,
+    # so direct attribute access fails pyright strict (reportAttributeAccessIssue).
+    real_read = getattr(laspy.LasReader, "read")  # noqa: B009
+    calls = 0
+
+    def _guarded_read(self: laspy.LasReader) -> laspy.LasData:
+        nonlocal calls
+        calls += 1
+        if calls > 2:  # dedup's legitimate per-tile reads (out of scope here)
+            msg = "class-filter-only prep must not read the whole cloud"
+            raise AssertionError(msg)
+        return real_read(self)
+
+    monkeypatch.setattr("laspy.lasreader.LasReader.read", _guarded_read)
+
+    prepare(PrepRequest(data_dir=site, include_classes=(2, 6)))
+
+    monkeypatch.undo()  # re-read with the real reader to verify the result
+    assert _classes(site / "pointcloud.laz") == {2, 6}
+
+
+def test_prepare_class_filter_only_matches_whole_load_oracle(
+    tmp_path: Path,
+) -> None:
+    """The streamed class-filter-only path matches naive whole-load filtering.
+
+    Runs an unfiltered prep to get the deduplicated baseline cloud, then an
+    independent numpy boolean-mask filter over it stands in for the retired
+    whole-load ``reader.read()`` path -- the oracle a filtered prep of the
+    same site must match exactly, in order.
+    """
+    baseline_site = _fetched_site(tmp_path / "baseline")
+    filtered_site = tmp_path / "filtered"
+    shutil.copytree(baseline_site, filtered_site)
+
+    prepare(PrepRequest(data_dir=baseline_site))
+    prepare(PrepRequest(data_dir=filtered_site, include_classes=(2, 6)))
+
+    baseline = _read_points(baseline_site / "pointcloud.laz")
+    keep = np.isin(np.asarray(baseline.classification), (2, 6))
+    expected_gps = np.asarray(baseline.gps_time)[keep].tolist()
+
+    result = _read_points(filtered_site / "pointcloud.laz")
+    assert result.gps_time.tolist() == expected_gps
+
+
 # --------------------------------------------------------------------------- #
 # Graded thinning (additive, via the CPU reference backend)
 # --------------------------------------------------------------------------- #
@@ -282,6 +340,33 @@ def test_prepare_poisson_thinning_is_recorded(tmp_path: Path) -> None:
     result = _read_points(site / "pointcloud.laz")
     # A 100 m radius over a 20 m-wide cloud keeps exactly one point.
     assert len(result.points) == 1
+
+
+def test_prepare_poisson_thinning_applies_include_and_exclude_first(
+    tmp_path: Path,
+) -> None:
+    """A Poisson request combined with a class filter filters before thinning.
+
+    Exercises the in-memory ``_class_mask`` with both ``include`` and
+    ``exclude`` set (the Poisson path is the only one left that still calls
+    it, now that the class-filter-only and voxel paths stream instead).
+    """
+    site = _fetched_site(tmp_path / "delft")
+
+    prepare(
+        PrepRequest(
+            data_dir=site,
+            include_classes=(2, 6),
+            exclude_classes=(6,),
+            thinning=PoissonThinning(radius=100.0, seed=7),
+        ),
+    )
+
+    result = _read_points(site / "pointcloud.laz")
+    # Only class-2 points survive the filter; a 100 m radius over the
+    # remaining 20 m-wide cloud keeps exactly one point.
+    assert len(result.points) == 1
+    assert result.classification.tolist() == [2]
     keys = dict(read_provenance(site / "provenance.json").request_keys)
     assert keys["thinning"] == "poisson:100.0:7"
 
@@ -440,3 +525,40 @@ def test_prepare_rejects_a_cloud_stacked_at_one_position(
     assert not (site / "pointcloud.laz").exists()
     assert not (site / "pointcloud.ply").exists()
     assert not (site / "provenance.json").exists()
+
+
+# --------------------------------------------------------------------------- #
+# Output checksum: streamed, not a whole-cloud read_bytes()
+# --------------------------------------------------------------------------- #
+
+
+def test_output_checksum_matches_whole_load_sha256_without_read_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The streamed output checksum equals a whole-load SHA-256, no read_bytes.
+
+    Patches :meth:`pathlib.Path.read_bytes` to explode for that one file --
+    proving the recorded ``output_checksum`` comes from the chunked hasher,
+    not a whole-file read -- while still independently re-hashing the
+    finished file (via the unguarded real method) as the oracle the recorded
+    digest must equal.
+    """
+    site = _fetched_site(tmp_path / "delft")
+    real_read_bytes = Path.read_bytes
+
+    def _guarded_read_bytes(self: Path) -> bytes:
+        if self.name == "pointcloud.laz":
+            msg = "pointcloud.laz must be hashed in bounded chunks"
+            raise AssertionError(msg)
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", _guarded_read_bytes)
+
+    prepare(PrepRequest(data_dir=site))
+
+    monkeypatch.undo()  # re-hash with the real read_bytes for the oracle
+    expected = hashlib.sha256(
+        (site / "pointcloud.laz").read_bytes()
+    ).hexdigest()
+    provenance = read_provenance(site / "provenance.json")
+    assert provenance.output_checksum == expected

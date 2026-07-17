@@ -355,6 +355,70 @@ def test_multi_segment_and_multi_partition_path(
     assert _read(out).gps_time.tolist() == [100.0, 101.0]
 
 
+def test_partition_resplit_recurses_past_the_initial_partition_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An oversized pass-2 partition re-splits recursively, matching the reference.
+
+    Byte-for-byte matches a non-recursive run -- proving the initial
+    ``_PARTITION_MAX`` fan-out cap is not a hard ceiling on how large a cloud
+    can spill. Shrinks ``_PARTITION_MAX_BYTES`` to a single byte, so every
+    partition (and every re-split sub-partition) at every depth up to
+    ``_MAX_RESPLIT_DEPTH`` counts as oversized: this forces recursion all the
+    way to the depth safety valve (covering both the "still oversized, keep
+    recursing" and "depth exhausted, reduce anyway" branches), and a wrapped
+    ``_resplit_partition`` proves recursion actually ran rather than the
+    shrunk threshold silently doing nothing.
+    """
+    monkeypatch.setattr(voxel_stream_module, "_PARTITION_MAX_BYTES", 1)
+    monkeypatch.setattr(voxel_stream_module, "_MAX_RESPLIT_DEPTH", 2)
+    # getattr, not `.`: it's private, deliberately accessed here to spy on it.
+    real_resplit = getattr(voxel_stream_module, "_resplit_partition")  # noqa: B009
+    depths: list[int] = []
+
+    def _spy_resplit(
+        path: Path,
+        runs_dir: Path,
+        label: str,
+        depth: int,
+        min_free_bytes: int,
+    ) -> list[Path]:
+        depths.append(depth)
+        return real_resplit(path, runs_dir, label, depth, min_free_bytes)
+
+    monkeypatch.setattr(
+        voxel_stream_module, "_resplit_partition", _spy_resplit
+    )
+    rng = np.random.default_rng(1)
+    n = 300
+    coords = rng.uniform(0, 50, size=(n, 3))
+    points: list[Point] = [
+        (
+            float(coords[i, 0]),
+            float(coords[i, 1]),
+            float(coords[i, 2]),
+            float(i),
+            2,
+        )
+        for i in range(n)
+    ]
+    src = tmp_path / "src.laz"
+    recursive_out = tmp_path / "recursive.laz"
+    baseline_out = tmp_path / "baseline.laz"
+    _write_laz(src, points)
+
+    baseline_count = stream_voxel_thin(src, baseline_out, _GRADE_1M, (), ())
+    recursive_count = stream_voxel_thin(src, recursive_out, _GRADE_1M, (), ())
+
+    assert depths, "resplit never ran -- the shrunk threshold had no effect"
+    assert max(depths) >= 1  # recursion reached at least a second level
+    assert recursive_count == baseline_count
+    assert (
+        _read(recursive_out).gps_time.tolist()
+        == _read(baseline_out).gps_time.tolist()
+    )
+
+
 def test_disk_floor_breach_raises_and_cleans_up(tmp_path: Path) -> None:
     """A disk-floor breach raises, removes the spill dir, and leaves output untouched."""
     src = tmp_path / "src.laz"

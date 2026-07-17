@@ -23,6 +23,16 @@ attribute, the scanline offset table, and the little-endian FLOAT payload are
 written byte-for-byte, so identical input yields byte-identical output across
 runs and machines. Channels are stored in the alphabetical order OpenEXR
 mandates (B, G, R), each an uncompressed float32 scanline.
+
+**Memory.** The export streams the DSM one scanline at a time -- a windowed
+single-row read, this row's easting/northing derived inline (mirroring
+:class:`~ahn_cli.domain.grid.PixelGrid`'s pixel-centre formula without
+materialising its full coordinate mesh), and the row's EXR block appended
+straight to a sibling temp file -- so peak memory is a small, row-count-
+independent constant rather than several whole-raster planes plus the whole
+encoded payload. The authenticity gate (see below) is likewise evaluated
+scanline-by-scanline as the file is written; a run that fails it discards the
+temp file, so a rejected raster never leaves a partial ``positions.exr`` behind.
 """
 
 from __future__ import annotations
@@ -32,15 +42,16 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
 import numpy as np
-import numpy.typing as npt
 import rasterio
 from rasterio.errors import RasterioIOError
+from rasterio.windows import Window
 
-from ahn_cli.domain.authenticity import flat_surface
 from ahn_cli.domain.grid import GeoTransform, PixelGrid
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    import numpy.typing as npt
 
     from ahn_cli.domain import ProgressCallback
 
@@ -139,39 +150,66 @@ def _header(width: int, height: int) -> bytes:
     return prefix + attributes + b"\x00"  # NUL terminates the header
 
 
-def _encode_exr(
-    easting: npt.NDArray[np.float32],
-    northing: npt.NDArray[np.float32],
-    elevation: npt.NDArray[np.float32],
-) -> bytes:
-    """Encode the three ``(h, w)`` float32 planes to uncompressed EXR bytes.
+def _offset_table(width: int, height: int) -> bytes:
+    """Encode the scanline offset table for a ``(width, height)`` image.
 
-    The scanline offset table is computed exactly (every scanline block is the
-    same size for an uncompressed FLOAT image), then each scanline is written as
-    its ``y`` coordinate, its pixel-data size, and the alphabetical B/G/R rows.
+    Every scanline block is the same fixed size for an uncompressed FLOAT
+    image, so every offset is computable from the image dimensions alone --
+    no pixel data is needed, which is what lets the header and offset table be
+    written before a single scanline has been read.
     """
-    height, width = elevation.shape
-    header = _header(width, height)
+    header_len = len(_header(width, height))
     row_bytes = width * 4  # one float32 channel row
     block_size = 8 + row_bytes * 3  # y(4) + data-size(4) + B/G/R rows
-    data_size = struct.pack("<i", row_bytes * 3)
-    first_block = len(header) + height * 8  # header, then the offset table
-    offset_table = b"".join(
+    first_block = header_len + height * 8  # header, then the offset table
+    return b"".join(
         struct.pack("<Q", first_block + row * block_size)
         for row in range(height)
     )
-    planes = {b"B": elevation, b"G": northing, b"R": easting}
-    blocks = bytearray()
-    for row in range(height):
-        blocks += struct.pack("<i", row)  # y coordinate (dataWindow yMin = 0)
-        blocks += data_size
-        for name in _CHANNEL_NAMES:
-            blocks += planes[name][row].astype("<f4", copy=False).tobytes()
-    return header + offset_table + bytes(blocks)
 
 
 def _no_op_progress(_done: int, _total: int) -> None:
     """Report nothing; the default when the caller supplies no callback."""
+
+
+class _FlatnessTracker:
+    """Streaming equivalent of :func:`~ahn_cli.domain.authenticity.flat_surface`.
+
+    That shared predicate needs the whole elevation array at once; this class
+    reaches the identical three-way verdict (no valid sample; a single valid
+    sample; two or more valid samples all identical) by folding one scanline
+    at a time, so the DSM's elevation plane is never held whole in memory.
+    """
+
+    def __init__(self, nodata: float | None) -> None:
+        """Track flatness against ``nodata`` (``None`` if none is declared)."""
+        self._nodata = None if nodata is None else np.float32(nodata)
+        self._first: np.float32 | None = None
+        self._valid_count = 0
+        self._differs = False
+
+    def update(self, row: npt.NDArray[np.float32]) -> None:
+        """Fold one elevation scanline's valid (finite, non-nodata) values in."""
+        finite = row[np.isfinite(row)]
+        valid = (
+            finite if self._nodata is None else finite[finite != self._nodata]
+        )
+        if valid.size == 0:
+            return
+        self._valid_count += int(valid.size)
+        if self._first is None:
+            self._first = valid[0]
+        if not self._differs and bool(np.any(valid != self._first)):
+            self._differs = True
+
+    @property
+    def is_flat(self) -> bool:
+        """Whether every scanline folded in so far carries no genuine relief."""
+        if self._valid_count == 0:
+            return True
+        if self._differs:
+            return False
+        return self._valid_count != 1  # a lone valid sample is not "flat"
 
 
 def export_positions(
@@ -209,7 +247,6 @@ def export_positions(
     report(0, 1)
     try:
         with rasterio.open(str(dsm_path)) as dataset:
-            elevation = np.asarray(dataset.read(1), dtype=np.float32)
             # A rasterio ``Affine`` is a 9-tuple (a, b, c, d, e, f, 0, 0, 1);
             # its first six entries are the geotransform coefficients. The
             # (unstubbed) Affine exposes neither typed members nor ``__iter__``,
@@ -219,32 +256,105 @@ def export_positions(
             width = int(dataset.width)
             height = int(dataset.height)
             nodata = dataset.nodata
+            stats = _stream_export(
+                dataset,
+                dsm_path,
+                output_path,
+                width,
+                height,
+                transform,
+                nodata,
+            )
     except RasterioIOError as exc:
         msg = f"DSM raster at {dsm_path} is not readable: {exc}"
         raise PositionsExportError(msg) from exc
 
-    if flat_surface(elevation, nodata):
-        msg = (
-            f"DSM raster at {dsm_path} carries no genuine relief (no valid "
-            "pixels, or one constant elevation everywhere) — that is a "
-            "placeholder surface, not measured AHN DSM data; refusing to "
-            "export a position map from it."
-        )
-        raise PositionsExportError(msg)
-
-    grid = PixelGrid(width=width, height=height, transform=transform)
-    easting = grid.eastings().astype(np.float32)
-    northing = grid.northings().astype(np.float32)
-    z = elevation.copy()
-    if nodata is None:
-        nodata_pixels = 0
-    else:
-        void_mask = elevation == np.float32(nodata)
-        nodata_pixels = int(np.count_nonzero(void_mask))
-        z[void_mask] = _NODATA_Z
-
-    output_path.write_bytes(_encode_exr(easting, northing, z))
     report(1, 1)
+    return stats
+
+
+def _stream_export(
+    dataset: rasterio.DatasetReader,
+    dsm_path: Path,
+    output_path: Path,
+    width: int,
+    height: int,
+    transform: GeoTransform,
+    nodata: float | None,
+) -> PositionsExportStats:
+    """Stream ``dataset``'s elevation into ``output_path``, one row at a time.
+
+    Writes the header and offset table (pure functions of ``width``/``height``)
+    to a sibling temp file, then one scanline at a time: a windowed single-row
+    elevation read, this row's easting/northing derived inline, the nodata
+    sentinel substituted, and the row's B/G/R block appended -- never holding
+    more than one row's worth of the channel planes, or the whole encoded
+    payload, in memory. The temp file is swapped into ``output_path`` only
+    once every row is streamed and the (also streamed) authenticity gate has
+    passed; a rejected raster leaves the temp file discarded and
+    ``output_path`` untouched.
+
+    Failure modes:
+        - :class:`PositionsExportError` if the raster carries no genuine
+          relief (see :class:`_FlatnessTracker`).
+    """
+    # Cheap dimension validation only (no coordinate mesh is materialised);
+    # this row's easting/northing are derived inline below instead.
+    PixelGrid(width=width, height=height, transform=transform)
+    tracker = _FlatnessTracker(nodata)
+    nodata_f32 = None if nodata is None else np.float32(nodata)
+    nodata_pixels = 0
+    cols_centre = np.arange(width, dtype=np.float64) + 0.5
+    row_bytes = width * 4
+    data_size = struct.pack("<i", row_bytes * 3)
+    tmp_path = output_path.with_name(
+        f"{output_path.stem}.tmp{output_path.suffix}"
+    )
+    try:
+        with tmp_path.open("wb") as handle:
+            handle.write(_header(width, height))
+            handle.write(_offset_table(width, height))
+            for row in range(height):
+                window = Window(0, row, width, 1)
+                elevation_row = np.asarray(
+                    dataset.read(1, window=window)[0], dtype=np.float32
+                )
+                tracker.update(elevation_row)
+                z_row = elevation_row.copy()
+                if nodata_f32 is not None:
+                    void_mask = elevation_row == nodata_f32
+                    row_nodata = int(np.count_nonzero(void_mask))
+                    if row_nodata:
+                        nodata_pixels += row_nodata
+                        z_row[void_mask] = _NODATA_Z
+                row_centre = row + 0.5
+                easting_row = (
+                    transform[0] * cols_centre
+                    + transform[1] * row_centre
+                    + transform[2]
+                ).astype(np.float32)
+                northing_row = (
+                    transform[3] * cols_centre
+                    + transform[4] * row_centre
+                    + transform[5]
+                ).astype(np.float32)
+                handle.write(struct.pack("<i", row))
+                handle.write(data_size)
+                for plane in (z_row, northing_row, easting_row):  # B, G, R
+                    handle.write(plane.astype("<f4", copy=False).tobytes())
+        if tracker.is_flat:
+            msg = (
+                f"DSM raster at {dsm_path} carries no genuine relief (no "
+                "valid pixels, or one constant elevation everywhere) — that "
+                "is a placeholder surface, not measured AHN DSM data; "
+                "refusing to export a position map from it."
+            )
+            raise PositionsExportError(msg)
+        tmp_path.replace(output_path)
+    finally:
+        # No-op after a successful replace (the temp no longer exists);
+        # removes the partial/rejected temp on every other path.
+        tmp_path.unlink(missing_ok=True)
     return PositionsExportStats(
         width=width, height=height, nodata_pixels=nodata_pixels
     )

@@ -21,6 +21,7 @@ fast test suite is deterministic and offline.
 
 from __future__ import annotations
 
+import concurrent.futures
 import hashlib
 import io
 import json
@@ -55,7 +56,13 @@ from ahn_cli.fetch.generation import (
 )
 from ahn_cli.fetch.geotiles_source import GeotilesCatalogError, GeotilesSource
 from ahn_cli.fetch.pdok import PdokFeedError, PdokSource
-from ahn_cli.fetch.source import FetchSource, HttpGet, SourceKind, to_rd
+from ahn_cli.fetch.source import (
+    FetchSource,
+    HttpGet,
+    RemoteTile,
+    SourceKind,
+    to_rd,
+)
 from ahn_cli.provenance import write_provenance
 
 SITE_SUBDIRS: tuple[str, ...] = ("ahn", "ortho", "viirs")
@@ -235,6 +242,7 @@ def acquire(
     cache_root: Path | None = None,
     tool_version: str | None = None,
     progress: ProgressCallback | None = None,
+    download_jobs: int = 1,
 ) -> tuple[Path, ...]:
     """Acquire the covering sheets for ``request`` into its site layout.
 
@@ -245,12 +253,19 @@ def acquire(
           ``<tile_id>.provenance.json`` sidecar beside each.
         - Returns the written ``.LAZ`` paths, ordered by sheet id.
         - Deterministic: sheet order, checksums, and (with injected ``now`` /
-          ``tool_version``) provenance are stable for the same feed and tiles.
+          ``tool_version``) provenance are stable for the same feed and tiles,
+          regardless of ``download_jobs``.
         - Idempotent downloads: a sheet already in the cache is not re-fetched
           (``http_get`` is not called for it).
         - Calls ``progress(tiles_done, total_tiles)`` once per tile (after it
           is written); defaults to a no-op so callers that don't care about
           progress are unaffected.
+        - ``download_jobs`` (default ``1``, serial) is the number of tiles
+          downloaded concurrently through a ``ThreadPoolExecutor`` when
+          greater than 1. Downloads may complete in any order, but every
+          other effect -- writes, provenance, and ``progress`` calls -- is
+          always emitted in ascending ``tile_id`` order, matching the
+          ``download_jobs=1`` sequence exactly.
 
     Failure modes:
         - :class:`AcquisitionError` if the bbox is malformed, the selector is
@@ -261,7 +276,11 @@ def acquire(
           is funnelled here so the CLI reports it cleanly. A tile the
           authenticity gate rejects is evicted from the cache before the
           error is raised, so a retry re-downloads it instead of replaying
-          the poisoned bytes.
+          the poisoned bytes. With ``download_jobs=1`` a rejected tile stops
+          the run before any later tile is downloaded; with
+          ``download_jobs>1`` every tile's download is already in flight, so
+          later tiles may already have been fetched (and cached) by the time
+          the rejection is raised.
     """
     report = progress if progress is not None else _no_op_progress
     create_site_layout(request.site_dir)
@@ -283,23 +302,15 @@ def acquire(
         if cache_root is not None
         else request.site_dir / _CACHE_DIRNAME
     )
-    written: list[Path] = []
-    total_tiles = len(resolved.tiles)
-    for tile in resolved.tiles:
-        key = CacheKey(
-            product=Product.AHN_POINT_CLOUD,
-            tile_id=tile.tile_id,
-            generation=generation,
-        )
-        started = now()
-        try:
-            content = cache.get_or_fetch(
-                key, _downloader(http_get, tile.download_url)
-            )
-        except requests.RequestException as exc:
-            msg = f"download failed for {tile.download_url}: {exc}"
-            raise AcquisitionError(msg) from exc
-        finished = now()
+
+    def emit(
+        tile: RemoteTile,
+        key: CacheKey,
+        content: bytes,
+        started: datetime,
+        finished: datetime,
+    ) -> Path:
+        """Verify, write, and record provenance for one downloaded tile."""
         try:
             _verify_ahn_tile(content, tile.tile_id, tile.download_url)
         except AcquisitionError:
@@ -332,9 +343,82 @@ def acquire(
         write_provenance(
             provenance, ahn_dir / f"{tile.tile_id}.provenance.json"
         )
-        written.append(laz_path)
-        report(len(written), total_tiles)
+        return laz_path
+
+    written: list[Path] = []
+    total_tiles = len(resolved.tiles)
+    if download_jobs <= 1:
+        for tile in resolved.tiles:
+            _, key, content, started, finished = _fetch_ahn_tile(
+                tile, generation, cache, http_get, now
+            )
+            written.append(emit(tile, key, content, started, finished))
+            report(len(written), total_tiles)
+    else:
+        for tile, key, content, started, finished in _fetch_ahn_tiles(
+            resolved.tiles, generation, cache, http_get, now, download_jobs
+        ):
+            written.append(emit(tile, key, content, started, finished))
+            report(len(written), total_tiles)
     return tuple(written)
+
+
+def _fetch_ahn_tile(
+    tile: RemoteTile,
+    generation: Generation,
+    cache: ContentAddressedCache,
+    http_get: HttpGet,
+    now: Clock,
+) -> tuple[RemoteTile, CacheKey, bytes, datetime, datetime]:
+    """Download (or reuse the cache for) one AHN tile, timestamped.
+
+    Failure modes:
+        - :class:`AcquisitionError` if ``http_get`` raises for this tile.
+    """
+    key = CacheKey(
+        product=Product.AHN_POINT_CLOUD,
+        tile_id=tile.tile_id,
+        generation=generation,
+    )
+    started = now()
+    try:
+        content = cache.get_or_fetch(
+            key, _downloader(http_get, tile.download_url)
+        )
+    except requests.RequestException as exc:
+        msg = f"download failed for {tile.download_url}: {exc}"
+        raise AcquisitionError(msg) from exc
+    finished = now()
+    return tile, key, content, started, finished
+
+
+def _fetch_ahn_tiles(
+    tiles: tuple[RemoteTile, ...],
+    generation: Generation,
+    cache: ContentAddressedCache,
+    http_get: HttpGet,
+    now: Clock,
+    download_jobs: int,
+) -> list[tuple[RemoteTile, CacheKey, bytes, datetime, datetime]]:
+    """Download every tile through ``download_jobs`` concurrent workers.
+
+    Contract:
+        - Returns one result per tile, ordered by ``tile_id`` ascending --
+          regardless of the order in which the pool completes them, so
+          callers must never rely on as-completed order for the emitted
+          sequence.
+    """
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=download_jobs
+    ) as executor:
+        futures = [
+            executor.submit(
+                _fetch_ahn_tile, tile, generation, cache, http_get, now
+            )
+            for tile in tiles
+        ]
+        results = [future.result() for future in futures]
+    return sorted(results, key=lambda result: result[0].tile_id)
 
 
 def _verify_ahn_tile(content: bytes, tile_id: str, url: str) -> None:

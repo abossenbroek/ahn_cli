@@ -271,13 +271,23 @@ def cli() -> None:
     show_default=True,
     help="Show a progress bar during the run.",
 )
-def fetch(
+@click.option(
+    "-j",
+    "--jobs",
+    "jobs",
+    type=int,
+    default=1,
+    show_default=True,
+    help="Concurrent tile downloads (AHN and, with --ortho, orthophoto).",
+)
+def fetch(  # noqa: PLR0913 -- one CLI param per fetch option; a bag object would only hide them
     out: Path,
     city: str | None,
     bbox: str | None,
     geojson: str | None,
     ahn: str,
     source: str,
+    jobs: int,
     *,
     dsm: bool,
     ortho: bool,
@@ -292,6 +302,9 @@ def fetch(
     ``--dsm`` it additionally windowed-reads the DSM COG and clips it to
     ``<out>/dsm.tif`` with its own provenance sidecar; with ``--ortho`` it also
     mosaics the Beeldmateriaal orthophoto to ``<out>/ortho/ortho.tif``.
+    ``-j/--jobs`` (default 1, serial) downloads that many tiles concurrently
+    for the AHN and orthophoto steps; the written output is identical to a
+    serial run regardless of the job count.
     """
     selector, area = _select_area(city, bbox, geojson)
     generation = _GENERATION_REGISTRY.resolve_token(ahn)
@@ -311,6 +324,7 @@ def fetch(
             acquire(
                 request,
                 progress=_tqdm_progress(bar) if bar is not None else None,
+                download_jobs=jobs,
             )
         if dsm:
             with _progress_bar(
@@ -327,6 +341,7 @@ def fetch(
                 acquire_ortho(
                     request,
                     progress=_tqdm_progress(bar) if bar is not None else None,
+                    download_jobs=jobs,
                 )
     except AcquisitionError as exc:
         raise click.ClickException(str(exc)) from exc

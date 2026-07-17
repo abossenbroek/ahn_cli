@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from datetime import datetime, timezone
 from importlib.metadata import version
 from typing import TYPE_CHECKING
@@ -158,6 +159,41 @@ class _RecordingHttp:
             msg = f"unexpected URL requested: {url}"
             raise AssertionError(msg)
         return self._responses[url]
+
+
+class _ScrambledHttp:
+    """Serves the feed normally but finishes tile downloads out of order.
+
+    ``2025_kb_00_hrl`` -- the lexicographically smallest tile id, and the one
+    the old serial loop (and any naive as-completed implementation) would
+    download and write first -- blocks until ``2025_kb_01_hrl`` has already
+    completed, proving the emitted order comes from a sort, not from
+    pool-completion order.
+    """
+
+    def __init__(self, responses: dict[str, bytes]) -> None:
+        self._responses = responses
+        self._second_done = threading.Event()
+        self.completion_order: list[str] = []
+        self._lock = threading.Lock()
+
+    def __call__(self, url: str) -> bytes:
+        """Return the feed immediately; scramble the two tiles' completion."""
+        if url not in self._responses:
+            msg = f"unexpected URL requested: {url}"
+            raise AssertionError(msg)
+        if not url.endswith(".tif"):
+            return self._responses[url]
+        if "kb_00" in url:
+            assert self._second_done.wait(timeout=5), (
+                "the second tile never completed"
+            )
+        content = self._responses[url]
+        with self._lock:
+            self.completion_order.append(url)
+        if "kb_00" not in url:
+            self._second_done.set()
+        return content
 
 
 class _FailingHttp:
@@ -731,9 +767,10 @@ def _covering_http(responses: dict[str, bytes]) -> _RecordingHttp:
 
 def _acquire(
     site: Path,
-    http: _RecordingHttp,
+    http: Callable[[str], bytes],
     *,
     clock: Callable[[], datetime] | None = None,
+    download_jobs: int = 1,
 ) -> OrthoAcquisition:
     """Run acquire_ortho with the HRL-covering registry and injected I/O."""
     registry = _registry(_dataset(_FEED_HRL, "hrl"))
@@ -744,6 +781,7 @@ def _acquire(
         cache_root=site / ".cache",
         tool_version="ortho-test",
         registry=registry,
+        download_jobs=download_jobs,
     )
 
 
@@ -793,6 +831,66 @@ def test_acquire_reports_progress_per_tile(tmp_path: Path) -> None:
     )
 
     assert calls == [(1, 2), (2, 2)]
+
+
+def test_acquire_with_jobs_emits_tile_id_order_despite_scrambled_completion(
+    tmp_path: Path,
+) -> None:
+    """download_jobs>1 always writes sheets in tile-id order.
+
+    The pool completes ``2025_kb_01_hrl`` before ``2025_kb_00_hrl`` here, but
+    the written sheets (mosaic order) must still come out sorted ascending by
+    tile_id -- proving the result is collected and sorted rather than
+    emitted in as-completed order.
+    """
+    site = tmp_path / "delft"
+    responses = _write_tiles(tmp_path / "tiles")
+    index = _hrl_index(
+        tuple(
+            (tid, bbox, responses[f"{_TILE_BASE}{tid}.tif"])
+            for tid, bbox in _two_overlapping_tiles()
+        )
+    )
+    http = _ScrambledHttp({**responses, _FEED_HRL: index})
+
+    result = _acquire(site, http, download_jobs=4)
+
+    assert "kb_00" not in http.completion_order[0]
+    assert [p.name for p in result.tile_paths] == [
+        "2025_kb_00_hrl.tif",
+        "2025_kb_01_hrl.tif",
+    ]
+
+
+def test_acquire_is_byte_identical_across_job_counts(tmp_path: Path) -> None:
+    """download_jobs=1 and download_jobs=8 write byte-identical output."""
+    responses = _write_tiles(tmp_path / "tiles")
+
+    site_serial = tmp_path / "serial"
+    result_serial = _acquire(
+        site_serial, _covering_http(responses), download_jobs=1
+    )
+
+    site_parallel = tmp_path / "parallel"
+    result_parallel = _acquire(
+        site_parallel, _covering_http(responses), download_jobs=8
+    )
+
+    assert (
+        result_serial.mosaic_path.read_bytes()
+        == result_parallel.mosaic_path.read_bytes()
+    )
+    assert (
+        result_serial.provenance_path.read_bytes()
+        == result_parallel.provenance_path.read_bytes()
+    )
+    assert [p.name for p in result_serial.tile_paths] == [
+        p.name for p in result_parallel.tile_paths
+    ]
+    for serial_path, parallel_path in zip(
+        result_serial.tile_paths, result_parallel.tile_paths, strict=True
+    ):
+        assert serial_path.read_bytes() == parallel_path.read_bytes()
 
 
 def test_acquire_records_the_input_checksum_over_tiles(

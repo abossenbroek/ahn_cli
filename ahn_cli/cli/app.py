@@ -38,6 +38,9 @@ from ahn_cli.fetch.source import (
     source_kind_tokens,
 )
 from ahn_cli.fetch.viirs import ViirsImportError, import_viirs
+from ahn_cli.pipeline.errors import PipelineError
+from ahn_cli.pipeline.run import run_spec
+from ahn_cli.pipeline.spec import parse_json, parse_yaml
 from ahn_cli.prep.decimate import (
     DEFAULT_SEED,
     PoissonThinning,
@@ -984,3 +987,60 @@ def _tqdm_progress(bar: tqdm[NoReturn]) -> ProgressCallback:
         bar.refresh()
 
     return _report
+
+
+_YAML_SUFFIXES = frozenset({".yaml", ".yml"})
+"""Spec file suffixes parsed as YAML; every other suffix is parsed as JSON."""
+
+
+@cli.group(name="pipeline")
+def pipeline_group() -> None:
+    """Fuse the verbs into a tile-streaming pipeline driven by a spec."""
+
+
+@pipeline_group.command(name="run")
+@click.argument(
+    "spec_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+)
+@click.option(
+    "--point-spacing-m",
+    "point_spacing_m",
+    type=float,
+    default=None,
+    help=(
+        "AHN native point spacing (metres) driving the reconcile halo floor; "
+        "defaults to the read-source fallback."
+    ),
+)
+def pipeline_run_command(
+    spec_path: Path, point_spacing_m: float | None
+) -> None:
+    """Run a PDAL-style pipeline spec (YAML or JSON) end-to-end.
+
+    Parses the spec, wires its ``read`` source, stage chain and sink, then
+    streams every tile end-to-end in bounded memory -- resumable and
+    deterministic. Writes the sink's deliverable (a 3D Tiles ``tileset.json``
+    plus, for a lossy profile, a packed ``tiles.hfp`` and sidecars; or the
+    per-tile reconciled-grid store for a cloud sink) into the spec's output
+    directory.
+    """
+    text = spec_path.read_text(encoding="utf-8")
+    parse = (
+        parse_yaml
+        if spec_path.suffix.lower() in _YAML_SUFFIXES
+        else parse_json
+    )
+    try:
+        spec = parse(text)
+        result = (
+            run_spec(spec)
+            if point_spacing_m is None
+            else run_spec(spec, point_spacing_m=point_spacing_m)
+        )
+    except PipelineError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(
+        f"Pipeline {result.deliverable_path}: {result.tile_count} tile(s) "
+        f"({result.processed} computed, {result.skipped} resumed)."
+    )

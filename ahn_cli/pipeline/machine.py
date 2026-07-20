@@ -139,6 +139,24 @@ def _slurp(path: str) -> str:
     return Path(path).read_text(encoding="utf-8")
 
 
+def _missing_sysconf(name: str) -> int:
+    """Stand in for ``os.sysconf`` on platforms without it (Windows).
+
+    Never actually invoked in practice: :func:`_read_cache_line` and
+    :func:`_read_page` only call ``sysconf`` on the Linux branch, and
+    ``sys.platform`` is never ``"linux*"`` on a platform lacking
+    ``os.sysconf``. Exists so binding :data:`_SYSTEM_PROBE`'s ``sysconf``
+    field never has to evaluate the missing ``os.sysconf`` attribute itself.
+    """
+    msg = f"os.sysconf is unavailable on this platform (requested {name!r})."
+    raise OSError(msg)
+
+
+_SYSCONF: SysconfReader = getattr(os, "sysconf", _missing_sysconf)
+"""``os.sysconf`` where the platform defines it (POSIX); else
+:func:`_missing_sysconf`, so importing this module never raises on Windows."""
+
+
 @dataclass(frozen=True)
 class SystemProbe:
     """The injectable system-access seam the readers depend on.
@@ -162,7 +180,7 @@ class SystemProbe:
 
 _SYSTEM_PROBE = SystemProbe(
     platform=sys.platform,
-    sysconf=os.sysconf,
+    sysconf=_SYSCONF,
     run=_run_command,
     read_text=_slurp,
 )

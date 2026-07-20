@@ -23,6 +23,18 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # ubuntu-latest ships with well under 20 GB free once its
+      # preinstalled toolchains (Android, .NET, GHC) are counted, none of
+      # which this Python-only build needs. prep/tiles3d enforce a real
+      # 20 GB free-disk floor (spill.MIN_FREE_DISK_BYTES) on every write --
+      # a deliberate safety check, not a test knob -- so the runner needs
+      # genuine headroom for it to hold, same as any other machine.
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /usr/local/share/boost
+          df -h /
+
       - name: Install uv
         uses: astral-sh/setup-uv@v4
         with:

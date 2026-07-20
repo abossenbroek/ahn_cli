@@ -8,7 +8,7 @@ over the concatenation of every input run.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, NamedTuple
+from typing import TYPE_CHECKING, NamedTuple, cast
 
 import numpy as np
 import pytest
@@ -26,6 +26,7 @@ from ahn_cli.prep.spill import (
 
 if TYPE_CHECKING:
     from pathlib import Path
+    from types import ModuleType
 
     import numpy.typing as npt
 
@@ -74,6 +75,34 @@ def test_ensure_free_disk_raises_when_floor_would_be_breached(
         ensure_free_disk(
             tmp_path, 60, min_free_bytes=50
         )  # 100 - 60 = 40 < 50
+
+
+def _raise_import_error(_name: str) -> ModuleType:
+    """Raise ImportError to model the "fcntl absent" (Windows) path."""
+    raise ImportError
+
+
+def test_import_fcntl_returns_module_when_import_succeeds() -> None:
+    """With an importer that yields a handle, that handle is returned."""
+    sentinel = cast("ModuleType", object())
+    assert spill_module.import_fcntl(lambda _name: sentinel) is sentinel
+
+
+def test_import_fcntl_returns_none_when_unavailable() -> None:
+    """With an importer that raises ImportError, ``None`` is returned.
+
+    This is the fallback taken on Windows, which has no ``fcntl`` module.
+    """
+    assert spill_module.import_fcntl(_raise_import_error) is None
+
+
+def test_advise_no_cache_is_a_no_op_when_fcntl_is_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No fcntl call is made on a platform without the module (Windows)."""
+    monkeypatch.setattr(spill_module, "fcntl", None)
+    with (tmp_path / "f.bin").open("wb") as handle:
+        advise_no_cache(handle)  # would raise AttributeError if not guarded
 
 
 def test_advise_no_cache_is_a_no_op_without_f_nocache(

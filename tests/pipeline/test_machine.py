@@ -24,6 +24,7 @@ from ahn_cli.pipeline.machine import (
     _DEFAULT_CACHE_LINE,  # pyright: ignore[reportPrivateUsage]
     _DEFAULT_FREE_RAM_BYTES,  # pyright: ignore[reportPrivateUsage]
     _DEFAULT_PAGE,  # pyright: ignore[reportPrivateUsage]
+    _missing_sysconf,  # pyright: ignore[reportPrivateUsage]
     _run_command,  # pyright: ignore[reportPrivateUsage]
     _slurp,  # pyright: ignore[reportPrivateUsage]
 )
@@ -254,3 +255,15 @@ def test_run_command_propagates_failure() -> None:
     """A failing subprocess raises, so `_guarded` can fall back on it."""
     with pytest.raises(subprocess.CalledProcessError):
         _run_command([sys.executable, "-c", "import sys; sys.exit(1)"])
+
+
+def test_missing_sysconf_raises_if_ever_actually_invoked() -> None:
+    """The Windows stand-in for `os.sysconf` raises rather than silently lying.
+
+    It is never called in practice -- `sys.platform` is never `"linux*"` on
+    a platform lacking `os.sysconf` -- but it must be a real callable so
+    binding `SystemProbe.sysconf` to it at import time never touches the
+    missing `os.sysconf` attribute itself.
+    """
+    with pytest.raises(OSError, match="unavailable"):
+        _missing_sysconf("SC_PAGE_SIZE")

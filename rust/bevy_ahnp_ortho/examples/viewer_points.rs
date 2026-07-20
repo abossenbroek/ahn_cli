@@ -12,6 +12,10 @@ use bevy_ahnp_ortho::Framing;
 use bevy_ahnp_ortho::points::{LodSelection, load_points};
 use bevy_ahnp_ortho::render::mesh_points;
 
+#[path = "helpers/orbit.rs"]
+mod orbit;
+use orbit::{ELEVATION, Orbit, orbit_camera};
+
 fn main() {
     let path = std::env::args().nth(1).unwrap_or_else(|| {
         eprintln!("usage: viewer_points <path/to/file.copc.laz>");
@@ -36,13 +40,6 @@ fn main() {
 
 #[derive(Resource)]
 struct PointsPath(String);
-
-/// The cloud's [`Framing`], computed at load.
-#[derive(Resource)]
-struct Orbit(Framing);
-
-/// Elevation the camera holds while orbiting (radians up from horizontal).
-const ELEVATION: f32 = 0.6;
 
 fn spawn_points(
     mut commands: Commands,
@@ -70,19 +67,5 @@ fn spawn_points(
         framing.orbit_transform(0.0, ELEVATION),
         Tonemapping::None,
     ));
-    commands.insert_resource(Orbit(framing));
-}
-
-fn orbit_camera(
-    time: Res<Time>,
-    orbit: Option<Res<Orbit>>,
-    mut q: Query<&mut Transform, With<Camera3d>>,
-) {
-    let Some(orbit) = orbit else {
-        return;
-    };
-    let azimuth = time.elapsed_secs() * 0.15;
-    for mut t in &mut q {
-        *t = orbit.0.orbit_transform(azimuth, ELEVATION);
-    }
+    commands.insert_resource(Orbit::new(framing));
 }

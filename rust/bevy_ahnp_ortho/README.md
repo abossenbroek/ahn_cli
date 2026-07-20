@@ -89,6 +89,13 @@ cargo run --example viewer -- path/to/tiles.hfp
 cargo run --example viewer_splat --features splat -- path/to/splat_tiles.hfp
 ```
 
+**Camera controls.** All example viewers auto-orbit and support **zoom**:
+`=`/`+` (and numpad `+`), `]`, or scroll up zoom **in**; `-` (and numpad `-`),
+`[`, or scroll down zoom **out**. Zoom scales the standoff on the pack's
+`Framing` fit distance (`Framing::orbit_transform_zoom`); the shared
+`examples/helpers/orbit.rs` factors the binding so every viewer behaves the
+same.
+
 **Splat render settings are a consumer choice, not baked into the pack.** The
 splat producer is a faithful, opinion-free encoding — one isotropic gaussian
 per cell — so *how* those gaussians are drawn is exposed via the

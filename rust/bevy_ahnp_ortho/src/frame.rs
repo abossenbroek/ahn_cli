@@ -76,10 +76,37 @@ impl Framing {
     /// pick a secondary up vector near the poles, if a host needs to reach
     /// them cleanly.
     pub fn orbit_transform(&self, azimuth: f32, elevation: f32) -> Transform {
+        self.orbit_transform_zoom(azimuth, elevation, 1.0)
+    }
+
+    /// Like [`orbit_transform`](Self::orbit_transform) but at `zoom` × the fit
+    /// distance: `zoom < 1` moves the eye **closer** (zoom in), `zoom > 1`
+    /// **further** (zoom out); `zoom == 1` reproduces `orbit_transform`
+    /// exactly. This is the reusable primitive an interactive viewer drives
+    /// from keyboard/mouse-wheel input — the fit itself is unchanged, only the
+    /// standoff scales, so the look-at target and framing geometry stay put.
+    ///
+    /// `zoom` is clamped to a finite positive range (and any non-finite input
+    /// mapped into it), so no stray value — zero, negative, absurdly large, or
+    /// NaN — can collapse the standoff onto `center` (an undefined `looking_at`
+    /// direction) or overflow it to a non-finite eye (a NaN transform).
+    /// Interactive callers clamp zoom to their own tighter range; this only
+    /// keeps a direct call well-defined.
+    pub fn orbit_transform_zoom(&self, azimuth: f32, elevation: f32, zoom: f32) -> Transform {
+        const MIN_ZOOM: f32 = 1e-4;
+        const MAX_ZOOM: f32 = 1e6;
+        // `clamp` alone would propagate a NaN input, so map non-finite values to
+        // the floor before clamping the finite range.
+        let zoom = if zoom.is_finite() {
+            zoom.clamp(MIN_ZOOM, MAX_ZOOM)
+        } else {
+            MIN_ZOOM
+        };
+        let distance = self.distance * zoom;
         let (sa, ca) = azimuth.sin_cos();
         let (se, ce) = elevation.sin_cos();
-        let horizontal = self.distance * ce;
-        let eye = self.center + Vec3::new(sa * horizontal, self.distance * se, ca * horizontal);
+        let horizontal = distance * ce;
+        let eye = self.center + Vec3::new(sa * horizontal, distance * se, ca * horizontal);
         Transform::from_translation(eye).looking_at(self.center, Vec3::Y)
     }
 }
@@ -122,6 +149,36 @@ mod tests {
             // ...and the camera's forward (-Z) points at the centre.
             let to_centre = (f.center - t.translation).normalize();
             assert!((t.forward().as_vec3() - to_centre).length() < 1e-3);
+        }
+    }
+
+    #[test]
+    fn orbit_transform_zoom_scales_the_standoff_and_keeps_the_target() {
+        let f = Framing::fit(
+            (Vec3::new(-4.0, -3.0, -2.0), Vec3::new(6.0, 7.0, 8.0)),
+            DEFAULT_FOV_Y,
+        );
+        // zoom == 1 is identical to the plain orbit transform.
+        let base = f.orbit_transform(1.2, 0.3);
+        let same = f.orbit_transform_zoom(1.2, 0.3, 1.0);
+        assert!((base.translation - same.translation).length() < 1e-6);
+        // zoom scales the eye distance linearly; the look-at target is unmoved.
+        for &z in &[0.25_f32, 0.5, 2.0, 4.0] {
+            let t = f.orbit_transform_zoom(1.2, 0.3, z);
+            assert!((t.translation.distance(f.center) - f.distance * z).abs() < 1e-3);
+            let to_centre = (f.center - t.translation).normalize();
+            assert!((t.forward().as_vec3() - to_centre).length() < 1e-3);
+        }
+        // Non-positive zoom is floored to a tiny positive standoff, never zero.
+        let degenerate = f.orbit_transform_zoom(0.0, 0.6, 0.0);
+        assert!(degenerate.translation.distance(f.center) > 0.0);
+        // Every pathological zoom — huge, negative, NaN, infinite — is clamped
+        // into range, yielding a finite eye at a positive standoff, never a
+        // NaN/inf transform.
+        for &z in &[1e30_f32, -5.0, f32::NAN, f32::INFINITY] {
+            let t = f.orbit_transform_zoom(0.7, 0.4, z);
+            assert!(t.translation.is_finite());
+            assert!(t.translation.distance(f.center) > 0.0);
         }
     }
 }

@@ -19,7 +19,7 @@
 //! expected.
 #![allow(dead_code)]
 
-use bevy::input::mouse::MouseWheel;
+use bevy::input::mouse::{MouseScrollUnit, MouseWheel};
 use bevy::prelude::*;
 use bevy_ahnp_ortho::Framing;
 
@@ -29,8 +29,14 @@ pub const ELEVATION: f32 = 0.6;
 /// Zoom bounds (standoff = `zoom` × fit distance) and per-input steps.
 const ZOOM_MIN: f32 = 0.1;
 const ZOOM_MAX: f32 = 5.0;
-const KEY_STEP: f32 = 0.03; // per frame while a key is held
-const WHEEL_STEP: f32 = 0.12; // per wheel notch
+/// Keyboard zoom rate while a key is held, in zoom units per second — scaled by
+/// the frame delta time so hold-to-zoom speed is framerate-independent.
+const KEY_RATE: f32 = 1.8;
+/// Mouse-wheel step per notch of `Line`-unit scroll (a physical wheel).
+const WHEEL_STEP_LINE: f32 = 0.12;
+/// Per pixel of `Pixel`-unit scroll (a trackpad) — ~1/16 of a line so a
+/// trackpad swipe and a wheel notch move the zoom by comparable amounts.
+const WHEEL_STEP_PIXEL: f32 = 0.0075;
 
 /// The pack's [`Framing`] (computed once it is open) plus the current zoom the
 /// user has dialed in. Inserted by each viewer's `frame_camera` once the pack
@@ -48,25 +54,36 @@ impl Orbit {
     }
 }
 
-/// The zoom change this frame from keyboard + mouse wheel. Negative zooms in
-/// (shorter standoff), positive zooms out. Pure input mapping, shared by the
-/// viewers and `demo` so the key/wheel bindings live in one place.
-pub fn zoom_delta(keys: &ButtonInput<KeyCode>, wheel: &mut MessageReader<MouseWheel>) -> f32 {
+/// The zoom change this frame from keyboard + mouse wheel, given the frame's
+/// delta time `dt` (seconds). Negative zooms in (shorter standoff), positive
+/// zooms out. Keyboard is a rate scaled by `dt`, so hold-to-zoom is
+/// framerate-independent (matching the auto-orbit sweep); the wheel is
+/// event-driven and unit-aware (`Line` wheel vs `Pixel` trackpad). Shared by
+/// the viewers and `demo` so the key/wheel bindings live in one place.
+pub fn zoom_delta(
+    keys: &ButtonInput<KeyCode>,
+    wheel: &mut MessageReader<MouseWheel>,
+    dt: f32,
+) -> f32 {
     let mut delta = 0.0;
     if keys.pressed(KeyCode::Minus)
         || keys.pressed(KeyCode::NumpadSubtract)
         || keys.pressed(KeyCode::BracketLeft)
     {
-        delta += KEY_STEP;
+        delta += KEY_RATE * dt;
     }
     if keys.pressed(KeyCode::Equal)
         || keys.pressed(KeyCode::NumpadAdd)
         || keys.pressed(KeyCode::BracketRight)
     {
-        delta -= KEY_STEP;
+        delta -= KEY_RATE * dt;
     }
     for ev in wheel.read() {
-        delta -= ev.y * WHEEL_STEP;
+        let step = match ev.unit {
+            MouseScrollUnit::Line => WHEEL_STEP_LINE,
+            MouseScrollUnit::Pixel => WHEEL_STEP_PIXEL,
+        };
+        delta -= ev.y * step;
     }
     delta
 }
@@ -89,7 +106,7 @@ pub fn orbit_camera(
         wheel.clear();
         return;
     };
-    let delta = zoom_delta(&keys, &mut wheel);
+    let delta = zoom_delta(&keys, &mut wheel, time.delta_secs());
     if delta != 0.0 {
         orbit.zoom = apply_zoom(orbit.zoom, delta);
     }

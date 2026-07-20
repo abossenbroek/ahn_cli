@@ -86,13 +86,23 @@ impl Framing {
     /// from keyboard/mouse-wheel input — the fit itself is unchanged, only the
     /// standoff scales, so the look-at target and framing geometry stay put.
     ///
-    /// `zoom` is floored at a small positive value, so a zero or negative input
-    /// can never collapse the standoff onto `center` (which would make
-    /// `looking_at`'s direction undefined). Interactive callers clamp zoom well
-    /// above this floor; it exists only to keep a stray direct call well-defined.
+    /// `zoom` is clamped to a finite positive range (and any non-finite input
+    /// mapped into it), so no stray value — zero, negative, absurdly large, or
+    /// NaN — can collapse the standoff onto `center` (an undefined `looking_at`
+    /// direction) or overflow it to a non-finite eye (a NaN transform).
+    /// Interactive callers clamp zoom to their own tighter range; this only
+    /// keeps a direct call well-defined.
     pub fn orbit_transform_zoom(&self, azimuth: f32, elevation: f32, zoom: f32) -> Transform {
         const MIN_ZOOM: f32 = 1e-4;
-        let distance = self.distance * zoom.max(MIN_ZOOM);
+        const MAX_ZOOM: f32 = 1e6;
+        // `clamp` alone would propagate a NaN input, so map non-finite values to
+        // the floor before clamping the finite range.
+        let zoom = if zoom.is_finite() {
+            zoom.clamp(MIN_ZOOM, MAX_ZOOM)
+        } else {
+            MIN_ZOOM
+        };
+        let distance = self.distance * zoom;
         let (sa, ca) = azimuth.sin_cos();
         let (se, ce) = elevation.sin_cos();
         let horizontal = distance * ce;
@@ -162,5 +172,13 @@ mod tests {
         // Non-positive zoom is floored to a tiny positive standoff, never zero.
         let degenerate = f.orbit_transform_zoom(0.0, 0.6, 0.0);
         assert!(degenerate.translation.distance(f.center) > 0.0);
+        // Every pathological zoom — huge, negative, NaN, infinite — is clamped
+        // into range, yielding a finite eye at a positive standoff, never a
+        // NaN/inf transform.
+        for &z in &[1e30_f32, -5.0, f32::NAN, f32::INFINITY] {
+            let t = f.orbit_transform_zoom(0.7, 0.4, z);
+            assert!(t.translation.is_finite());
+            assert!(t.translation.distance(f.center) > 0.0);
+        }
     }
 }

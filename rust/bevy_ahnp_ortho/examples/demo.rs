@@ -316,7 +316,7 @@ fn orbit_camera(
     mut orbit: ResMut<OrbitState>,
     mut q: Query<&mut Transform, With<Camera3d>>,
 ) {
-    let delta = zoom_delta(&keys, &mut wheel);
+    let delta = zoom_delta(&keys, &mut wheel, time.delta_secs());
     if delta != 0.0 {
         orbit.zoom = apply_zoom(orbit.zoom, delta);
     }

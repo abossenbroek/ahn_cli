@@ -110,6 +110,39 @@ ahn_cli prep --data data/delft --thin-method voxel --thin-grade 3
 ahn_cli prep --data data/delft --thin-method poisson --thin-radius 1.5 --thin-seed 0
 ```
 
+### `export-ply` — lossless PLY export with a provenance sidecar
+
+```bash
+ahn_cli export-ply --cloud assets/ahn_moerkapelle.copc.laz --out out/clip.ply \
+    --all-classes --bbox 100888,449327,101088,449527 --spacing 0.5
+```
+
+Reads a LAS/LAZ/COPC cloud and writes a binary PLY that keeps the datum and the lidar attributes, plus `<out>.provenance.json`. `prep --points` writes the same PLY and sidecar for `pointcloud.ply`.
+
+| Option | Meaning |
+|---|---|
+| `--classes 2,6` (default) | Keep only these LAS classes. The default 2,6 (ground + building) is the legacy filter, now explicit; it drops vegetation (1), water (9) and civil structure (26). |
+| `--all-classes` | No class filter. Excludes `--classes`. |
+| `--bbox minx,miny,maxx,maxy` | Clip (EPSG:28992). A COPC source reads only the octree nodes inside the box. |
+| `--spacing M` | Thin to a minimum point spacing in metres (seeded Poisson-disk, hard guarantee, in memory: clip with `--bbox` first). |
+| `--share F` | Legacy random share in (0, 1]. Density-blind (tiles differ 4x in density); recorded. Excludes `--spacing`. |
+| `--coords float64` (default) / `float32-centred` | Absolute double, or float32 on a recorded millimetre offset: `world = vertex + offset_xyz`. |
+
+**PLY properties**, in order. `x y z` and `red green blue` come first, as the flyover engine expects; the rest is additive and skipped by readers that do not know it.
+
+| Property | Type | Present when |
+|---|---|---|
+| `x y z` | `double` (or `float` when centred) | always |
+| `red green blue` | `uchar` | the source point format has colour |
+| `classification` | `uchar` | always |
+| `intensity` | `ushort` | always |
+| `return_number`, `number_of_returns` | `uchar` | always |
+| `overlap` | `uchar` 0/1 | point formats 6+ |
+
+The header carries `comment ahn_cli.offset_xyz X Y Z` (`world = vertex + offset`, zero for `float64`), `ahn_cli.las_scale` and `ahn_cli.las_offset`. Colour is exact when every selected value fits a byte (AHN stores 8-bit values in the 16-bit fields); otherwise the high byte is written and the sidecar says `narrowed_to_high_byte: true`.
+
+**Sidecar** (`schema ahn_cli.product-provenance/1`): input path, sha256 and size; ahn_cli version and git commit, Python, laspy, lazrs, numpy, PDAL versions; the class filter and where it came from (`default` / `explicit` / `all`), bbox, thinning rule and parameters, upstream `prep` filters; point counts and class histograms in and out; output sha256, coordinate mode, offset, property list and colour encoding; UTC start time and wall seconds. Everything except the `run` block is deterministic, and the PLY itself is byte-identical on rebuild.
+
 ### `export-positions` — export the DSM to a position map
 
 ```

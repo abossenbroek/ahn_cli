@@ -148,6 +148,7 @@ line-ending = "auto"
 # tests exercise only code the fast suite already covers, so excluding them keeps
 # the 100% gate intact without omitting any shipped module.
 markers = [
+    "slow: reads a real multi-GB asset (skipped when it is absent); runs in seconds on a COPC bbox clip but needs the file on disk.",
     "nightly: live portal-contract checks against the real PDOK / Beeldmateriaal endpoints; excluded from the fast offline suite, run on the nightly CI schedule.",
 ]
 addopts = "-m 'not nightly'"

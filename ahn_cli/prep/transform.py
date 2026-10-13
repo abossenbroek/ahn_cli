@@ -43,7 +43,7 @@ from ahn_cli.prep.decimate import (
     thin,
 )
 from ahn_cli.prep.dedup import CanonicalTile, DedupStats, deduplicate_tiles
-from ahn_cli.prep.ply import export_ply
+from ahn_cli.prep.ply_product import PlyProductRequest, export_ply_product
 from ahn_cli.prep.spill import DiskFloorError
 from ahn_cli.prep.voxel_stream import stream_voxel_thin
 from ahn_cli.provenance import read_provenance, write_provenance
@@ -123,7 +123,9 @@ def prepare(
           ``thinning`` request via the CPU reference backend, and writes the
           site-root ``provenance.json`` recording the run's lineage.
         - With ``export_points`` it additionally writes
-          ``<data_dir>/pointcloud.ply``.
+          ``<data_dir>/pointcloud.ply`` (lossless: colour, class, intensity,
+          return number and overlap kept) and its sidecar
+          ``pointcloud.ply.provenance.json`` recording the filters above.
         - ``dedup_progress``, ``thin_progress``, and ``export_progress`` are
           independent, phase-scoped progress callbacks (dedup ticks once per
           tile, thinning is a single atomic 0->1 tick, export ticks once per
@@ -165,9 +167,17 @@ def prepare(
     output_points = _apply_selection(output, request, progress=thin_progress)
     _verify_output_cloud(output)
     if request.export_points:
-        export_ply(
-            output,
-            request.data_dir / _POINTCLOUD_PLY,
+        export_ply_product(
+            PlyProductRequest(
+                source=output,
+                output=request.data_dir / _POINTCLOUD_PLY,
+                upstream={
+                    "stage": "prep",
+                    "include_classes": list(request.include_classes),
+                    "exclude_classes": list(request.exclude_classes),
+                    "thinning": _thinning_label(request.thinning),
+                },
+            ),
             progress=export_progress,
         )
     _write_prep_provenance(

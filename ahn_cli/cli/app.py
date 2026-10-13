@@ -22,6 +22,7 @@ from tqdm import tqdm
 
 from ahn_cli.copc.build import build_copc
 from ahn_cli.copc.octree import CopcError
+from ahn_cli.domain import ensure_valid_bbox
 from ahn_cli.fetch.acquisition import (
     AcquisitionError,
     AcquisitionRequest,
@@ -47,6 +48,17 @@ from ahn_cli.prep.decimate import (
     ThinMethod,
     Thinning,
     VoxelThinning,
+)
+from ahn_cli.prep.ply import (
+    CoordMode,
+    PlyExportError,
+    PlyThinning,
+    ShareThinning,
+)
+from ahn_cli.prep.ply_product import (
+    ClassOrigin,
+    PlyProductRequest,
+    export_ply_product,
 )
 from ahn_cli.prep.positions import (
     PositionsExportError,
@@ -78,7 +90,7 @@ from ahn_cli.tiles3d.profile import Profile
 if TYPE_CHECKING:
     from contextlib import AbstractContextManager
 
-    from ahn_cli.domain import ProgressCallback
+    from ahn_cli.domain import BBox, ProgressCallback
 
 _GENERATION_REGISTRY = default_registry()
 """The default AHN generation registry backing the ``--ahn`` choice.
@@ -506,6 +518,200 @@ def prep(  # noqa: PLR0913 -- one CLI param per prep option; a bag object would 
             )
     except PrepError as exc:
         raise click.ClickException(str(exc)) from exc
+
+
+_DEFAULT_PLY_CLASSES = (2, 6)
+"""Classes ``export-ply`` keeps when neither ``--classes`` nor ``--all-classes``
+is given: ground + building. This is the filter the legacy ``output.ply`` was
+made with (unrecorded); it drops vegetation (1), water (9) and civil structure
+(26), so it is stated in ``--help`` and written to the sidecar.
+"""
+
+
+def _parse_bbox(spec: str | None) -> BBox | None:
+    """Parse ``minx,miny,maxx,maxy`` (EPSG:28992 metres), or ``None``.
+
+    Failure modes:
+        - :class:`click.BadParameter` for a malformed or degenerate box.
+    """
+    if spec is None:
+        return None
+    try:
+        minx, miny, maxx, maxy = (float(part) for part in spec.split(","))
+        bbox: BBox = (minx, miny, maxx, maxy)
+        ensure_valid_bbox(bbox)
+    except ValueError as exc:
+        msg = (
+            "--bbox must be four comma-separated numbers "
+            f"minx,miny,maxx,maxy with min < max; got {spec!r}."
+        )
+        raise click.BadParameter(msg) from exc
+    return bbox
+
+
+def _ply_class_filter(
+    classes: str | None, *, all_classes: bool
+) -> tuple[tuple[int, ...], ClassOrigin]:
+    """Resolve ``--classes`` / ``--all-classes`` to a filter and its origin.
+
+    Failure modes:
+        - :class:`click.UsageError` if both are given.
+    """
+    if all_classes and classes is not None:
+        msg = "--all-classes and --classes are mutually exclusive."
+        raise click.UsageError(msg)
+    if all_classes:
+        return (), ClassOrigin.ALL
+    if classes is None:
+        return _DEFAULT_PLY_CLASSES, ClassOrigin.DEFAULT
+    return _parse_classes(classes), ClassOrigin.EXPLICIT
+
+
+def _ply_thinning(
+    spacing: float | None, share: float | None, seed: int
+) -> PlyThinning | None:
+    """Resolve ``--spacing`` / ``--share`` to a thinning rule, or ``None``.
+
+    Failure modes:
+        - :class:`click.UsageError` if both are given.
+        - :class:`click.BadParameter` for a non-positive spacing or a share
+          outside ``(0, 1]``.
+    """
+    if spacing is not None and share is not None:
+        msg = "--spacing and --share are mutually exclusive."
+        raise click.UsageError(msg)
+    try:
+        if spacing is not None:
+            return PoissonThinning(radius=spacing, seed=seed)
+        if share is not None:
+            return ShareThinning(share=share, seed=seed)
+    except ValueError as exc:
+        raise click.BadParameter(str(exc)) from exc
+    return None
+
+
+@cli.command(name="export-ply")
+@click.option(
+    "--cloud",
+    "cloud",
+    required=True,
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Source LAS/LAZ/COPC point cloud.",
+)
+@click.option(
+    "--out",
+    "out",
+    required=True,
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="Path of the .ply to write; <out>.provenance.json is written beside it.",
+)
+@click.option(
+    "--classes",
+    "classes",
+    default=None,
+    help=(
+        "Keep only these classes (comma-separated). Default 2,6 (ground + "
+        "building): the legacy, lossy filter, made explicit and recorded. "
+        "Drops vegetation (1), water (9), civil structure (26)."
+    ),
+)
+@click.option(
+    "--all-classes",
+    "all_classes",
+    is_flag=True,
+    help="Keep every class (no class filter). Excludes --classes.",
+)
+@click.option(
+    "--bbox",
+    "bbox",
+    default=None,
+    help="Clip to minx,miny,maxx,maxy (EPSG:28992); a COPC reads only these nodes.",
+)
+@click.option(
+    "--spacing",
+    "spacing",
+    type=float,
+    default=None,
+    help="Thin to a minimum point spacing in metres (Poisson-disk). Excludes --share.",
+)
+@click.option(
+    "--share",
+    "share",
+    type=float,
+    default=None,
+    help="Legacy: keep this random share in (0, 1]. Density-blind; recorded. Excludes --spacing.",
+)
+@click.option(
+    "--seed",
+    "seed",
+    type=int,
+    default=DEFAULT_SEED,
+    show_default=True,
+    help="Seed of --spacing / --share (deterministic).",
+)
+@click.option(
+    "--coords",
+    "coords",
+    type=click.Choice([mode.value for mode in CoordMode]),
+    default=CoordMode.FLOAT64.value,
+    show_default=True,
+    help=(
+        "float64 stores absolute RD; float32-centred stores a recorded "
+        "offset (header comment + sidecar), world = vertex + offset."
+    ),
+)
+@click.option(
+    "--progress/--no-progress",
+    "progress",
+    default=True,
+    show_default=True,
+    help="Show a progress bar during the run.",
+)
+def export_ply_command(  # noqa: PLR0913 -- one CLI param per export option
+    cloud: Path,
+    out: Path,
+    classes: str | None,
+    bbox: str | None,
+    spacing: float | None,
+    share: float | None,
+    seed: int,
+    coords: str,
+    *,
+    all_classes: bool,
+    progress: bool,
+) -> None:
+    """Export a point cloud to a lossless PLY plus its provenance sidecar.
+
+    Keeps the datum (offset in the header and sidecar), colour, class,
+    intensity, return number and overlap flag; records the input hash, tool
+    versions, every filter and thinning rule, and point counts in and out in
+    ``<out>.provenance.json``.
+    """
+    include, origin = _ply_class_filter(classes, all_classes=all_classes)
+    request = PlyProductRequest(
+        source=cloud,
+        output=out,
+        include_classes=include,
+        class_origin=origin,
+        bbox=_parse_bbox(bbox),
+        thinning=_ply_thinning(spacing, share, seed),
+        coords=CoordMode(coords),
+    )
+    with _progress_bar(
+        enabled=progress, unit="chunk", desc="export-ply"
+    ) as bar:
+        try:
+            stats = export_ply_product(
+                request,
+                progress=_tqdm_progress(bar) if bar is not None else None,
+            )
+        except PlyExportError as exc:
+            raise click.ClickException(str(exc)) from exc
+    click.echo(
+        f"Wrote {stats.point_count} of {stats.source_points} points "
+        f"({len(stats.properties)} properties) to {out}; "
+        f"sidecar {out.name}.provenance.json."
+    )
 
 
 @cli.command(name="import-viirs")

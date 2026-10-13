@@ -12,6 +12,7 @@ import hashlib
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, cast
 
 import laspy
 import numpy as np
@@ -23,6 +24,7 @@ from ahn_cli.prep.decimate import PoissonThinning, VoxelThinning
 from ahn_cli.prep.spill import DiskFloorError
 from ahn_cli.prep.transform import PrepError, PrepRequest, prepare
 from ahn_cli.provenance import read_provenance, write_provenance
+from ahn_cli.provenance.product import read_product_sidecar, sidecar_path
 
 _START = datetime(2026, 7, 10, 9, 0, tzinfo=timezone.utc)
 _FINISH = datetime(2026, 7, 10, 9, 0, 5, tzinfo=timezone.utc)
@@ -182,6 +184,34 @@ def test_prepare_dedups_writes_provenance_and_exports_ply(
     assert keys["thinning"] == "none"
     assert keys["points_exported"] == "true"
     assert keys["output_points"] == "6"
+
+
+def test_prepare_export_writes_a_ply_sidecar_with_the_prep_filters(
+    tmp_path: Path,
+) -> None:
+    """The PLY gets <name>.provenance.json recording what prep filtered."""
+    site = _fetched_site(tmp_path / "delft")
+
+    prepare(
+        PrepRequest(
+            data_dir=site,
+            include_classes=(2, 6),
+            thinning=VoxelThinning(grade=1),
+            export_points=True,
+        )
+    )
+
+    record = read_product_sidecar(sidecar_path(site / "pointcloud.ply"))
+    filters = cast("dict[str, Any]", record["filters"])
+    assert filters["upstream"] == {
+        "stage": "prep",
+        "include_classes": [2, 6],
+        "exclude_classes": [],
+        "thinning": "voxel:1",
+    }
+    assert filters["class_origin"] == "all"
+    counts = cast("dict[str, int]", record["counts"])
+    assert counts["out"] == len(_read_points(site / "pointcloud.laz").points)
 
 
 def test_prepare_without_export_skips_the_ply(tmp_path: Path) -> None:

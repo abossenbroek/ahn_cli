@@ -125,7 +125,7 @@ Reads a LAS/LAZ/COPC cloud and writes a binary PLY that keeps the datum and the 
 | `--all-classes` | No class filter. Excludes `--classes`. |
 | `--bbox minx,miny,maxx,maxy` | Clip (EPSG:28992). A COPC source reads only the octree nodes inside the box. |
 | `--spacing M` | Thin to a minimum point spacing in metres (seeded Poisson-disk, hard guarantee, in memory: clip with `--bbox` first). |
-| `--share F` | Legacy random share in (0, 1]. Density-blind (tiles differ 4x in density); recorded. Excludes `--spacing`. |
+| `--share F` | Legacy random share in (0, 1]. Density-blind (raw density varies 9.2x across 100 m windows of the Moerkapelle tile, and the share keeps that spread); recorded. Excludes `--spacing`. |
 | `--coords float64` (default) / `float32-centred` | Absolute double, or float32 on a recorded millimetre offset: `world = vertex + offset_xyz`. |
 
 **PLY properties**, in order. `x y z` and `red green blue` come first, as the flyover engine expects; the rest is additive and skipped by readers that do not know it.

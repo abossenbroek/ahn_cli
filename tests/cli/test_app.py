@@ -57,6 +57,7 @@ def test_group_exposes_fetch_prep_and_import_viirs() -> None:
         "copc",
         "tiles3d",
         "pipeline",
+        "footprints",
     }
 
 

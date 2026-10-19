@@ -143,6 +143,21 @@ The header carries `comment ahn_cli.offset_xyz X Y Z` (`world = vertex + offset`
 
 **Sidecar** (`schema ahn_cli.product-provenance/1`): input path, sha256 and size; ahn_cli version and git commit, Python, laspy, lazrs, numpy, PDAL versions; the class filter and where it came from (`default` / `explicit` / `all`), bbox, thinning rule and parameters, upstream `prep` filters; point counts and class histograms in and out; output sha256, coordinate mode, offset, property list and colour encoding; UTC start time and wall seconds. Everything except the `run` block is deterministic, and the PLY itself is byte-identical on rebuild.
 
+### `footprints` — TOP10NL greenhouse polygons and a coverage raster
+
+```
+Options:
+  --bbox TEXT   EPSG:28992 box minx,miny,maxx,maxy; the raster grid starts at (minx, maxy). [required]
+  --out DIR     Site directory; writes <out>/footprints/. [required]
+  --res FLOAT   Raster cell size in metres. [default: 1.0]
+```
+
+Fetches PDOK BRT TOP10NL `gebouw_vlak` features with `typegebouw` = `kas, warenhuis` (OGC API Features, CC BY 4.0, attribution Kadaster) and writes `top10nl_kas.geojson`, `kas_cover.tif` (float32 share of each cell inside a polygon, 4x4 sub-cell centres) and `kas_cover.provenance.json`. The provenance pins the SHA-256 of the id-sorted feature list (page bytes carry a per-request timestamp, so they are not a stable pin), the page URLs and the `bronactualiteit` range: TOP10NL is updated continuously and a polygon can predate or postdate an AHN flight. Fails before any network call on a bad box, a bad resolution, an oversize grid or an existing output file; fails on zero kas polygons. The polygons are a classification cue, not a classifier.
+
+```bash
+ahn_cli footprints --bbox 99288.207,447699.23,103256.207,451571.23 --out data/moerkapelle
+```
+
 ### `export-positions` — export the DSM to a position map
 
 ```

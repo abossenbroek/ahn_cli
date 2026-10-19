@@ -3,13 +3,14 @@
 from ahn_cli.domain import Product
 
 
-def test_product_has_exactly_the_four_dataset_kinds() -> None:
-    """The closed membership is exactly the four spec'd dataset kinds."""
+def test_product_has_exactly_the_five_dataset_kinds() -> None:
+    """The closed membership is exactly the five spec'd dataset kinds."""
     assert {member.name for member in Product} == {
         "AHN_POINT_CLOUD",
         "ORTHO",
         "DSM",
         "VIIRS",
+        "FOOTPRINT",
     }
 
 
@@ -19,6 +20,7 @@ def test_product_values_are_stable_canonical_codes() -> None:
     assert Product.ORTHO.value == "ortho"
     assert Product.DSM.value == "dsm"
     assert Product.VIIRS.value == "viirs"
+    assert Product.FOOTPRINT.value == "footprint"
 
 
 def test_product_members_are_hashable_and_distinct() -> None:

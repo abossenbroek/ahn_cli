@@ -20,7 +20,7 @@ class Product(Enum):
     """A dataset kind produced or consumed by the pipeline.
 
     Contract:
-        - Membership is closed: exactly the four kinds below exist, so an
+        - Membership is closed: exactly the five kinds below exist, so an
           invalid product cannot be constructed.
         - ``value`` is the member's stable canonical code, intended as the
           identity WP3 will serialise; it is not for control-flow switching.
@@ -35,9 +35,12 @@ class Product(Enum):
         DSM: A Digital Surface Model *raster* (AHN-derived, distinct from the
             point cloud).
         VIIRS: A VIIRS night-lights raster product.
+        FOOTPRINT: Building/greenhouse footprint polygons (e.g. TOP10NL)
+            and the coverage raster derived from them.
     """
 
     AHN_POINT_CLOUD = "ahn_point_cloud"
     ORTHO = "ortho"
     DSM = "dsm"
     VIIRS = "viirs"
+    FOOTPRINT = "footprint"

@@ -59,7 +59,7 @@ make check
 ```
 
 ### Running the CLI
-`ahn_cli` is a Click **group**; every invocation names a subcommand (`fetch`, `prep`, `reconcile`, `copc`, `tiles3d`, `import-viirs`, `export-positions`). Running it with no subcommand prints usage to stderr and exits with code 2 — that is expected `click.Group` behavior, not a bug.
+`ahn_cli` is a Click **group**; every invocation names a subcommand (`fetch`, `prep`, `reconcile`, `copc`, `tiles3d`, `import-viirs`, `export-positions`, `footprints`). Running it with no subcommand prints usage to stderr and exits with code 2 — that is expected `click.Group` behavior, not a bug.
 
 ```bash
 # Run the CLI with arguments (ARGS must start with a subcommand)
@@ -83,6 +83,9 @@ uv run ahn_cli prep --data data/delft -i 2,6 --points
 # Transform with graded voxel/Poisson-disk thinning instead of raw class filtering only
 uv run ahn_cli prep --data data/delft --thin-method voxel --thin-grade 3
 uv run ahn_cli prep --data data/delft --thin-method poisson --thin-radius 1.5 --thin-seed 0
+
+# Fetch TOP10NL greenhouse (kas, warenhuis) polygons, pin them, and rasterise cell coverage on a 1 m grid starting at (minx, maxy)
+uv run ahn_cli footprints --bbox 99288.207,447699.23,103256.207,451571.23 --out data/moerkapelle --res 1.0
 
 # Export the fetched DSM to a deterministic position map for TouchDesigner
 uv run ahn_cli export-positions --data data/delft

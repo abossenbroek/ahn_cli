@@ -14,8 +14,9 @@ and a regression test asserts no flag is reused across the group.
 from __future__ import annotations
 
 import contextlib
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, NoReturn
+from typing import TYPE_CHECKING, NoReturn, cast
 
 import click
 from tqdm import tqdm
@@ -38,6 +39,7 @@ from ahn_cli.fetch.source import (
     resolve_source_token,
     source_kind_tokens,
 )
+from ahn_cli.fetch.top10nl import Top10nlError, fetch_kas
 from ahn_cli.fetch.viirs import ViirsImportError, import_viirs
 from ahn_cli.pipeline.errors import PipelineError
 from ahn_cli.pipeline.run import run_spec
@@ -48,6 +50,11 @@ from ahn_cli.prep.decimate import (
     ThinMethod,
     Thinning,
     VoxelThinning,
+)
+from ahn_cli.prep.footprint import (
+    FootprintError,
+    preflight,
+    write_footprint_product,
 )
 from ahn_cli.prep.ply import (
     CoordMode,
@@ -711,6 +718,64 @@ def export_ply_command(  # noqa: PLR0913 -- one CLI param per export option
         f"Wrote {stats.point_count} of {stats.source_points} points "
         f"({len(stats.properties)} properties) to {out}; "
         f"sidecar {out.name}.provenance.json."
+    )
+
+
+@cli.command(name="footprints")
+@click.option(
+    "--bbox",
+    "bbox_spec",
+    required=True,
+    help=(
+        "EPSG:28992 box minx,miny,maxx,maxy. The raster grid starts at "
+        "(minx, maxy); pass another product's exact extent to share its "
+        "cell edges."
+    ),
+)
+@click.option(
+    "--out",
+    "out",
+    required=True,
+    type=click.Path(file_okay=False, path_type=Path),
+    help="Site directory; writes <out>/footprints/.",
+)
+@click.option(
+    "--res",
+    "res",
+    default=1.0,
+    show_default=True,
+    type=float,
+    help="Raster cell size in metres.",
+)
+def footprints_command(bbox_spec: str, out: Path, res: float) -> None:
+    """Fetch TOP10NL greenhouse polygons and rasterise their cell coverage.
+
+    Fetches PDOK BRT TOP10NL ``gebouw_vlak`` features with typegebouw
+    ``kas, warenhuis`` (CC BY 4.0) and writes ``top10nl_kas.geojson``,
+    ``kas_cover.tif`` (float32 fraction of each cell inside a polygon) and
+    a provenance sidecar that pins the canonical feature SHA-256 and the
+    per-polygon source-date range. The polygons are a classification cue,
+    not a classifier. Fails before any network call on a bad box,
+    resolution or grid size, or when a target file already exists.
+    """
+    bbox = cast("BBox", _parse_bbox(bbox_spec))  # required=True: never None
+    try:
+        preflight(out, bbox, res)
+        started = datetime.now(timezone.utc)
+        result = fetch_kas(bbox)
+        finished = datetime.now(timezone.utc)
+        product = write_footprint_product(
+            result, out, bbox, res, started_at=started, finished_at=finished
+        )
+    except (FootprintError, Top10nlError) as exc:
+        raise click.ClickException(str(exc)) from exc
+    dates = result.source_dates
+    click.echo(
+        f"TOP10NL kas: {len(result.features)} of {result.n_in_box} "
+        f"buildings, {product.covered_m2:.0f} m2 covered at {res:g} m; "
+        f"bronactualiteit {dates[0] if dates else '?'}.."
+        f"{dates[-1] if dates else '?'}; features sha256 "
+        f"{result.features_sha256}; wrote {product.cover_path}."
     )
 
 

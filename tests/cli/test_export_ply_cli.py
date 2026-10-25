@@ -36,31 +36,67 @@ def _filters(out: Path) -> dict[str, Any]:
     return cast("dict[str, Any]", record["filters"])
 
 
-def test_help_states_the_default_class_filter() -> None:
-    """The legacy 2,6 default is visible in --help, not implicit."""
+def test_help_states_that_the_class_filter_is_opt_in() -> None:
+    """--help says no class is dropped unless --classes asks for it."""
     result = CliRunner().invoke(cli, ["export-ply", "--help"])
 
     assert result.exit_code == 0
-    assert "Default 2,6" in " ".join(result.output.split())
+    text = " ".join(result.output.split())
+    assert "Default: keep every class" in text
     assert "--all-classes" in result.output
 
 
-def test_default_keeps_classes_2_and_6_and_records_the_default(
+def test_default_keeps_every_class_and_records_no_filter(
     cloud_path: Path, tmp_path: Path
 ) -> None:
-    """With no class option the filter is 2,6 and the sidecar says 'default'."""
+    """With no class option nothing is dropped: 1, 2, 6, 9 and 26 all survive."""
     out = tmp_path / "out.ply"
 
     result = _run("--cloud", str(cloud_path), "--out", str(out))
 
     assert result.exit_code == 0, result.output
-    assert "sidecar out.ply.provenance.json" in result.output
+    filters = _filters(out)
+    assert filters["class_include"] is None
+    assert filters["class_origin"] == "all"
+    assert set(read_ply(out).vertex["classification"].tolist()) == {
+        1,
+        2,
+        6,
+        9,
+        26,
+    }
+    assert len(read_ply(out).vertex) == 300
+
+
+def test_default_rebuild_is_byte_identical_and_equals_all_classes(
+    cloud_path: Path, tmp_path: Path
+) -> None:
+    """Two default runs and an --all-classes run write the same PLY bytes."""
+    outs = [tmp_path / f"out{i}.ply" for i in range(3)]
+
+    for out, extra in zip(outs, ([], [], ["--all-classes"]), strict=True):
+        result = _run("--cloud", str(cloud_path), "--out", str(out), *extra)
+        assert result.exit_code == 0, result.output
+
+    blobs = {out.read_bytes() for out in outs}
+    assert len(blobs) == 1
+
+
+def test_classes_2_6_is_the_explicit_legacy_filter(
+    cloud_path: Path, tmp_path: Path
+) -> None:
+    """--classes 2,6 reproduces the old default, recorded as explicit."""
+    out = tmp_path / "out.ply"
+
+    result = _run(
+        "--cloud", str(cloud_path), "--out", str(out), "--classes", "2,6"
+    )
+
+    assert result.exit_code == 0, result.output
     filters = _filters(out)
     assert filters["class_include"] == [2, 6]
-    assert filters["class_origin"] == "default"
-    classes = set(read_ply(out).vertex["classification"].tolist())
-    assert classes <= {2, 6}
-    assert classes
+    assert filters["class_origin"] == "explicit"
+    assert set(read_ply(out).vertex["classification"].tolist()) <= {2, 6}
 
 
 def test_all_classes_keeps_everything_and_records_it(

@@ -520,14 +520,6 @@ def prep(  # noqa: PLR0913 -- one CLI param per prep option; a bag object would 
         raise click.ClickException(str(exc)) from exc
 
 
-_DEFAULT_PLY_CLASSES = (2, 6)
-"""Classes ``export-ply`` keeps when neither ``--classes`` nor ``--all-classes``
-is given: ground + building. This is the filter the legacy ``output.ply`` was
-made with (unrecorded); it drops vegetation (1), water (9) and civil structure
-(26), so it is stated in ``--help`` and written to the sidecar.
-"""
-
-
 def _parse_bbox(spec: str | None) -> BBox | None:
     """Parse ``minx,miny,maxx,maxy`` (EPSG:28992 metres), or ``None``.
 
@@ -563,7 +555,7 @@ def _ply_class_filter(
     if all_classes:
         return (), ClassOrigin.ALL
     if classes is None:
-        return _DEFAULT_PLY_CLASSES, ClassOrigin.DEFAULT
+        return (), ClassOrigin.ALL
     return _parse_classes(classes), ClassOrigin.EXPLICIT
 
 
@@ -610,16 +602,16 @@ def _ply_thinning(
     "classes",
     default=None,
     help=(
-        "Keep only these classes (comma-separated). Default 2,6 (ground + "
-        "building): the legacy, lossy filter, made explicit and recorded. "
-        "Drops vegetation (1), water (9), civil structure (26)."
+        "Keep only these classes (comma-separated), e.g. 2,6 for the legacy "
+        "ground + building filter (drops vegetation 1, water 9, civil "
+        "structure 26). Default: keep every class."
     ),
 )
 @click.option(
     "--all-classes",
     "all_classes",
     is_flag=True,
-    help="Keep every class (no class filter). Excludes --classes.",
+    help="Keep every class (the default; explicit form). Excludes --classes.",
 )
 @click.option(
     "--bbox",

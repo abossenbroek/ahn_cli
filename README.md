@@ -121,8 +121,8 @@ Reads a LAS/LAZ/COPC cloud and writes a binary PLY that keeps the datum and the 
 
 | Option | Meaning |
 |---|---|
-| `--classes 2,6` (default) | Keep only these LAS classes. The default 2,6 (ground + building) is the legacy filter, now explicit; it drops vegetation (1), water (9) and civil structure (26). |
-| `--all-classes` | No class filter. Excludes `--classes`. |
+| `--classes 2,6` (opt-in) | Keep only these LAS classes. `2,6` (ground + building) is the legacy filter; it drops vegetation (1), water (9) and civil structure (26). Without this option every class is kept. |
+| `--all-classes` | No class filter (the default, explicit form). Excludes `--classes`. |
 | `--bbox minx,miny,maxx,maxy` | Clip (EPSG:28992). A COPC source reads only the octree nodes inside the box. |
 | `--spacing M` | Thin to a minimum point spacing in metres (seeded Poisson-disk, hard guarantee, in memory: clip with `--bbox` first). |
 | `--share F` | Legacy random share in (0, 1]. Density-blind (raw density varies 9.2x across 100 m windows of the Moerkapelle tile, and the share keeps that spread); recorded. Excludes `--spacing`. |

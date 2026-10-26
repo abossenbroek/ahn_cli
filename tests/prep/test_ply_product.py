@@ -66,7 +66,7 @@ def test_sidecar_is_written_beside_the_ply_and_matches_the_files(
             source=src,
             output=out,
             include_classes=(2, 6),
-            class_origin=ClassOrigin.DEFAULT,
+            class_origin=ClassOrigin.EXPLICIT,
             coords=CoordMode.FLOAT32_CENTRED,
         ),
         clock=_clock,
@@ -99,7 +99,7 @@ def test_sidecar_is_written_beside_the_ply_and_matches_the_files(
     }
     filters = _block(record, "filters")
     assert filters["class_include"] == [2, 6]
-    assert filters["class_origin"] == "default"
+    assert filters["class_origin"] == "explicit"
     assert filters["bbox"] is None
     assert filters["thinning"] == {"mode": "none"}
     classes_out = dict(_block(record, "classes")["out"])

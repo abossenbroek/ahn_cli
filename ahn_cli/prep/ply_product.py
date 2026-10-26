@@ -41,9 +41,8 @@ if TYPE_CHECKING:
 
 
 class ClassOrigin(Enum):
-    """Where the class filter came from, recorded so a default is visible."""
+    """Where the class filter came from, recorded in the sidecar."""
 
-    DEFAULT = "default"
     EXPLICIT = "explicit"
     ALL = "all"
 
@@ -54,7 +53,7 @@ class PlyProductRequest:
 
     Contract:
         - ``include_classes`` empty keeps every class; ``class_origin`` says
-          whether the filter is the CLI default, user-chosen, or "all".
+          whether the filter is user-chosen or "all" (no filter, the CLI default).
         - ``upstream`` records filters applied before this export (``prep``
           filters its LAZ first); ``None`` when there are none.
         - Other fields are those of :func:`~ahn_cli.prep.ply.export_ply`.
